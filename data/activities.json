@@ -1,0 +1,54 @@
+{
+    "oslo": {
+        "city": "Oslo",
+        "activities": [
+            {
+                "id": 1,
+                "title": "Naturhistorisk Museum",
+                "age": "3-10 år",
+                "image": "🏛️",
+                "description": "Utforsk dinosaurer og naturens mysterier"
+            },
+            {
+                "id": 2,
+                "title": "Vigeland Sculpture Park",
+                "age": "2-12 år",
+                "image": "🗿",
+                "description": "Fri inngång, kunstneriske figurer i grønt område"
+            },
+            {
+                "id": 3,
+                "title": "Oslo Zoo",
+                "age": "1-10 år",
+                "image": "🦁",
+                "description": "Dyr fra hele verden"
+            }
+        ]
+    },
+    "bergen": {
+        "city": "Bergen",
+        "activities": [
+            {
+                "id": 4,
+                "title": "Fløibanen Viewpoint",
+                "age": "2-12 år",
+                "image": "🏔️",
+                "description": "Spektakulær utsikt over Bergen og fjordene"
+            },
+            {
+                "id": 5,
+                "title": "Bergen Aquarium",
+                "age": "1-10 år",
+                "image": "🐠",
+                "description": "Fisk og sjøkreaturer fra hele verden"
+            },
+            {
+                "id": 6,
+                "title": "Bryggen Historic Wharf",
+                "age": "3-12 år",
+                "image": "🏘️",
+                "description": "Fargerike gamle hus og UNESCO-arv"
+            }
+        ]
+    }
+}
