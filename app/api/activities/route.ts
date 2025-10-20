@@ -71,7 +71,9 @@ function transformActivity(activity: any, municipality: string): ToGedooActivity
     }
 
     const location = contactPos?.description || municipality;
-    const image = basicInfo.image || '/images/placeholder-activity.png';
+    const image = basicInfo.image
+        ? `https://res.cloudinary.com/ungfritid/image/upload/${basicInfo.image}`
+        : '/images/placeholder-activity.png';
     const tags = activity.tags || [];
     const category = tags.length > 0 ? tags[0] : 'Aktivitet';
 
@@ -129,13 +131,9 @@ async function handleActivityRequest(municipality: string, limit: number) {
 
         const ungfritidData = await response.json();
         console.log('[Ungfritid API] Response received, parsing...');
-        console.log('[Ungfritid API] Raw response (first 500 chars):', JSON.stringify(ungfritidData).substring(0, 500));
-        console.log('[Ungfritid API] Response type:', typeof ungfritidData);
-        console.log('[Ungfritid API] Is array?', Array.isArray(ungfritidData));
-        console.log('[Ungfritid API] Top-level keys:', Object.keys(ungfritidData).slice(0, 10));
 
         // Handle response - Ungfritid returns activities in activities.hits
-        let activities: UngfritidActivity[] = [];
+        let activities: any[] = [];
 
         if (ungfritidData.activities?.hits && Array.isArray(ungfritidData.activities.hits)) {
             activities = ungfritidData.activities.hits;
