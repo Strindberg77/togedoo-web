@@ -1,228 +1,90 @@
 'use client';
+import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
 
-import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ToGedooLogo } from '@/app/components/ToGedooLogo';
-
-interface Activity {
-  id: string;
-  title: string;
-  description: string;
-  ageGroup: string;
-  location: string;
-  image: string;
-  category: string;
-  price: string;
-  when: string;
-  municipality: string;
-}
-
-const categoryEmoji: Record<string, string> = {
-  'Musikk': '🎵',
-  'Dans': '💃',
-  'Sport': '⚽',
-  'Kunst': '🎨',
-  'Friluftsliv': '🏕️',
-  'Drama': '🎭',
-  'Film': '🎬',
-  'Fotografi': '📷',
-  'Bok': '📚',
-  'Aktivitet': '🎯',
-};
-
-function getEmojiForCategory(category: string): string {
-  return categoryEmoji[category] || '🎯';
-}
-
-export default function Home() {
-  const [selectedCity, setSelectedCity] = useState('Oslo');
-  const [activities, setActivities] = useState<Activity[]>([]);
-  const [loading, setLoading] = useState(false);
+export default function UngfritidPage() {
+  const [activities, setActivities] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const cities = ['Oslo', 'Bergen', 'Trondheim', 'Stavanger'];
-
   useEffect(() => {
-    fetchActivities();
-  }, [selectedCity]);
-
-  const fetchActivities = async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(
-        `/api/activities?municipality=${selectedCity}&limit=12`
-      );
-
-      if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
-      }
-
-      const data = await response.json();
-
-      if (data.success && data.data) {
-        setActivities(data.data);
-      } else {
-        setError('No activities found');
-        setActivities([]);
-      }
-    } catch (err) {
-      console.error('Error fetching activities:', err);
-      setError('Failed to load activities. Please try again.');
-      setActivities([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+    fetch('/api/activities')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) {
+          setActivities(data.data);
+        } else {
+          setError('Kunne ikke hente aktiviteter.');
+        }
+      })
+      .catch((err) => {
+        console.error('Feil ved henting:', err);
+        setError('Noe gikk galt.');
+      })
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100">
-      {/* Navigation */}
-      <nav className="border-b border-slate-200 bg-white shadow-sm">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-2">
-              <ToGedooLogo />
-            </div>
-            <div className="text-sm text-slate-600">
-              Aktiviteter for norske familier
-            </div>
-          </div>
-        </div>
-      </nav>
+    <main className="p-6 max-w-3xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4">Ungfritid Aktiviteter</h1>
 
-      {/* Hero Section */}
-      <section className="bg-white border-b border-slate-200 py-16">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="text-center">
-            <h1 className="text-4xl font-bold tracking-tight text-slate-900 sm:text-5xl">
-              Oppdag morsomme og lærerike aktiviteter for barna dine
-            </h1>
-            <p className="mt-4 text-lg text-slate-600">
-              <span className="inline-block bg-red-100 text-red-800 px-4 py-2 rounded-full">
-                ❤️ Spesielt designet for norske familier
-              </span>
-            </p>
-          </div>
-        </div>
-      </section>
+      {loading && <p>Laster aktiviteter...</p>}
+      {error && <p className="text-red-500">{error}</p>}
+      {!loading && !error && activities.length === 0 && <p>Ingen aktiviteter funnet.</p>}
 
-      {/* City Selector */}
-      <section className="bg-white border-b border-slate-200 py-8">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-2">
-              <span className="text-slate-700 font-medium">📍 Velg by:</span>
-              <Select value={selectedCity} onValueChange={setSelectedCity}>
-                <SelectTrigger className="w-48">
-                  <SelectValue placeholder="Velg by" />
-                </SelectTrigger>
-                <SelectContent>
-                  {cities.map((city) => (
-                    <SelectItem key={city} value={city}>
-                      {city}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <Button
-              onClick={fetchActivities}
-              disabled={loading}
-              className="bg-slate-900 hover:bg-slate-800 text-white"
+      <ul className="space-y-4">
+        {activities.map((activity, index) => (
+          <li key={`${activity.id || activity.title}-${index}`}>
+            {/*
+              ENDRING HER:
+              1. Bruker 'activity.url' (fra Ungfritids 'a.webpage').
+              2. Setter 'target="_blank"' for å åpne i ny fane (anbefalt for eksterne lenker).
+              3. Setter 'rel="noopener noreferrer"' for sikkerhet.
+            */}
+            <Link
+              href={activity.url || '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block" // Sikrer at lenken fyller hele li-elementet
             >
-              {loading ? 'Laster...' : 'Se Aktiviteter'}
-            </Button>
-          </div>
-        </div>
-      </section>
+              <div className="border p-4 rounded shadow-sm bg-white hover:bg-gray-50 transition">
+                <h2 className="text-lg font-semibold mb-1 text-blue-600">
+                  {activity.title}
+                </h2>
+                <p><strong>Organisasjon:</strong> {activity.org || 'Ukjent'}</p>
+                <p><strong>Kategori:</strong> {activity.appCategory || 'Aktivitet'}</p> {/* Viser mappet kategori! */}
+                <p><strong>Målgruppe:</strong> {activity.targetAudience || 'Familie'}</p> {/* Viser mappet målgruppe! */}
+                {/* Viser full adresse hvis den finnes, ellers viser vi kommunen alene */}
+                {activity.address && <p><strong>Adresse:</strong> {activity.address}</p>}
 
-      {/* Activities Grid */}
-      <section className="py-16">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          {error && (
-            <div className="mb-8 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800">
-              {error}
-            </div>
-          )}
+                {/* Viser kommune. Hvis både adresse og kommune mangler, viser vi 'Ukjent sted' */}
+                <p>
+                  <strong>Sted:</strong> {activity.kommune || activity.address || 'Ukjent sted'}
+                  {/* Bonus: Hvis du får postnummer, kan du legge det til her */}
+                  {/* {activity.postcode && `, ${activity.postcode}`} */}
+                </p>
 
-          {loading ? (
-            <div className="flex items-center justify-center py-16">
-              <div className="text-lg text-slate-600">Laster aktiviteter...</div>
-            </div>
-          ) : activities.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {activities.map((activity) => (
-                <Card
-                  key={activity.id}
-                  className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer group"
-                >
-                  {/* Image with Emoji */}
-                  <div className="relative h-48 bg-gradient-to-br from-blue-100 to-slate-200 overflow-hidden flex items-center justify-center">
-                    <div className="text-7xl">
-                      {getEmojiForCategory(activity.category)}
-                    </div>
-                    <div className="absolute top-3 right-3 bg-white rounded-full px-3 py-1 text-sm font-medium text-slate-900 shadow-md">
-                      {activity.price}
-                    </div>
-                  </div>
+                {activity.description && (
+                  <p className="mt-2 text-sm text-gray-700">
+                    {activity.description}
+                  </p>
+                )}
 
-                  {/* Content */}
-                  <div className="p-4">
-                    <h3 className="font-bold text-slate-900 line-clamp-2 mb-2 capitalize">
-                      {activity.title}
-                    </h3>
+                {activity.days && activity.days.length > 0 && (
+                  <p className="text-sm text-gray-600 mt-1">
+                    <strong>Dager:</strong> {activity.days.join(', ')}
+                  </p>
+                )}
 
-                    <p className="text-sm text-slate-600 line-clamp-2 mb-3">
-                      {activity.description}
-                    </p>
-
-                    {/* Tags */}
-                    <div className="flex flex-wrap gap-2 mb-3">
-                      <span className="inline-block bg-blue-100 text-blue-800 px-2.5 py-1 rounded text-xs font-medium">
-                        {activity.ageGroup}
-                      </span>
-                      <span className="inline-block bg-slate-100 text-slate-700 px-2.5 py-1 rounded text-xs font-medium">
-                        {activity.category}
-                      </span>
-                    </div>
-
-                    {/* When */}
-                    <div className="text-xs text-slate-500 flex items-center gap-1">
-                      <span>⏰</span> {activity.when}
-                    </div>
-
-                    {/* Location */}
-                    <div className="text-xs text-slate-500 flex items-center gap-1 mt-1">
-                      <span>📍</span>
-                      <span className="line-clamp-1">{activity.location}</span>
-                    </div>
-                  </div>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-16">
-              <div className="text-lg text-slate-600">
-                Ingen aktiviteter funnet for {selectedCity}
+                {/* Bonus: Vis en pil for å indikere ekstern lenke */}
+                <p className="text-sm text-blue-500 mt-2 hover:text-blue-700">
+                  Se detaljer hos Ungfritid →
+                </p>
               </div>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="bg-slate-900 text-white py-12 mt-16">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="text-center">
-            <p>© 2025 ToGeDoo - Aktiviteter for norske familier</p>
-          </div>
-        </div>
-      </footer>
-    </div>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </main>
   );
 }
