@@ -1,28 +1,70 @@
 // app/api/activities/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchUngfritidActivities } from '../../../lib/ungfritid';
+import { scrapeDeichman } from '../../../lib/deichman';
+import { scrapeBergen } from '../../../lib/bergen';
 
 export async function GET(request: NextRequest) {
     try {
-        // Vi ignorerer request.url params her, bruker interne defaults i fetch‑funksjonen
-        const result = await fetchUngfritidActivities();
+        const { searchParams } = new URL(request.url);
+        const municipality = searchParams.get('municipality') || undefined;
+        const targetAudience = searchParams.get('targetAudience') || undefined;
 
-        const activities = result.data || [];  // Her er listen med alle aktiviteter
+        console.log(`[Activities API] Request: municipality=${municipality}, targetAudience=${targetAudience}`);
 
-        console.log(`[Ungfritid API] ${activities.length} aktiviteter returnert`);
+        // Hent fra begge byer parallelt
+        const [deichmanResult, bergenResult] = await Promise.all([
+            scrapeDeichman({ targetAudience }),
+            scrapeBergen(),
+        ]);
+
+        console.log(`[Activities API] Deichman: ${deichmanResult.count}, Bergen: ${bergenResult.count}`);
+
+        // Kombiner og filtrer
+        let allActivities = [
+            ...(deichmanResult.data || []).map(event => ({
+                ...event,
+                source: 'deichman.no',
+            })),
+            ...(bergenResult.data || []).map(event => ({
+                ...event,
+                source: 'bergenbibliotek.no',
+            })),
+        ];
+
+        // Filtrer på by hvis spesifisert
+        if (municipality) {
+            allActivities = allActivities.filter(act =>
+                act.municipality.toLowerCase() === municipality.toLowerCase()
+            );
+        }
+
+        // Filtrer på målgruppe hvis spesifisert
+        if (targetAudience) {
+            allActivities = allActivities.filter(act =>
+                act.targetAudience.toLowerCase() === targetAudience.toLowerCase()
+            );
+        }
 
         return NextResponse.json({
             success: true,
-            data: activities,
-            count: activities.length,
+            data: allActivities,
+            count: allActivities.length,
+            sources: {
+                oslo: deichmanResult.count || 0,
+                bergen: bergenResult.count || 0,
+            },
+            filters: {
+                municipality: municipality || 'alle',
+                targetAudience: targetAudience || 'alle',
+            },
             timestamp: new Date().toISOString(),
         });
     } catch (error) {
-        console.error('[Ungfritid API Error]:', error);
+        console.error('[Activities API Error]:', error);
         return NextResponse.json(
             {
                 success: false,
-                error: 'Failed to fetch activities from Ungfritid',
+                error: 'Failed to fetch activities',
                 details: error instanceof Error ? error.message : String(error),
             },
             { status: 500 }
