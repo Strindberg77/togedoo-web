@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Test files
+*.html
+*_test.json
+*_activities.json
+deichman_*.json
+bergen_*.html
+
+# Artifacts
+next
+togedoo-web@*
