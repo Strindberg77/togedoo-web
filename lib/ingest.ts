@@ -103,8 +103,13 @@ export async function ingestSource(slug: string): Promise<IngestResult> {
         .select('id, active')
         .eq('slug', slug)
         .maybeSingle();
-    if (sourceError || !source) {
-        return { slug, fetched: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Kilden ${slug} finnes ikke i sources-tabellen` };
+    if (sourceError) {
+        return { slug, fetched: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Oppslag mot sources feilet: ${sourceError.message}` };
+    }
+    if (!source) {
+        // 0 rader synlige. sources har RLS uten policies, så dette betyr enten
+        // at raden mangler, eller at nøkkelen ikke har service-nivå-tilgang.
+        return { slug, fetched: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Kilden ${slug} er ikke synlig i sources-tabellen (mangler raden, eller har nøkkelen ikke service-tilgang forbi RLS?)` };
     }
     if (!source.active) {
         return { slug, fetched: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: 'Kilden er deaktivert' };
