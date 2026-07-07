@@ -70,6 +70,35 @@ oppsettet er gjort.
 
 `GET|POST /api/sync` — full ingestion, krever `Authorization: Bearer CRON_SECRET`.
 
+## Arrangørflyt (oppgave 2.9)
+
+Arrangører legger inn events selv på `/arranger`: skjema som gulv, med
+lenketolkning oppå (lim inn URL → schema.org JSON-LD eller OpenGraph
+foreslår feltverdier). Alt lander som `status = 'pending'` på kilden
+`arrangor-innsending` og er usynlig til det publiseres.
+
+Engangsoppsett: kjør `supabase/migrations/0003_organizer_flow.sql` og sett
+`ADMIN_SECRET` i Vercel (samme mønster som `CRON_SECRET`).
+
+| Endepunkt | Auth | Beskrivelse |
+|---|---|---|
+| `POST /api/organizer/parse` | ingen | `{ url }` → foreslåtte feltverdier |
+| `POST /api/organizer/submit` | ingen (rate-limited) | Validerer, geokoder, lagrer som pending |
+| `GET /api/admin/pending` | `Bearer ADMIN_SECRET` | Lister innsendinger som venter |
+| `POST /api/admin/moderate` | `Bearer ADMIN_SECRET` | `{ id, action: "publish"\|"reject" }` |
+
+Moderering fra terminalen:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_SECRET" \
+  https://togedoo-web.vercel.app/api/admin/pending
+
+curl -X POST -H "Authorization: Bearer $ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"<uuid>","action":"publish"}' \
+  https://togedoo-web.vercel.app/api/admin/moderate
+```
+
 ## Kildestrategi per kategori (oppgave 2.2)
 
 | Kategori | Strategi | Vedlikehold |
