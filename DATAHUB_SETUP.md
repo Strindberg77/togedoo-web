@@ -87,6 +87,39 @@ Engangsoppsett: kjør `supabase/migrations/0003_organizer_flow.sql` og sett
 | `GET /api/admin/pending` | `Bearer ADMIN_SECRET` | Lister innsendinger som venter |
 | `POST /api/admin/moderate` | `Bearer ADMIN_SECRET` | `{ id, action: "publish"\|"reject" }` |
 
+### Arrangørkontoer
+
+Faste arrangører logger inn med magic link (Supabase Auth) på
+`/arranger/konto`: profil, "mine aktiviteter" med status, og dupliser-knapp
+som gjenbruker et tidligere arrangement. Hver konto får sin egen kilde-rad
+(`sources.organizer_id`); anonym innsending bruker fortsatt den delte
+kilden. Verifiserte kontoer (`organizers.verified`, settes via admin-API-et)
+auto-publiserer innsendingene sine. Bekreftelses-e-post (Resend) er opt-in
+per konto og default av.
+
+Engangsoppsett: kjør `supabase/migrations/0004_organizer_accounts.sql`,
+skru på e-post-innlogging i Supabase Auth (på som standard) og legg
+`https://togedoo-web.vercel.app/arranger/konto` i Auth → URL Configuration
+→ Redirect URLs. Miljøvariabler i Vercel:
+
+| Variabel | Type | Verdi |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | offentlig, bygges inn | samme som `SUPABASE_URL` |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | offentlig, bygges inn | `sb_publishable_…` (IKKE secret-nøkkelen) |
+| `RESEND_API_KEY` | hemmelig, kun server | `re_…` fra Resend |
+| `EMAIL_FROM` | konfig | f.eks. `Togedoo <ikkesvar@togedoo.com>` |
+
+`NEXT_PUBLIC_*` leses ved **bygging**, ikke ved kjøring — de krever en ny
+deploy med nytt bygg for å tre i kraft. Uten dem skjules kontofunksjonen
+og skjemaet fungerer som før. Uten `RESEND_API_KEY`/`EMAIL_FROM` sendes
+ingen e-post (stille av), selv om arrangører har slått på varsling.
+
+| Endepunkt | Auth | Beskrivelse |
+|---|---|---|
+| `GET/PATCH /api/organizer/me` | Bearer (brukersesjon) | Profil: navn, varslingsvalg |
+| `GET /api/organizer/activities` | Bearer (brukersesjon) | Mine aktiviteter, alle statuser |
+| `GET/PATCH /api/admin/organizers` | `Bearer ADMIN_SECRET` | Liste kontoer; `{ id, verified }` |
+
 Moderering fra terminalen:
 
 ```bash

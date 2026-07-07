@@ -1,8 +1,12 @@
 'use client';
 // Arrangørskjemaet (oppgave 2.9). Lim inn en lenke øverst for å
 // forhåndsutfylle feltene, eller fyll inn manuelt. Innsendinger modereres
-// før de blir synlige i appen.
-import React, { useState } from 'react';
+// før de blir synlige i appen — unntatt fra verifiserte arrangørkontoer,
+// som publiserer direkte. Kontosiden kan også forhåndsutfylle skjemaet
+// via sessionStorage (dupliser-funksjonen).
+import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { supabaseBrowser } from '../../lib/supabaseBrowser';
 
 const CATEGORIES = ['Kultur', 'Læring', 'Kreativt', 'Aktivitet'];
 const TARGET_AUDIENCES = ['Barn', 'Ungdom', 'Familie', 'For alle'];
@@ -72,6 +76,37 @@ export default function ArrangorPage() {
     const [submitting, setSubmitting] = useState(false);
     const [errors, setErrors] = useState<string[]>([]);
     const [submitted, setSubmitted] = useState(false);
+    const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
+    const [sessionToken, setSessionToken] = useState<string | null>(null);
+    const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+
+    useEffect(() => {
+        // Dupliser-prefill fra kontosiden (uten dato — ny dato velges her).
+        const stored = sessionStorage.getItem('togedoo-dupliser');
+        if (stored) {
+            sessionStorage.removeItem('togedoo-dupliser');
+            try {
+                const dup = JSON.parse(stored);
+                setForm((prev) => ({ ...prev, ...dup }));
+            } catch {
+                // Ugyldig innhold; ignorer.
+            }
+        }
+
+        const supabase = supabaseBrowser();
+        if (!supabase) return;
+        supabase.auth.getSession().then(({ data }) => {
+            const session = data.session;
+            if (!session) return;
+            setSessionToken(session.access_token);
+            setSessionEmail(session.user.email ?? null);
+            if (session.user.email) {
+                setForm((prev) =>
+                    prev.contactEmail ? prev : { ...prev, contactEmail: session.user.email! }
+                );
+            }
+        });
+    }, []);
 
     const set = (field: keyof FormState, value: string | boolean) =>
         setForm((f) => ({ ...f, [field]: value }));
@@ -144,7 +179,10 @@ export default function ArrangorPage() {
         try {
             const res = await fetch('/api/organizer/submit', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+                },
                 body: JSON.stringify({
                     ...form,
                     startsAt,
@@ -158,6 +196,7 @@ export default function ArrangorPage() {
             });
             const data = await res.json();
             if (data.success) {
+                setSubmittedMessage(data.message ?? null);
                 setSubmitted(true);
             } else {
                 setErrors(data.errors ?? [data.error ?? 'Innsendingen feilet.']);
@@ -174,8 +213,9 @@ export default function ArrangorPage() {
             <main className="p-6 max-w-2xl mx-auto">
                 <h1 className="text-2xl font-bold mb-4">Takk for innsendingen!</h1>
                 <p className="mb-4">
-                    Aktiviteten er mottatt og blir synlig i Togedoo etter en rask gjennomgang. Vi
-                    kontakter deg på e-post hvis noe må avklares.
+                    {submittedMessage ??
+                        'Aktiviteten er mottatt og blir synlig i Togedoo etter en rask gjennomgang.'}{' '}
+                    Vi kontakter deg på e-post hvis noe må avklares.
                 </p>
                 <button
                     className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
@@ -198,9 +238,27 @@ export default function ArrangorPage() {
     return (
         <main className="p-6 max-w-2xl mx-auto">
             <h1 className="text-2xl font-bold mb-2">Legg inn aktivitet</h1>
-            <p className="mb-6 text-gray-600">
+            <p className="mb-2 text-gray-600">
                 Arrangerer du noe for barn, ungdom eller familier? Legg det inn her, så blir det
                 synlig i Togedoo etter en rask gjennomgang.
+            </p>
+            <p className="mb-6 text-sm">
+                {sessionEmail ? (
+                    <>
+                        Innlogget som <strong>{sessionEmail}</strong> — innsendingen knyttes til{' '}
+                        <Link href="/arranger/konto" className="text-blue-600 underline">
+                            kontoen din
+                        </Link>.
+                    </>
+                ) : (
+                    <>
+                        Arrangerer du ofte?{' '}
+                        <Link href="/arranger/konto" className="text-blue-600 underline">
+                            Logg inn med arrangørkonto
+                        </Link>{' '}
+                        for å samle og gjenbruke aktivitetene dine.
+                    </>
+                )}
             </p>
 
             <div className="border rounded p-4 mb-8 bg-gray-50">

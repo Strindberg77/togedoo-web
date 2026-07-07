@@ -1,11 +1,14 @@
 // app/api/organizer/submit/route.ts
 // Tar imot arrangør-innsendinger fra skjemaet på /arranger. Geokoder
 // server-side og lagrer som status='pending' — synlig først etter at
-// admin-API-et publiserer.
+// admin-API-et publiserer. Innloggede arrangører får innsendingen på sin
+// egen kilde; verifiserte kontoer publiserer direkte.
 import { NextRequest, NextResponse } from 'next/server';
 import { isDatahubConfigured, supabaseAdmin } from '../../../../lib/supabase';
 import { validateSubmission } from '../../../../lib/organizer';
 import { geocode } from '../../../../lib/geocode';
+import { sendSubmissionConfirmation } from '../../../../lib/email';
+import { getOrganizer, ensureOrganizerSource } from '../auth';
 
 const ORGANIZER_SOURCE_SLUG = 'arrangor-innsending';
 
@@ -36,12 +39,17 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'ukjent';
-        if (isRateLimited(ip)) {
-            return NextResponse.json(
-                { success: false, error: 'For mange innsendinger. Prøv igjen om en time.' },
-                { status: 429 }
-            );
+        // Innlogget arrangør? Ugyldig/utløpt token behandles som anonym.
+        const organizer = await getOrganizer(request);
+
+        if (!organizer) {
+            const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'ukjent';
+            if (isRateLimited(ip)) {
+                return NextResponse.json(
+                    { success: false, error: 'For mange innsendinger. Prøv igjen om en time.' },
+                    { status: 429 }
+                );
+            }
         }
 
         const body = await request.json().catch(() => null);
@@ -51,26 +59,33 @@ export async function POST(request: NextRequest) {
         }
 
         const db = supabaseAdmin();
-        const { data: source, error: sourceError } = await db
-            .from('sources')
-            .select('id, active')
-            .eq('slug', ORGANIZER_SOURCE_SLUG)
-            .maybeSingle();
-        if (sourceError) {
-            throw new Error(`Oppslag mot sources feilet: ${sourceError.message}`);
+        let sourceId: string;
+        if (organizer) {
+            sourceId = (await ensureOrganizerSource(db, organizer)).id;
+        } else {
+            const { data: source, error: sourceError } = await db
+                .from('sources')
+                .select('id, active')
+                .eq('slug', ORGANIZER_SOURCE_SLUG)
+                .maybeSingle();
+            if (sourceError) {
+                throw new Error(`Oppslag mot sources feilet: ${sourceError.message}`);
+            }
+            if (!source || !source.active) {
+                throw new Error(
+                    `Kilden ${ORGANIZER_SOURCE_SLUG} mangler eller er deaktivert (kjør migrasjon 0003).`
+                );
+            }
+            sourceId = source.id;
         }
-        if (!source || !source.active) {
-            throw new Error(
-                `Kilden ${ORGANIZER_SOURCE_SLUG} mangler eller er deaktivert (kjør migrasjon 0003).`
-            );
-        }
+        const published = !!organizer?.verified;
 
         const geoQuery = submission.address || submission.venueName;
         const geo = geoQuery ? await geocode(geoQuery, submission.municipality) : null;
 
         const externalId = `innsending-${crypto.randomUUID()}`;
         const { error: insertError } = await db.from('activities').insert({
-            source_id: source.id,
+            source_id: sourceId,
             external_id: externalId,
             kind: 'event',
             title: submission.title,
@@ -88,16 +103,26 @@ export async function POST(request: NextRequest) {
             price_text: submission.priceText,
             url: submission.url,
             image_url: submission.imageUrl,
-            contact_email: submission.contactEmail,
-            status: 'pending',
+            contact_email: organizer?.contact_email ?? submission.contactEmail,
+            status: published ? 'published' : 'pending',
         });
         if (insertError) throw new Error(insertError.message);
+
+        // Opt-in bekreftelse; e-postfeil skal aldri velte innsendingen.
+        if (organizer?.notify_on_submission) {
+            sendSubmissionConfirmation(organizer.contact_email, submission.title, published).catch(
+                (err) => console.error('[Organizer Submit] E-postbekreftelse feilet:', err)
+            );
+        }
 
         return NextResponse.json({
             success: true,
             externalId,
             geocoded: !!geo,
-            message: 'Takk! Aktiviteten er mottatt og publiseres etter en rask gjennomgang.',
+            status: published ? 'published' : 'pending',
+            message: published
+                ? 'Aktiviteten er publisert og synlig i Togedoo.'
+                : 'Takk! Aktiviteten er mottatt og publiseres etter en rask gjennomgang.',
         });
     } catch (error) {
         console.error('[Organizer Submit Error]:', error);
