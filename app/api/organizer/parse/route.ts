@@ -4,6 +4,8 @@
 // Resultatet forhåndsutfyller bare skjemaet — ingenting lagres her.
 import { NextRequest, NextResponse } from 'next/server';
 import { parseEventUrl } from '../../../../lib/organizer';
+import { isDatahubConfigured } from '../../../../lib/supabase';
+import { geocode } from '../../../../lib/geocode';
 
 export const maxDuration = 30;
 
@@ -16,6 +18,14 @@ export async function POST(request: NextRequest) {
         }
 
         const { fields, parser } = await parseEventUrl(url);
+
+        // Mangler kilden strukturert adresse, foreslå en via geokoding av
+        // stedsnavnet — arrangøren kan alltid overstyre i skjemaet.
+        if (!fields.address && fields.venueName && isDatahubConfigured()) {
+            const geo = await geocode(fields.venueName, fields.municipality).catch(() => null);
+            if (geo?.formattedAddress) fields.address = geo.formattedAddress;
+        }
+
         return NextResponse.json({ success: true, parser, fields });
     } catch (error) {
         return NextResponse.json(

@@ -15,8 +15,10 @@ interface FormState {
     venueName: string;
     address: string;
     municipality: string;
-    startsAt: string;
-    endsAt: string;
+    startsDate: string;
+    startsTime: string;
+    endsDate: string;
+    endsTime: string;
     isFree: boolean;
     priceText: string;
     url: string;
@@ -32,8 +34,10 @@ const EMPTY_FORM: FormState = {
     venueName: '',
     address: '',
     municipality: '',
-    startsAt: '',
-    endsAt: '',
+    startsDate: '',
+    startsTime: '',
+    endsDate: '',
+    endsTime: '',
     isFree: true,
     priceText: '',
     url: '',
@@ -41,13 +45,23 @@ const EMPTY_FORM: FormState = {
     contactEmail: '',
 };
 
-/** ISO-tidsstempel -> verdi for <input type="datetime-local"> (lokal tid). */
-function toLocalInputValue(iso?: string): string {
-    if (!iso) return '';
+/** ISO-tidsstempel -> lokale {date, time}-verdier for input-feltene. */
+function toLocalParts(iso?: string): { date: string; time: string } {
+    if (!iso) return { date: '', time: '' };
     const d = new Date(iso);
-    if (isNaN(d.getTime())) return '';
+    if (isNaN(d.getTime())) return { date: '', time: '' };
     const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return {
+        date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+        time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    };
+}
+
+/** Lokale dato- og tidsfelter -> ISO, eller null hvis ugyldig/ufullstendig. */
+function partsToIso(date: string, time: string): string | null {
+    if (!date || !time) return null;
+    const d = new Date(`${date}T${time}`);
+    return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 export default function ArrangorPage() {
@@ -78,6 +92,8 @@ export default function ArrangorPage() {
                 return;
             }
             const f = data.fields ?? {};
+            const starts = toLocalParts(f.startsAt);
+            const ends = toLocalParts(f.endsAt);
             setForm((prev) => ({
                 ...prev,
                 title: f.title ?? prev.title,
@@ -85,8 +101,10 @@ export default function ArrangorPage() {
                 venueName: f.venueName ?? prev.venueName,
                 address: f.address ?? prev.address,
                 municipality: f.municipality ?? prev.municipality,
-                startsAt: toLocalInputValue(f.startsAt) || prev.startsAt,
-                endsAt: toLocalInputValue(f.endsAt) || prev.endsAt,
+                startsDate: starts.date || prev.startsDate,
+                startsTime: starts.time || prev.startsTime,
+                endsDate: ends.date || prev.endsDate,
+                endsTime: ends.time || prev.endsTime,
                 isFree: f.isFree ?? prev.isFree,
                 priceText: f.priceText ?? prev.priceText,
                 url: f.url ?? prev.url,
@@ -108,16 +126,29 @@ export default function ArrangorPage() {
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
-        setSubmitting(true);
         setErrors([]);
+
+        const startsAt = partsToIso(form.startsDate, form.startsTime);
+        if (!startsAt) {
+            setErrors(['Oppgi både startdato og klokkeslett.']);
+            return;
+        }
+        const hasEndsInput = !!(form.endsDate || form.endsTime);
+        const endsAt = partsToIso(form.endsDate, form.endsTime);
+        if (hasEndsInput && !endsAt) {
+            setErrors(['Oppgi både dato og klokkeslett for slutt, eller la begge stå tomme.']);
+            return;
+        }
+
+        setSubmitting(true);
         try {
             const res = await fetch('/api/organizer/submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     ...form,
-                    startsAt: form.startsAt ? new Date(form.startsAt).toISOString() : '',
-                    endsAt: form.endsAt ? new Date(form.endsAt).toISOString() : null,
+                    startsAt,
+                    endsAt,
                     venueName: form.venueName || null,
                     address: form.address || null,
                     priceText: form.priceText || null,
@@ -246,22 +277,43 @@ export default function ArrangorPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                     <div>
-                        <label className={labelCls}>Starter *</label>
+                        <label className={labelCls}>Startdato *</label>
                         <input
-                            type="datetime-local"
+                            type="date"
                             className={inputCls}
                             required
-                            value={form.startsAt}
-                            onChange={(e) => set('startsAt', e.target.value)}
+                            value={form.startsDate}
+                            onChange={(e) => set('startsDate', e.target.value)}
                         />
                     </div>
                     <div>
-                        <label className={labelCls}>Slutter</label>
+                        <label className={labelCls}>Klokkeslett start *</label>
                         <input
-                            type="datetime-local"
+                            type="time"
                             className={inputCls}
-                            value={form.endsAt}
-                            onChange={(e) => set('endsAt', e.target.value)}
+                            required
+                            value={form.startsTime}
+                            onChange={(e) => set('startsTime', e.target.value)}
+                        />
+                    </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className={labelCls}>Sluttdato</label>
+                        <input
+                            type="date"
+                            className={inputCls}
+                            value={form.endsDate}
+                            onChange={(e) => set('endsDate', e.target.value)}
+                        />
+                    </div>
+                    <div>
+                        <label className={labelCls}>Klokkeslett slutt</label>
+                        <input
+                            type="time"
+                            className={inputCls}
+                            value={form.endsTime}
+                            onChange={(e) => set('endsTime', e.target.value)}
                         />
                     </div>
                 </div>
