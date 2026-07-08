@@ -6,6 +6,18 @@
 
 export const CATEGORIES = ['Kultur', 'Læring', 'Kreativt', 'Aktivitet'] as const;
 export const TARGET_AUDIENCES = ['Barn', 'Ungdom', 'Familie', 'For alle'] as const;
+export const RECURRENCE_FREQUENCIES = ['weekly', 'biweekly', 'monthly'] as const;
+export type RecurrenceFrequency = (typeof RECURRENCE_FREQUENCIES)[number];
+
+// Én rad per forekomst i activities (samme modell som Flutter-appen),
+// ikke RRULE-ekspansjon — enklere å moderere, filtrere og vise.
+export const MAX_OCCURRENCES = 25;
+
+export interface Recurrence {
+    frequency: RecurrenceFrequency;
+    count: number | null; // antall ganger, ELLER:
+    until: string | null; // ISO-dato, siste mulige forekomst
+}
 
 export interface OrganizerSubmission {
     title: string;
@@ -22,6 +34,7 @@ export interface OrganizerSubmission {
     url: string | null;
     imageUrl: string | null;
     contactEmail: string;
+    recurrence: Recurrence | null;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -87,6 +100,11 @@ export function validateSubmission(body: unknown): {
         if (isNaN(Date.parse(endsAtRaw))) errors.push('Sluttidspunktet er ikke en gyldig dato/tid.');
         else endsAt = new Date(endsAtRaw).toISOString();
     }
+    if (startsAt && endsAt && Date.parse(endsAt) <= Date.parse(startsAt)) {
+        errors.push('Slutt må være etter start.');
+    }
+
+    const recurrence = parseRecurrence(b.recurrence, startsAt, errors);
 
     const contactEmail = str(b.contactEmail, 200);
     if (!contactEmail || !EMAIL_RE.test(contactEmail)) {
@@ -117,9 +135,106 @@ export function validateSubmission(body: unknown): {
             url: httpUrl(b.url),
             imageUrl: httpUrl(b.imageUrl),
             contactEmail: contactEmail!,
+            recurrence,
         },
         errors: [],
     };
+}
+
+function parseRecurrence(raw: unknown, startsAt: string | null, errors: string[]): Recurrence | null {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw !== 'object') {
+        errors.push('Ugyldig gjentakelse.');
+        return null;
+    }
+    const r = raw as Record<string, unknown>;
+
+    const frequency = r.frequency;
+    if (!RECURRENCE_FREQUENCIES.includes(frequency as RecurrenceFrequency)) {
+        errors.push('Ugyldig frekvens. Gyldige: ukentlig, annenhver uke, månedlig.');
+        return null;
+    }
+
+    const hasCount = r.count !== null && r.count !== undefined && r.count !== '';
+    const hasUntil = typeof r.until === 'string' && r.until.trim() !== '';
+    if (hasCount === hasUntil) {
+        errors.push('Velg enten antall ganger eller til-dato for gjentakelsen (ikke begge).');
+        return null;
+    }
+
+    let count: number | null = null;
+    let until: string | null = null;
+    if (hasCount) {
+        count = Number(r.count);
+        if (!Number.isInteger(count) || count < 2 || count > MAX_OCCURRENCES) {
+            errors.push(`Antall ganger må være mellom 2 og ${MAX_OCCURRENCES}.`);
+            return null;
+        }
+    } else {
+        const parsed = Date.parse(String(r.until));
+        if (isNaN(parsed)) {
+            errors.push('Til-datoen for gjentakelsen er ugyldig.');
+            return null;
+        }
+        if (startsAt && parsed <= Date.parse(startsAt)) {
+            errors.push('Til-datoen for gjentakelsen må være etter startdatoen.');
+            return null;
+        }
+        until = new Date(parsed).toISOString();
+    }
+
+    return { frequency: frequency as RecurrenceFrequency, count, until };
+}
+
+/** Legger til måneder med klamping: 31. jan + 1 mnd = 28./29. feb, ikke 3. mars. */
+function addMonthsClamped(date: Date, months: number): Date {
+    const result = new Date(date);
+    const day = result.getDate();
+    result.setMonth(result.getMonth() + months);
+    if (result.getDate() !== day) result.setDate(0);
+    return result;
+}
+
+function shift(iso: string, frequency: RecurrenceFrequency, step: number): Date {
+    const d = new Date(iso);
+    if (frequency === 'monthly') return addMonthsClamped(d, step);
+    d.setDate(d.getDate() + (frequency === 'weekly' ? 7 : 14) * step);
+    return d;
+}
+
+/**
+ * Ekspanderer en (validert) gjentakelse til konkrete forekomster.
+ * Returnerer en feilstreng i stedet hvis til-datoen gir flere enn
+ * MAX_OCCURRENCES forekomster.
+ */
+export function expandOccurrences(
+    startsAt: string,
+    endsAt: string | null,
+    recurrence: Recurrence | null
+): { occurrences: { startsAt: string; endsAt: string | null }[] } | { error: string } {
+    if (!recurrence) return { occurrences: [{ startsAt, endsAt }] };
+
+    const total = recurrence.count ?? MAX_OCCURRENCES + 1;
+    // Til-dato gjelder ut hele dagen, uansett klokkeslett på forekomsten.
+    const untilMs = recurrence.until
+        ? Date.parse(recurrence.until) + 24 * 60 * 60 * 1000 - 1
+        : Infinity;
+
+    const occurrences: { startsAt: string; endsAt: string | null }[] = [];
+    for (let i = 0; i < total; i++) {
+        const start = shift(startsAt, recurrence.frequency, i);
+        if (start.getTime() > untilMs) break;
+        if (occurrences.length >= MAX_OCCURRENCES && recurrence.until) {
+            return {
+                error: `Gjentakelsen gir flere enn ${MAX_OCCURRENCES} forekomster. Velg en tidligere til-dato eller bruk antall ganger (maks ${MAX_OCCURRENCES}).`,
+            };
+        }
+        occurrences.push({
+            startsAt: start.toISOString(),
+            endsAt: endsAt ? shift(endsAt, recurrence.frequency, i).toISOString() : null,
+        });
+    }
+    return { occurrences };
 }
 
 // ---------------------------------------------------------------------------

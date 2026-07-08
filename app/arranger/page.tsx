@@ -7,9 +7,20 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabaseBrowser } from '../../lib/supabaseBrowser';
+import {
+    expandOccurrences,
+    MAX_OCCURRENCES,
+    Recurrence,
+    RecurrenceFrequency,
+} from '../../lib/organizer';
 
 const CATEGORIES = ['Kultur', 'Læring', 'Kreativt', 'Aktivitet'];
 const TARGET_AUDIENCES = ['Barn', 'Ungdom', 'Familie', 'For alle'];
+const FREQUENCY_LABELS: Record<RecurrenceFrequency, string> = {
+    weekly: 'Ukentlig',
+    biweekly: 'Annenhver uke',
+    monthly: 'Månedlig',
+};
 
 interface FormState {
     title: string;
@@ -77,6 +88,14 @@ export default function ArrangorPage() {
     const [errors, setErrors] = useState<string[]>([]);
     const [submitted, setSubmitted] = useState(false);
     const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
+    // Dato-UI: sluttdato og gjentakelse er skjult bak hver sin toggle,
+    // siden de fleste arrangementer er én enkelthendelse på én dag.
+    const [multiDay, setMultiDay] = useState(false);
+    const [recurring, setRecurring] = useState(false);
+    const [frequency, setFrequency] = useState<RecurrenceFrequency>('weekly');
+    const [recurrenceMethod, setRecurrenceMethod] = useState<'count' | 'until'>('count');
+    const [recurrenceCount, setRecurrenceCount] = useState('4');
+    const [recurrenceUntil, setRecurrenceUntil] = useState('');
     const [sessionToken, setSessionToken] = useState<string | null>(null);
     const [sessionEmail, setSessionEmail] = useState<string | null>(null);
 
@@ -111,6 +130,38 @@ export default function ArrangorPage() {
     const set = (field: keyof FormState, value: string | boolean) =>
         setForm((f) => ({ ...f, [field]: value }));
 
+    function buildRecurrence(): Recurrence | null {
+        if (!recurring) return null;
+        return {
+            frequency,
+            count: recurrenceMethod === 'count' ? Number(recurrenceCount) || 0 : null,
+            until: recurrenceMethod === 'until' && recurrenceUntil ? recurrenceUntil : null,
+        };
+    }
+
+    /** Sammendrag for gjentakelse: bruker samme ekspansjon som serveren. */
+    function recurrenceSummary(): { text: string; isError: boolean } | null {
+        if (!recurring) return null;
+        const startsAt = partsToIso(form.startsDate, form.startsTime);
+        if (!startsAt) return { text: 'Fyll inn dato og starttid for å se sammendraget.', isError: false };
+        const rec = buildRecurrence();
+        if (rec && rec.count !== null && (rec.count < 2 || rec.count > MAX_OCCURRENCES)) {
+            return { text: `Antall ganger må være mellom 2 og ${MAX_OCCURRENCES}.`, isError: true };
+        }
+        if (rec && rec.count === null && !rec.until) {
+            return { text: 'Velg en til-dato for å se sammendraget.', isError: false };
+        }
+        const expanded = expandOccurrences(startsAt, null, rec);
+        if ('error' in expanded) return { text: expanded.error, isError: true };
+        const dates = expanded.occurrences;
+        const fmt = (iso: string) =>
+            new Date(iso).toLocaleDateString('nb-NO', { day: 'numeric', month: 'long', year: 'numeric' });
+        return {
+            text: `Dette vil opprette ${dates.length} aktiviteter, fra ${fmt(dates[0].startsAt)} til ${fmt(dates[dates.length - 1].startsAt)}.`,
+            isError: false,
+        };
+    }
+
     async function handleParse() {
         if (!parseUrl.trim()) return;
         setParsing(true);
@@ -138,13 +189,14 @@ export default function ArrangorPage() {
                 municipality: f.municipality ?? prev.municipality,
                 startsDate: starts.date || prev.startsDate,
                 startsTime: starts.time || prev.startsTime,
-                endsDate: ends.date || prev.endsDate,
+                endsDate: ends.date && ends.date !== starts.date ? ends.date : prev.endsDate,
                 endsTime: ends.time || prev.endsTime,
                 isFree: f.isFree ?? prev.isFree,
                 priceText: f.priceText ?? prev.priceText,
                 url: f.url ?? prev.url,
                 imageUrl: f.imageUrl ?? prev.imageUrl,
             }));
+            if (ends.date && starts.date && ends.date !== starts.date) setMultiDay(true);
             setParseInfo(
                 data.parser === 'jsonld'
                     ? 'Fant strukturert eventdata — sjekk feltene under og juster om noe mangler.'
@@ -165,14 +217,27 @@ export default function ArrangorPage() {
 
         const startsAt = partsToIso(form.startsDate, form.startsTime);
         if (!startsAt) {
-            setErrors(['Oppgi både startdato og klokkeslett.']);
+            setErrors(['Oppgi både dato og starttid.']);
             return;
         }
-        const hasEndsInput = !!(form.endsDate || form.endsTime);
-        const endsAt = partsToIso(form.endsDate, form.endsTime);
-        if (hasEndsInput && !endsAt) {
-            setErrors(['Oppgi både dato og klokkeslett for slutt, eller la begge stå tomme.']);
-            return;
+        // Slutt: samme dag som standard; egen sluttdato kun ved flerdagers.
+        let endsAt: string | null = null;
+        if (multiDay) {
+            if (!form.endsDate) {
+                setErrors(['Oppgi sluttdato, eller skru av «Strekker seg over flere dager».']);
+                return;
+            }
+            endsAt = partsToIso(form.endsDate, form.endsTime || form.startsTime);
+        } else if (form.endsTime) {
+            endsAt = partsToIso(form.startsDate, form.endsTime);
+        }
+        const recurrence = buildRecurrence();
+        if (recurrence) {
+            const check = expandOccurrences(startsAt, endsAt, recurrence);
+            if ('error' in check) {
+                setErrors([check.error]);
+                return;
+            }
         }
 
         setSubmitting(true);
@@ -187,6 +252,7 @@ export default function ArrangorPage() {
                     ...form,
                     startsAt,
                     endsAt,
+                    recurrence,
                     venueName: form.venueName || null,
                     address: form.address || null,
                     priceText: form.priceText || null,
@@ -333,9 +399,9 @@ export default function ArrangorPage() {
                         </select>
                     </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-3 gap-4">
                     <div>
-                        <label className={labelCls}>Startdato *</label>
+                        <label className={labelCls}>Dato *</label>
                         <input
                             type="date"
                             className={inputCls}
@@ -354,17 +420,6 @@ export default function ArrangorPage() {
                             onChange={(e) => set('startsTime', e.target.value)}
                         />
                     </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                    <div>
-                        <label className={labelCls}>Sluttdato</label>
-                        <input
-                            type="date"
-                            className={inputCls}
-                            value={form.endsDate}
-                            onChange={(e) => set('endsDate', e.target.value)}
-                        />
-                    </div>
                     <div>
                         <label className={labelCls}>Klokkeslett slutt</label>
                         <input
@@ -375,6 +430,116 @@ export default function ArrangorPage() {
                         />
                     </div>
                 </div>
+
+                <label className="flex items-center gap-2 text-sm">
+                    <input
+                        type="checkbox"
+                        checked={multiDay}
+                        onChange={(e) => setMultiDay(e.target.checked)}
+                    />
+                    Strekker seg over flere dager
+                </label>
+                {multiDay && (
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className={labelCls}>Sluttdato *</label>
+                            <input
+                                type="date"
+                                className={inputCls}
+                                required={multiDay}
+                                value={form.endsDate}
+                                onChange={(e) => set('endsDate', e.target.value)}
+                            />
+                            <p className="text-sm text-gray-500 mt-1">
+                                Klokkeslett slutt gjelder sluttdatoen.
+                            </p>
+                        </div>
+                    </div>
+                )}
+
+                <label className="flex items-center gap-2 text-sm">
+                    <input
+                        type="checkbox"
+                        checked={recurring}
+                        onChange={(e) => setRecurring(e.target.checked)}
+                    />
+                    Gjentakende aktivitet
+                </label>
+                {recurring && (
+                    <div className="border rounded p-4 space-y-3">
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className={labelCls}>Frekvens</label>
+                                <select
+                                    className={inputCls}
+                                    value={frequency}
+                                    onChange={(e) => setFrequency(e.target.value as RecurrenceFrequency)}
+                                >
+                                    {(Object.keys(FREQUENCY_LABELS) as RecurrenceFrequency[]).map((f) => (
+                                        <option key={f} value={f}>
+                                            {FREQUENCY_LABELS[f]}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label className={labelCls}>Avslutt etter</label>
+                                <div className="flex gap-4 items-center h-10">
+                                    <label className="flex items-center gap-1 text-sm">
+                                        <input
+                                            type="radio"
+                                            name="recurrenceMethod"
+                                            checked={recurrenceMethod === 'count'}
+                                            onChange={() => setRecurrenceMethod('count')}
+                                        />
+                                        Antall ganger
+                                    </label>
+                                    <label className="flex items-center gap-1 text-sm">
+                                        <input
+                                            type="radio"
+                                            name="recurrenceMethod"
+                                            checked={recurrenceMethod === 'until'}
+                                            onChange={() => setRecurrenceMethod('until')}
+                                        />
+                                        Til dato
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        {recurrenceMethod === 'count' ? (
+                            <div>
+                                <label className={labelCls}>Antall ganger (2–{MAX_OCCURRENCES})</label>
+                                <input
+                                    type="number"
+                                    min={2}
+                                    max={MAX_OCCURRENCES}
+                                    className={inputCls}
+                                    value={recurrenceCount}
+                                    onChange={(e) => setRecurrenceCount(e.target.value)}
+                                />
+                            </div>
+                        ) : (
+                            <div>
+                                <label className={labelCls}>Til dato</label>
+                                <input
+                                    type="date"
+                                    className={inputCls}
+                                    value={recurrenceUntil}
+                                    onChange={(e) => setRecurrenceUntil(e.target.value)}
+                                />
+                            </div>
+                        )}
+                        {(() => {
+                            const summary = recurrenceSummary();
+                            if (!summary) return null;
+                            return (
+                                <p className={`text-sm ${summary.isError ? 'text-red-600' : 'text-gray-700'}`}>
+                                    {summary.text}
+                                </p>
+                            );
+                        })()}
+                    </div>
+                )}
                 <div>
                     <label className={labelCls}>Stedsnavn (f.eks. lokale eller bygg)</label>
                     <input
