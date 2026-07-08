@@ -180,6 +180,9 @@ export default function ArrangorPage() {
             const f = data.fields ?? {};
             const starts = toLocalParts(f.startsAt);
             const ends = toLocalParts(f.endsAt);
+            // Dato uten klokkeslett i kilden: foreslå bare datoen, ikke 00:00.
+            if (f.startsAtHasTime === false) starts.time = '';
+            if (f.endsAtHasTime === false) ends.time = '';
             setForm((prev) => ({
                 ...prev,
                 title: f.title ?? prev.title,
@@ -197,11 +200,12 @@ export default function ArrangorPage() {
                 imageUrl: f.imageUrl ?? prev.imageUrl,
             }));
             if (ends.date && starts.date && ends.date !== starts.date) setMultiDay(true);
+            const structured = data.parser === 'jsonld' || data.parser === 'nextdata';
             setParseInfo(
-                data.parser === 'jsonld'
+                structured && starts.time
                     ? 'Fant strukturert eventdata — sjekk feltene under og juster om noe mangler.'
-                    : data.parser === 'opengraph'
-                      ? 'Fant tittel og beskrivelse — fyll inn tid og sted manuelt.'
+                    : structured || data.parser === 'opengraph'
+                      ? 'Fant ikke tidspunkt automatisk — fyll inn dato og klokkeslett manuelt.'
                       : 'Fant ingen eventdata på siden — fyll inn feltene manuelt.'
             );
         } catch {
