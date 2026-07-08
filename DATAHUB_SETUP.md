@@ -137,7 +137,7 @@ curl -X POST -H "Authorization: Bearer $ADMIN_SECRET" \
 | Kategori | Strategi | Vedlikehold |
 |---|---|---|
 | Bibliotek-events (Deichman, Bergen) | Crawl/feed, implementert | Lav; overvåk `sources.last_sync_status` |
-| Ungfritid | Feed/API-adapter i `lib/ingest.ts` (neste kilde) | Lav når adapter er skrevet |
+| Ungfritid | PÅ PAUSE (jul. 2026): internt søk (`POST /api/search`) er ikke-deterministisk — fullstendig uttrekk umulig uten endring hos Ungfritid. Fremtidig lavterskel-mulighet: lite nærhets-kall (~20 treff nær brukerens posisjon) der fullstendighet ikke kreves; body-kontrakt og probe-skript ligger i `scripts/ungfritid-probe*.mjs` | — |
 | Kommunale events | Per-kommune adapter, start med Oslo | Middels; én adapter per kommune |
 | Lekeplasser, skateparker, treningsapparater | Engangsimport fra OpenStreetMap Overpass (`leisure=playground` osv.) som `kind='place'`, deretter manuell kuratering | Lav; steder endres sjelden, årlig re-import |
 | Strender, badeplasser | Kartverket stedsnavn + OSM, manuell kuratering | Lav |
