@@ -84,6 +84,7 @@ export default function ArrangorPage() {
     const [parseUrl, setParseUrl] = useState('');
     const [parsing, setParsing] = useState(false);
     const [parseInfo, setParseInfo] = useState<string | null>(null);
+    const [parseTone, setParseTone] = useState<'ok' | 'warn'>('warn');
     const [submitting, setSubmitting] = useState(false);
     const [errors, setErrors] = useState<string[]>([]);
     const [submitted, setSubmitted] = useState(false);
@@ -201,6 +202,7 @@ export default function ArrangorPage() {
             }));
             if (ends.date && starts.date && ends.date !== starts.date) setMultiDay(true);
             const structured = data.parser === 'jsonld' || data.parser === 'nextdata';
+            setParseTone(structured && starts.time ? 'ok' : 'warn');
             setParseInfo(
                 structured && starts.time
                     ? 'Fant strukturert eventdata — sjekk feltene under og juster om noe mangler.'
@@ -288,7 +290,7 @@ export default function ArrangorPage() {
                     Vi kontakter deg på e-post hvis noe må avklares.
                 </p>
                 <button
-                    className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                    className="bg-family-blue text-white px-4 py-2 rounded hover:bg-family-blue-light"
                     onClick={() => {
                         setForm(EMPTY_FORM);
                         setParseUrl('');
@@ -304,6 +306,7 @@ export default function ArrangorPage() {
 
     const inputCls = 'w-full border rounded px-3 py-2';
     const labelCls = 'block text-sm font-medium mb-1';
+    const sectionCls = 'text-lg font-semibold border-l-4 border-family-blue pl-3';
 
     return (
         <main className="p-6 max-w-2xl mx-auto">
@@ -316,14 +319,14 @@ export default function ArrangorPage() {
                 {sessionEmail ? (
                     <>
                         Innlogget som <strong>{sessionEmail}</strong> — innsendingen knyttes til{' '}
-                        <Link href="/arranger/konto" className="text-blue-600 underline">
+                        <Link href="/arranger/konto" className="text-family-blue underline">
                             kontoen din
                         </Link>.
                     </>
                 ) : (
                     <>
                         Arrangerer du ofte?{' '}
-                        <Link href="/arranger/konto" className="text-blue-600 underline">
+                        <Link href="/arranger/konto" className="text-family-blue underline">
                             Logg inn med arrangørkonto
                         </Link>{' '}
                         for å samle og gjenbruke aktivitetene dine.
@@ -331,7 +334,7 @@ export default function ArrangorPage() {
                 )}
             </p>
 
-            <div className="border rounded p-4 mb-8 bg-gray-50">
+            <div className="border border-warm-orange/40 rounded p-4 mb-8 bg-warm-orange/10">
                 <label className={labelCls} htmlFor="parseUrl">
                     Har du en nettside for arrangementet? Lim inn lenken, så fyller vi ut det vi finner.
                 </label>
@@ -348,15 +351,26 @@ export default function ArrangorPage() {
                         type="button"
                         onClick={handleParse}
                         disabled={parsing}
-                        className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+                        className="bg-family-blue text-white px-4 py-2 rounded hover:bg-family-blue-light disabled:opacity-50 whitespace-nowrap"
                     >
                         {parsing ? 'Henter…' : 'Hent fra lenke'}
                     </button>
                 </div>
-                {parseInfo && <p className="mt-2 text-sm text-gray-700">{parseInfo}</p>}
+                {parseInfo && (
+                    <p
+                        className={`mt-2 text-sm rounded px-2 py-1 inline-block ${
+                            parseTone === 'ok'
+                                ? 'bg-safety-green/15 text-forest-dark'
+                                : 'bg-warning-amber/25 text-forest-dark'
+                        }`}
+                    >
+                        {parseInfo}
+                    </p>
+                )}
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
+                <h2 className={sectionCls}>Om aktiviteten</h2>
                 <div>
                     <label className={labelCls}>Tittel *</label>
                     <input
@@ -403,6 +417,7 @@ export default function ArrangorPage() {
                         </select>
                     </div>
                 </div>
+                <h2 className={`${sectionCls} pt-4`}>Tid og sted</h2>
                 <div className="grid grid-cols-3 gap-4">
                     <div>
                         <label className={labelCls}>Dato *</label>
@@ -438,6 +453,7 @@ export default function ArrangorPage() {
                 <label className="flex items-center gap-2 text-sm">
                     <input
                         type="checkbox"
+                        className="accent-family-blue"
                         checked={multiDay}
                         onChange={(e) => setMultiDay(e.target.checked)}
                     />
@@ -464,6 +480,7 @@ export default function ArrangorPage() {
                 <label className="flex items-center gap-2 text-sm">
                     <input
                         type="checkbox"
+                        className="accent-family-blue"
                         checked={recurring}
                         onChange={(e) => setRecurring(e.target.checked)}
                     />
@@ -492,6 +509,7 @@ export default function ArrangorPage() {
                                     <label className="flex items-center gap-1 text-sm">
                                         <input
                                             type="radio"
+                                            className="accent-family-blue"
                                             name="recurrenceMethod"
                                             checked={recurrenceMethod === 'count'}
                                             onChange={() => setRecurrenceMethod('count')}
@@ -501,6 +519,7 @@ export default function ArrangorPage() {
                                     <label className="flex items-center gap-1 text-sm">
                                         <input
                                             type="radio"
+                                            className="accent-family-blue"
                                             name="recurrenceMethod"
                                             checked={recurrenceMethod === 'until'}
                                             onChange={() => setRecurrenceMethod('until')}
@@ -537,7 +556,7 @@ export default function ArrangorPage() {
                             const summary = recurrenceSummary();
                             if (!summary) return null;
                             return (
-                                <p className={`text-sm ${summary.isError ? 'text-red-600' : 'text-gray-700'}`}>
+                                <p className={`text-sm ${summary.isError ? 'text-alert-red' : 'text-gray-700'}`}>
                                     {summary.text}
                                 </p>
                             );
@@ -577,10 +596,14 @@ export default function ArrangorPage() {
                 <p className="text-sm text-gray-500 -mt-2">
                     Oppgi stedsnavn eller adresse, så vises aktiviteten på kartet.
                 </p>
+                <h2 className={`${sectionCls} pt-4`}>Pris og kontakt</h2>
                 <div className="flex items-center gap-4">
-                    <label className="flex items-center gap-2">
+                    <label
+                        className={`flex items-center gap-2 ${form.isFree ? 'text-safety-green font-medium' : ''}`}
+                    >
                         <input
                             type="checkbox"
+                            className="accent-safety-green"
                             checked={form.isFree}
                             onChange={(e) => set('isFree', e.target.checked)}
                         />
@@ -629,7 +652,7 @@ export default function ArrangorPage() {
                 </div>
 
                 {errors.length > 0 && (
-                    <ul className="text-red-600 text-sm list-disc pl-5">
+                    <ul className="text-alert-red text-sm list-disc pl-5">
                         {errors.map((err) => (
                             <li key={err}>{err}</li>
                         ))}
@@ -639,7 +662,7 @@ export default function ArrangorPage() {
                 <button
                     type="submit"
                     disabled={submitting}
-                    className="bg-blue-600 text-white px-6 py-3 rounded hover:bg-blue-700 disabled:opacity-50"
+                    className="bg-family-blue text-white px-6 py-3 rounded hover:bg-family-blue-light disabled:opacity-50"
                 >
                     {submitting ? 'Sender inn…' : 'Send inn aktivitet'}
                 </button>
