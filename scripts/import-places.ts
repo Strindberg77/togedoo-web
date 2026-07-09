@@ -153,7 +153,9 @@ export interface ImportRow {
 }
 
 export async function buildRows(city: string, elements: OsmElement[], limit: number): Promise<ImportRow[]> {
-    const rows: ImportRow[] = [];
+    // Første pass: velg elementer (kategori + koordinater + limit), så vi
+    // vet totalt geokodingsbehov før vi starter — gir ekte fremdriftslinje.
+    const selected: { el: OsmElement; cat: (typeof PLACE_CATEGORIES)[number]; pos: { lat: number; lng: number } }[] = [];
     const perCategory = new Map<string, number>();
     for (const el of elements) {
         const tags = el.tags ?? {};
@@ -162,8 +164,20 @@ export async function buildRows(city: string, elements: OsmElement[], limit: num
         if (!cat || !pos) continue;
         if ((perCategory.get(cat.key) ?? 0) >= limit) continue;
         perCategory.set(cat.key, (perCategory.get(cat.key) ?? 0) + 1);
+        selected.push({ el, cat, pos });
+    }
+    const needGeocoding = selected.filter(({ el }) => !isUsablePlaceName(el.tags?.name)).length;
+    console.log(`  ${selected.length} steder valgt, ${needGeocoding} trenger geokodet tittel`);
 
+    const rows: ImportRow[] = [];
+    let geocoded = 0;
+    for (const { el, cat, pos } of selected) {
+        const tags = el.tags ?? {};
         const usableName = isUsablePlaceName(tags.name);
+        if (!usableName) {
+            geocoded += 1;
+            console.log(`  geokoder ${el.type}/${el.id} (${geocoded}/${needGeocoding})...`);
+        }
         const titled = await makePlaceTitleDetailed(cat.label, tags.name ?? null, pos.lat, pos.lng);
         if (!usableName) await sleep(TITLE_PAUSE_MS); // punktsøk-høflighet ved cache-miss
 

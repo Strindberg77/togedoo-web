@@ -106,19 +106,51 @@ export async function reverseGeocodeDetailed(lat: number, lng: number): Promise<
             treffPerSide: '1',
         });
         const url = `https://ws.geonorge.no/adresser/v1/punktsok?${params}`;
-        // 429/5xx er typisk forbigående overbelastning hos Kartverket —
-        // prøv på nytt med backoff før vi gir opp.
-        let res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
-        for (const backoffMs of [2000, 4000]) {
-            if (res.ok || ![429, 500, 502, 503].includes(res.status)) break;
-            await new Promise((r) => setTimeout(r, backoffMs));
-            res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+
+        // Forbigående feil (429/5xx, timeout, nettverksfeil) retryes med
+        // backoff — men hvert forsøk har egen timeout (et hengende TCP-kall
+        // uten AbortSignal låste hele importen, jul. 2026), og hele stedet
+        // har et totalbudsjett så ett problematisk punkt aldri blokkerer
+        // resten av kjøringen.
+        const TIMEOUT_MS = Number(process.env.PUNKTSOK_TIMEOUT_MS ?? 8000);
+        const BUDGET_MS = Number(process.env.PUNKTSOK_BUDGET_MS ?? 20000);
+        const BACKOFFS_MS = [2000, 4000];
+        const started = Date.now();
+        let res: Response | null = null;
+        let transient = '';
+        for (let attempt = 0; ; attempt++) {
+            try {
+                res = await fetch(url, {
+                    headers: { 'User-Agent': USER_AGENT },
+                    signal: AbortSignal.timeout(TIMEOUT_MS),
+                });
+            } catch (err) {
+                res = null;
+                transient =
+                    err instanceof Error && err.name === 'TimeoutError'
+                        ? `timeout etter ${TIMEOUT_MS / 1000} s`
+                        : `nettverksfeil: ${err instanceof Error ? err.message : String(err)}`;
+            }
+            if (res) {
+                if (res.ok) break;
+                if (![429, 500, 502, 503].includes(res.status)) {
+                    const body = (await res.text()).slice(0, 120);
+                    return { ok: false, reason: `HTTP ${res.status}: ${body}` };
+                }
+                transient = `HTTP ${res.status}`;
+            }
+            const backoff = BACKOFFS_MS[attempt];
+            const wouldExceedBudget =
+                backoff === undefined || Date.now() - started + backoff + TIMEOUT_MS > BUDGET_MS;
+            if (wouldExceedBudget) {
+                return {
+                    ok: false,
+                    reason: `${transient} (ga opp etter ${attempt + 1} forsøk, ${Math.round((Date.now() - started) / 1000)} s)`,
+                };
+            }
+            await new Promise((r) => setTimeout(r, backoff));
         }
-        if (!res.ok) {
-            const body = (await res.text()).slice(0, 120);
-            return { ok: false, reason: `HTTP ${res.status} (etter retry): ${body}` };
-        }
-        const data = await res.json();
+        const data = await res!.json();
         const hit = data?.adresser?.[0];
         if (!hit?.adressetekst) {
             await saveCache(key, null);
