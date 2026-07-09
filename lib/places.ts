@@ -105,12 +105,18 @@ export async function reverseGeocodeDetailed(lat: number, lng: number): Promise<
             radius: '200',
             treffPerSide: '1',
         });
-        const res = await fetch(`https://ws.geonorge.no/adresser/v1/punktsok?${params}`, {
-            headers: { 'User-Agent': USER_AGENT },
-        });
+        const url = `https://ws.geonorge.no/adresser/v1/punktsok?${params}`;
+        // 429/5xx er typisk forbigående overbelastning hos Kartverket —
+        // prøv på nytt med backoff før vi gir opp.
+        let res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+        for (const backoffMs of [2000, 4000]) {
+            if (res.ok || ![429, 500, 502, 503].includes(res.status)) break;
+            await new Promise((r) => setTimeout(r, backoffMs));
+            res = await fetch(url, { headers: { 'User-Agent': USER_AGENT } });
+        }
         if (!res.ok) {
             const body = (await res.text()).slice(0, 120);
-            return { ok: false, reason: `HTTP ${res.status}: ${body}` };
+            return { ok: false, reason: `HTTP ${res.status} (etter retry): ${body}` };
         }
         const data = await res.json();
         const hit = data?.adresser?.[0];
