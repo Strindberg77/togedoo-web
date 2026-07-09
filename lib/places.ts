@@ -81,59 +81,103 @@ async function saveCache(key: string, result: ReverseGeocodeResult | null): Prom
         );
 }
 
+export type ReverseOutcome =
+    | { ok: true; result: ReverseGeocodeResult }
+    | { ok: false; reason: string };
+
 /**
  * Nærmeste adresse for et punkt (Kartverket punktsøk), med cache i
  * geocode_cache (nøkkel `rev:<lat>,<lng>` avrundet til 5 desimaler ≈ 1 m).
+ * Feiler ALDRI stille: alle feilmoduser returneres som { ok: false, reason }.
  */
-export async function reverseGeocode(lat: number, lng: number): Promise<ReverseGeocodeResult | null> {
+export async function reverseGeocodeDetailed(lat: number, lng: number): Promise<ReverseOutcome> {
     const key = `rev:${lat.toFixed(5)},${lng.toFixed(5)}`;
     const cached = await fromCache(key);
-    if (cached !== undefined) return cached;
+    if (cached === null) return { ok: false, reason: 'cachet negativt treff' };
+    if (cached !== undefined) return { ok: true, result: cached };
 
-    let result: ReverseGeocodeResult | null = null;
     try {
+        // Ingen koordsys-parameter: API-ets standard (EPSG:4258 ≈ WGS84)
+        // er riktig for OSM-koordinater.
         const params = new URLSearchParams({
             lat: String(lat),
             lon: String(lng),
             radius: '200',
             treffPerSide: '1',
-            koordsys: '4258',
         });
         const res = await fetch(`https://ws.geonorge.no/adresser/v1/punktsok?${params}`, {
             headers: { 'User-Agent': USER_AGENT },
         });
-        if (res.ok) {
-            const data = await res.json();
-            const hit = data?.adresser?.[0];
-            if (hit?.adressetekst) {
-                result = {
-                    addressText: hit.adressetekst,
-                    street: stripHouseNumber(hit.adressetekst),
-                    postalPlace: hit.poststed ?? null,
-                };
-            }
+        if (!res.ok) {
+            const body = (await res.text()).slice(0, 120);
+            return { ok: false, reason: `HTTP ${res.status}: ${body}` };
         }
-    } catch {
+        const data = await res.json();
+        const hit = data?.adresser?.[0];
+        if (!hit?.adressetekst) {
+            await saveCache(key, null);
+            return { ok: false, reason: 'ingen adresse innen 200 m' };
+        }
+        const street = stripHouseNumber(hit.adressetekst);
+        const result: ReverseGeocodeResult = {
+            addressText: hit.adressetekst,
+            // En adressetekst som bare er husnummer gir ikke brukbart gatenavn.
+            street: street && !/^\d+\s*[A-ZÆØÅ]?$/.test(street) ? street : null,
+            postalPlace: hit.poststed ?? null,
+        };
+        await saveCache(key, result);
+        return { ok: true, result };
+    } catch (err) {
         // Nettverksfeil: ikke cache, prøv igjen neste import.
-        return null;
+        return { ok: false, reason: `nettverksfeil: ${err instanceof Error ? err.message : String(err)}` };
     }
-    await saveCache(key, result);
-    return result;
+}
+
+export async function reverseGeocode(lat: number, lng: number): Promise<ReverseGeocodeResult | null> {
+    const outcome = await reverseGeocodeDetailed(lat, lng);
+    return outcome.ok ? outcome.result : null;
+}
+
+export type TitleSource = 'osm-navn' | 'ved-gate' | 'i-poststed' | 'kun-kategori';
+
+export interface PlaceTitle {
+    title: string;
+    source: TitleSource;
+    /** Satt når fallback til kategoritekst skyldes geokodingsfeil, ikke ekte mangel. */
+    geocodeError?: string;
 }
 
 /**
- * Tittel for et importert sted: ekte OSM-navn hvis brukbart, ellers
- * "<Kategori> ved <gate>" / "<Kategori> i <poststed>" / "<Kategori>".
+ * Tittel for et importert sted, med sporbar kilde: ekte OSM-navn hvis
+ * brukbart, ellers "<Kategori> ved <gate>" / "<Kategori> i <poststed>" /
+ * ren kategoritekst (siste utvei — geocodeError skiller feil fra mangel).
  */
+export async function makePlaceTitleDetailed(
+    categoryLabel: string,
+    osmName: string | null | undefined,
+    lat: number,
+    lng: number
+): Promise<PlaceTitle> {
+    if (isUsablePlaceName(osmName)) return { title: osmName!.trim(), source: 'osm-navn' };
+    const outcome = await reverseGeocodeDetailed(lat, lng);
+    if (outcome.ok && outcome.result.street) {
+        return { title: `${categoryLabel} ved ${outcome.result.street}`, source: 'ved-gate' };
+    }
+    if (outcome.ok && outcome.result.postalPlace) {
+        return { title: `${categoryLabel} i ${outcome.result.postalPlace}`, source: 'i-poststed' };
+    }
+    return {
+        title: categoryLabel,
+        source: 'kun-kategori',
+        geocodeError: outcome.ok ? undefined : outcome.reason,
+    };
+}
+
 export async function makePlaceTitle(
     categoryLabel: string,
     osmName: string | null | undefined,
     lat: number,
     lng: number
 ): Promise<string> {
-    if (isUsablePlaceName(osmName)) return osmName!.trim();
-    const rev = await reverseGeocode(lat, lng);
-    if (rev?.street) return `${categoryLabel} ved ${rev.street}`;
-    if (rev?.postalPlace) return `${categoryLabel} i ${rev.postalPlace}`;
-    return categoryLabel;
+    return (await makePlaceTitleDetailed(categoryLabel, osmName, lat, lng)).title;
 }

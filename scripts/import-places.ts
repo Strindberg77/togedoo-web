@@ -17,7 +17,7 @@
 // ODbL-KRAV: der disse dataene vises, skal "© OpenStreetMap contributors"
 // være synlig med lenke til openstreetmap.org/copyright.
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
-import { makePlaceTitle, isUsablePlaceName } from '../lib/places';
+import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
 
 const OVERPASS_ENDPOINTS = [
     'https://overpass-api.de/api/interpreter',
@@ -143,7 +143,10 @@ export interface ImportRow {
     is_free: boolean | null;
     url: string;
     status: 'published';
-    titleGenerated: boolean; // kun rapportering, fjernes før upsert
+    // Kun rapportering, fjernes før upsert:
+    titleSource: TitleSource;
+    geocodeError?: string;
+    osmName: string | null;
 }
 
 export async function buildRows(city: string, elements: OsmElement[], limit: number): Promise<ImportRow[]> {
@@ -158,7 +161,7 @@ export async function buildRows(city: string, elements: OsmElement[], limit: num
         perCategory.set(cat.key, (perCategory.get(cat.key) ?? 0) + 1);
 
         const usableName = isUsablePlaceName(tags.name);
-        const title = await makePlaceTitle(cat.label, tags.name ?? null, pos.lat, pos.lng);
+        const titled = await makePlaceTitleDetailed(cat.label, tags.name ?? null, pos.lat, pos.lng);
         if (!usableName) await sleep(TITLE_PAUSE_MS); // punktsøk-høflighet ved cache-miss
 
         const addrStreet = tags['addr:street']
@@ -168,7 +171,7 @@ export async function buildRows(city: string, elements: OsmElement[], limit: num
         rows.push({
             external_id: `${el.type}/${el.id}`,
             kind: 'place',
-            title,
+            title: titled.title,
             description: tags.description ?? '',
             category: cat.category,
             target_audience: cat.audience,
@@ -181,7 +184,9 @@ export async function buildRows(city: string, elements: OsmElement[], limit: num
             is_free: tags.fee === 'yes' ? false : cat.isFree,
             url: `https://www.openstreetmap.org/${el.type}/${el.id}`,
             status: 'published',
-            titleGenerated: !usableName,
+            titleSource: titled.source,
+            geocodeError: titled.geocodeError,
+            osmName: tags.name ?? null,
         });
     }
     return rows;
@@ -193,18 +198,35 @@ async function importCity(city: string, dryRun: boolean, limit: number) {
     console.log(`  Overpass ga ${elements.length} elementer`);
     const rows = await buildRows(city, elements, limit);
 
-    // Vaktbikkje: 0 treff i en kategori som normalt har mange -> flagg.
+    // Vaktbikkje + tittelkilde-fordeling per kategori. 'kun-kategori' med
+    // geocodeError betyr at revers-geokodingen FEILET — ikke at adressen mangler.
     for (const cat of PLACE_CATEGORIES) {
-        const n = rows.filter((r) => r.category === cat.category).length;
-        const gen = rows.filter((r) => r.category === cat.category && r.titleGenerated).length;
-        console.log(`  ${cat.category.padEnd(12)} ${String(n).padStart(5)} steder (${gen} genererte titler)`);
-        if (n === 0) console.log(`    ADVARSEL: 0 treff for ${cat.category} i ${city} — sjekk tag-endring i OSM.`);
+        const catRows = rows.filter((r) => r.category === cat.category);
+        const bySource = (s: TitleSource) => catRows.filter((r) => r.titleSource === s).length;
+        const failed = catRows.filter((r) => r.geocodeError).length;
+        console.log(
+            `  ${cat.category.padEnd(12)} ${String(catRows.length).padStart(5)} steder — titler: ` +
+                `${bySource('osm-navn')} OSM-navn, ${bySource('ved-gate')} «ved gate», ` +
+                `${bySource('i-poststed')} «i poststed», ${bySource('kun-kategori')} kun kategori` +
+                (failed ? ` (HERAV ${failed} GEOKODINGSFEIL)` : '')
+        );
+        if (catRows.length === 0) console.log(`    ADVARSEL: 0 treff for ${cat.category} i ${city} — sjekk tag-endring i OSM.`);
+        // Konkrete eksempler der name-taggen manglet/ble silt:
+        for (const r of catRows.filter((x) => x.titleSource !== 'osm-navn').slice(0, 3)) {
+            console.log(`    ${r.external_id}: name=${JSON.stringify(r.osmName)} -> "${r.title}" [${r.titleSource}]`);
+        }
     }
-    const examples = rows.filter((r) => r.titleGenerated).slice(0, 5).map((r) => r.title);
-    if (examples.length) console.log(`  Eksempler på genererte titler: ${examples.join(' | ')}`);
+    const errors = rows.filter((r) => r.geocodeError);
+    if (errors.length) {
+        const reasons = new Map<string, number>();
+        errors.forEach((r) => reasons.set(r.geocodeError!, (reasons.get(r.geocodeError!) ?? 0) + 1));
+        console.log(`  GEOKODINGSFEIL (${errors.length} steder):`);
+        for (const [reason, n] of reasons) console.log(`    ${n} × ${reason}`);
+    }
 
     if (dryRun) {
-        console.log(`  [dry-run] Hopper over skriving (${rows.length} rader klare).`);
+        console.log(`  [dry-run] Ingen databaseskriving. Revers-geokoding KJØRES (uten cache hvis Supabase-env mangler).`);
+        console.log(`  [dry-run] ${rows.length} rader klare.`);
         return rows.length;
     }
 
@@ -230,10 +252,12 @@ async function importCity(city: string, dryRun: boolean, limit: number) {
     if (locked.size) console.log(`  Hopper over ${rows.length - writable.length} låste rader.`);
 
     for (let i = 0; i < writable.length; i += 500) {
-        const chunk = writable.slice(i, i + 500).map(({ titleGenerated: _tg, ...row }) => ({
-            ...row,
-            source_id: source.id,
-        }));
+        const chunk = writable
+            .slice(i, i + 500)
+            .map(({ titleSource: _ts, geocodeError: _ge, osmName: _on, ...row }) => ({
+                ...row,
+                source_id: source.id,
+            }));
         const { error } = await db.from('activities').upsert(chunk, { onConflict: 'source_id,external_id' });
         if (error) throw new Error(`Upsert feilet (${city}, chunk ${i / 500}): ${error.message}`);
     }
