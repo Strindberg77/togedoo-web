@@ -25,10 +25,10 @@ const OVERPASS_ENDPOINTS = [
 ];
 const UA = 'Togedoo datahub (hello@togedoo.com)';
 const CITY_PAUSE_MS = 5000;
-// Kartverket punktsøk svarte 502 under 100 ms-kadens (jul. 2026); 400 ms
-// + retry i lib/places.ts holder tjenesten fornøyd. Egen pause, uavhengig
-// av Overpass-pausen.
-const TITLE_PAUSE_MS = 400;
+// Kartverket punktsøk svarte 502 under 100 ms-kadens og var treg (timeouts)
+// ved 400 ms (jul. 2026). 900 ms default; overstyr med PLACES_PAUSE_MS for
+// å eksperimentere uten kodeendring. Egen pause, uavhengig av Overpass.
+const TITLE_PAUSE_MS = Number(process.env.PLACES_PAUSE_MS ?? 900);
 const SOURCE_SLUG = 'osm-steder';
 const DEFAULT_CITIES = ['Oslo', 'Bergen', 'Trondheim', 'Stavanger'];
 

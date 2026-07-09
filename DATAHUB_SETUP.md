@@ -120,6 +120,23 @@ ingen e-post (stille av), selv om arrangører har slått på varsling.
 | `GET /api/organizer/activities` | Bearer (brukersesjon) | Mine aktiviteter, alle statuser |
 | `GET/PATCH /api/admin/organizers` | `Bearer ADMIN_SECRET` | Liste kontoer; `{ id, verified }` |
 
+### Brukertips og feilrapporter for steder
+
+Tips om nye steder sendes inn på `/tips` og lander som `kind='place'`,
+`status='pending'` på kilden `bruker-tips` — modereres med samme
+admin-API som arrangementer. Feilrapporter («finnes ikke», «feil
+lokasjon», «feil info») lagres i `place_reports`; medhold i «finnes
+ikke» setter `rejected + locked`, som OSM-re-importen aldri rører.
+Krever migrasjon 0006. «Meld feil»-knappen i Flutter-appen skal POSTe
+til `/api/places/report`.
+
+| Endepunkt | Auth | Beskrivelse |
+|---|---|---|
+| `POST /api/places/submit` | ingen (rate-limited) | Tips om nytt sted → pending |
+| `POST /api/places/report` | ingen (rate-limited) | `{ activityId, reason, comment? }` |
+| `GET /api/admin/reports` | `Bearer ADMIN_SECRET` | Åpne rapporter med stedsinfo |
+| `PATCH /api/admin/reports` | `Bearer ADMIN_SECRET` | `{ id, action: "fjern_sted"\|"lukk" }` |
+
 Moderering fra terminalen:
 
 ```bash

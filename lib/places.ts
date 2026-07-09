@@ -219,3 +219,82 @@ export async function makePlaceTitle(
 ): Promise<string> {
     return (await makePlaceTitleDetailed(categoryLabel, osmName, lat, lng)).title;
 }
+
+// ---------------------------------------------------------------------------
+// Brukertips om nye steder (/tips): validering. Selve innsendingen
+// gjenbruker activities-tabellen med kind='place' og status='pending'.
+// ---------------------------------------------------------------------------
+
+export const PLACE_TIP_CATEGORIES = [
+    'Lekeplass',
+    'Ballbane',
+    'Park',
+    'Idrettshall',
+    'Badeplass',
+    'Annet',
+] as const;
+
+export interface PlaceTip {
+    title: string;
+    category: string;
+    description: string;
+    address: string | null;
+    municipality: string;
+    imageUrl: string | null;
+    contactEmail: string;
+}
+
+const TIP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function tipStr(value: unknown, maxLen: number): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed && trimmed.length <= maxLen ? trimmed : null;
+}
+
+export function validatePlaceTip(body: unknown): { tip: PlaceTip | null; errors: string[] } {
+    const errors: string[] = [];
+    const b = (body ?? {}) as Record<string, unknown>;
+
+    const title = tipStr(b.title, 200);
+    if (!title) errors.push('Navn på stedet er påkrevd (maks 200 tegn).');
+
+    const category = tipStr(b.category, 50) ?? 'Annet';
+    if (!PLACE_TIP_CATEGORIES.includes(category as (typeof PLACE_TIP_CATEGORIES)[number])) {
+        errors.push(`Ugyldig kategori. Gyldige: ${PLACE_TIP_CATEGORIES.join(', ')}.`);
+    }
+
+    const municipality = tipStr(b.municipality, 100);
+    if (!municipality) errors.push('Kommune er påkrevd.');
+
+    const contactEmail = tipStr(b.contactEmail, 200);
+    if (!contactEmail || !TIP_EMAIL_RE.test(contactEmail)) {
+        errors.push('Gyldig kontakt-e-post er påkrevd.');
+    }
+
+    let imageUrl: string | null = null;
+    const imageRaw = tipStr(b.imageUrl, 2000);
+    if (imageRaw) {
+        try {
+            const u = new URL(imageRaw);
+            if (u.protocol === 'http:' || u.protocol === 'https:') imageUrl = u.href;
+            else errors.push('Bilde-URL må være http/https.');
+        } catch {
+            errors.push('Bilde-URL er ugyldig.');
+        }
+    }
+
+    if (errors.length > 0) return { tip: null, errors };
+    return {
+        tip: {
+            title: title!,
+            category,
+            description: tipStr(b.description, 2000) ?? '',
+            address: tipStr(b.address, 300),
+            municipality: municipality!,
+            imageUrl,
+            contactEmail: contactEmail!,
+        },
+        errors: [],
+    };
+}
