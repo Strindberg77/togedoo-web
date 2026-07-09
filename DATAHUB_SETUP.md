@@ -139,7 +139,7 @@ curl -X POST -H "Authorization: Bearer $ADMIN_SECRET" \
 | Bibliotek-events (Deichman, Bergen) | Crawl/feed, implementert | Lav; overvåk `sources.last_sync_status` |
 | Ungfritid | PÅ PAUSE (jul. 2026): internt søk (`POST /api/search`) er ikke-deterministisk — fullstendig uttrekk umulig uten endring hos Ungfritid. Fremtidig lavterskel-mulighet: lite nærhets-kall (~20 treff nær brukerens posisjon) der fullstendighet ikke kreves; body-kontrakt og probe-skript ligger i `scripts/ungfritid-probe*.mjs` | — |
 | Kommunale events | Per-kommune adapter, start med Oslo | Middels; én adapter per kommune |
-| Lekeplasser, skateparker, treningsapparater | Engangsimport fra OpenStreetMap Overpass (`leisure=playground` osv.) som `kind='place'`, deretter manuell kuratering | Lav; steder endres sjelden, årlig re-import |
+| Faste steder (lekeplasser, ballbinger, parker, idrettshaller, badeplasser) | Månedlig batch-import fra OpenStreetMap Overpass: `npx tsx scripts/import-places.ts` (dry-run først). Titler fra OSM-navn eller revers-geokodet «Lekeplass ved <gate>» (`lib/places.ts`). Rader med `locked=true` røres aldri. Krever migrasjon 0005. ODbL-KRAV: «© OpenStreetMap contributors» synlig der stedene vises. Utsatt til senere vurdering (for tynn OSM-dekning nå): svømmehall/badeland, ishall, akebakke, fornøyelsespark, minigolf, klatrepark | Lav; månedlig kjøring |
 | Strender, badeplasser | Kartverket stedsnavn + OSM, manuell kuratering | Lav |
 | Teatre, kinoer | Statisk liste (få objekter), manuelt vedlikeholdt | Svært lav |
 | Arrangør-events | Oppgave 2.9: skjema + lenketolkning + feed | Selvbetjent |
