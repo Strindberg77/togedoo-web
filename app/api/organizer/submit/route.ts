@@ -5,7 +5,7 @@
 // egen kilde; verifiserte kontoer publiserer direkte.
 import { NextRequest, NextResponse } from 'next/server';
 import { isDatahubConfigured, supabaseAdmin } from '../../../../lib/supabase';
-import { validateSubmission } from '../../../../lib/organizer';
+import { validateSubmission, expandOccurrences } from '../../../../lib/organizer';
 import { geocode } from '../../../../lib/geocode';
 import { sendSubmissionConfirmation } from '../../../../lib/email';
 import { getOrganizer, ensureOrganizerSource } from '../auth';
@@ -80,13 +80,27 @@ export async function POST(request: NextRequest) {
         }
         const published = !!organizer?.verified;
 
+        // Gjentakelse ekspanderes til én rad per forekomst (maks 25).
+        const expanded = expandOccurrences(
+            submission.startsAt,
+            submission.endsAt,
+            submission.recurrence
+        );
+        if ('error' in expanded) {
+            return NextResponse.json({ success: false, errors: [expanded.error] }, { status: 400 });
+        }
+        const { occurrences } = expanded;
+
         const geoQuery = submission.address || submission.venueName;
         const geo = geoQuery ? await geocode(geoQuery, submission.municipality) : null;
 
-        const externalId = `innsending-${crypto.randomUUID()}`;
-        const { error: insertError } = await db.from('activities').insert({
+        const seriesId = crypto.randomUUID();
+        const rows = occurrences.map((occ, index) => ({
             source_id: sourceId,
-            external_id: externalId,
+            external_id:
+                occurrences.length === 1
+                    ? `innsending-${seriesId}`
+                    : `innsending-${seriesId}-${index + 1}`,
             kind: 'event',
             title: submission.title,
             description: submission.description,
@@ -97,15 +111,16 @@ export async function POST(request: NextRequest) {
             municipality: submission.municipality,
             lat: geo?.lat ?? null,
             lng: geo?.lng ?? null,
-            starts_at: submission.startsAt,
-            ends_at: submission.endsAt,
+            starts_at: occ.startsAt,
+            ends_at: occ.endsAt,
             is_free: submission.isFree,
             price_text: submission.priceText,
             url: submission.url,
             image_url: submission.imageUrl,
             contact_email: organizer?.contact_email ?? submission.contactEmail,
             status: published ? 'published' : 'pending',
-        });
+        }));
+        const { error: insertError } = await db.from('activities').insert(rows);
         if (insertError) throw new Error(insertError.message);
 
         // Opt-in bekreftelse; e-postfeil skal aldri velte innsendingen.
@@ -115,14 +130,19 @@ export async function POST(request: NextRequest) {
             );
         }
 
+        const n = occurrences.length;
         return NextResponse.json({
             success: true,
-            externalId,
+            created: n,
             geocoded: !!geo,
             status: published ? 'published' : 'pending',
             message: published
-                ? 'Aktiviteten er publisert og synlig i Togedoo.'
-                : 'Takk! Aktiviteten er mottatt og publiseres etter en rask gjennomgang.',
+                ? n === 1
+                    ? 'Aktiviteten er publisert og synlig i Togedoo.'
+                    : `${n} aktiviteter er publisert og synlige i Togedoo.`
+                : n === 1
+                  ? 'Takk! Aktiviteten er mottatt og publiseres etter en rask gjennomgang.'
+                  : `Takk! ${n} aktiviteter er mottatt og publiseres etter en rask gjennomgang.`,
         });
     } catch (error) {
         console.error('[Organizer Submit Error]:', error);

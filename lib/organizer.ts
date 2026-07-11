@@ -6,6 +6,18 @@
 
 export const CATEGORIES = ['Kultur', 'Læring', 'Kreativt', 'Aktivitet'] as const;
 export const TARGET_AUDIENCES = ['Barn', 'Ungdom', 'Familie', 'For alle'] as const;
+export const RECURRENCE_FREQUENCIES = ['weekly', 'biweekly', 'monthly'] as const;
+export type RecurrenceFrequency = (typeof RECURRENCE_FREQUENCIES)[number];
+
+// Én rad per forekomst i activities (samme modell som Flutter-appen),
+// ikke RRULE-ekspansjon — enklere å moderere, filtrere og vise.
+export const MAX_OCCURRENCES = 25;
+
+export interface Recurrence {
+    frequency: RecurrenceFrequency;
+    count: number | null; // antall ganger, ELLER:
+    until: string | null; // ISO-dato, siste mulige forekomst
+}
 
 export interface OrganizerSubmission {
     title: string;
@@ -22,6 +34,7 @@ export interface OrganizerSubmission {
     url: string | null;
     imageUrl: string | null;
     contactEmail: string;
+    recurrence: Recurrence | null;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -87,6 +100,11 @@ export function validateSubmission(body: unknown): {
         if (isNaN(Date.parse(endsAtRaw))) errors.push('Sluttidspunktet er ikke en gyldig dato/tid.');
         else endsAt = new Date(endsAtRaw).toISOString();
     }
+    if (startsAt && endsAt && Date.parse(endsAt) <= Date.parse(startsAt)) {
+        errors.push('Slutt må være etter start.');
+    }
+
+    const recurrence = parseRecurrence(b.recurrence, startsAt, errors);
 
     const contactEmail = str(b.contactEmail, 200);
     if (!contactEmail || !EMAIL_RE.test(contactEmail)) {
@@ -117,9 +135,106 @@ export function validateSubmission(body: unknown): {
             url: httpUrl(b.url),
             imageUrl: httpUrl(b.imageUrl),
             contactEmail: contactEmail!,
+            recurrence,
         },
         errors: [],
     };
+}
+
+function parseRecurrence(raw: unknown, startsAt: string | null, errors: string[]): Recurrence | null {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw !== 'object') {
+        errors.push('Ugyldig gjentakelse.');
+        return null;
+    }
+    const r = raw as Record<string, unknown>;
+
+    const frequency = r.frequency;
+    if (!RECURRENCE_FREQUENCIES.includes(frequency as RecurrenceFrequency)) {
+        errors.push('Ugyldig frekvens. Gyldige: ukentlig, annenhver uke, månedlig.');
+        return null;
+    }
+
+    const hasCount = r.count !== null && r.count !== undefined && r.count !== '';
+    const hasUntil = typeof r.until === 'string' && r.until.trim() !== '';
+    if (hasCount === hasUntil) {
+        errors.push('Velg enten antall ganger eller til-dato for gjentakelsen (ikke begge).');
+        return null;
+    }
+
+    let count: number | null = null;
+    let until: string | null = null;
+    if (hasCount) {
+        count = Number(r.count);
+        if (!Number.isInteger(count) || count < 2 || count > MAX_OCCURRENCES) {
+            errors.push(`Antall ganger må være mellom 2 og ${MAX_OCCURRENCES}.`);
+            return null;
+        }
+    } else {
+        const parsed = Date.parse(String(r.until));
+        if (isNaN(parsed)) {
+            errors.push('Til-datoen for gjentakelsen er ugyldig.');
+            return null;
+        }
+        if (startsAt && parsed <= Date.parse(startsAt)) {
+            errors.push('Til-datoen for gjentakelsen må være etter startdatoen.');
+            return null;
+        }
+        until = new Date(parsed).toISOString();
+    }
+
+    return { frequency: frequency as RecurrenceFrequency, count, until };
+}
+
+/** Legger til måneder med klamping: 31. jan + 1 mnd = 28./29. feb, ikke 3. mars. */
+function addMonthsClamped(date: Date, months: number): Date {
+    const result = new Date(date);
+    const day = result.getDate();
+    result.setMonth(result.getMonth() + months);
+    if (result.getDate() !== day) result.setDate(0);
+    return result;
+}
+
+function shift(iso: string, frequency: RecurrenceFrequency, step: number): Date {
+    const d = new Date(iso);
+    if (frequency === 'monthly') return addMonthsClamped(d, step);
+    d.setDate(d.getDate() + (frequency === 'weekly' ? 7 : 14) * step);
+    return d;
+}
+
+/**
+ * Ekspanderer en (validert) gjentakelse til konkrete forekomster.
+ * Returnerer en feilstreng i stedet hvis til-datoen gir flere enn
+ * MAX_OCCURRENCES forekomster.
+ */
+export function expandOccurrences(
+    startsAt: string,
+    endsAt: string | null,
+    recurrence: Recurrence | null
+): { occurrences: { startsAt: string; endsAt: string | null }[] } | { error: string } {
+    if (!recurrence) return { occurrences: [{ startsAt, endsAt }] };
+
+    const total = recurrence.count ?? MAX_OCCURRENCES + 1;
+    // Til-dato gjelder ut hele dagen, uansett klokkeslett på forekomsten.
+    const untilMs = recurrence.until
+        ? Date.parse(recurrence.until) + 24 * 60 * 60 * 1000 - 1
+        : Infinity;
+
+    const occurrences: { startsAt: string; endsAt: string | null }[] = [];
+    for (let i = 0; i < total; i++) {
+        const start = shift(startsAt, recurrence.frequency, i);
+        if (start.getTime() > untilMs) break;
+        if (occurrences.length >= MAX_OCCURRENCES && recurrence.until) {
+            return {
+                error: `Gjentakelsen gir flere enn ${MAX_OCCURRENCES} forekomster. Velg en tidligere til-dato eller bruk antall ganger (maks ${MAX_OCCURRENCES}).`,
+            };
+        }
+        occurrences.push({
+            startsAt: start.toISOString(),
+            endsAt: endsAt ? shift(endsAt, recurrence.frequency, i).toISOString() : null,
+        });
+    }
+    return { occurrences };
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +251,9 @@ export interface ParsedEventFields {
     municipality?: string;
     startsAt?: string;
     endsAt?: string;
+    /** false når kilden bare oppga dato — da skal ikke 00:00 foreslås. */
+    startsAtHasTime?: boolean;
+    endsAtHasTime?: boolean;
     isFree?: boolean;
     priceText?: string;
     url?: string;
@@ -193,6 +311,21 @@ function isoOrUndefined(value: unknown): string | undefined {
     return new Date(value).toISOString();
 }
 
+function hasTimeComponent(value: unknown): boolean {
+    return typeof value === 'string' && /T\d{2}:\d{2}/.test(value);
+}
+
+/** Kombinerer 'YYYY-MM-DD' + 'HH:mm' til ISO. Klokkeslett uten sone tolkes
+ *  som norsk tid med fast +02:00 — samme kjente forenkling som ingest. */
+function composeIso(dateStr: unknown, timeStr: unknown): string | undefined {
+    if (typeof dateStr !== 'string' || typeof timeStr !== 'string') return undefined;
+    const date = dateStr.slice(0, 10);
+    const time = timeStr.match(/^(\d{2}:\d{2})/)?.[1];
+    if (!time || isNaN(Date.parse(date))) return undefined;
+    const iso = `${date}T${time}:00+02:00`;
+    return isNaN(Date.parse(iso)) ? undefined : new Date(iso).toISOString();
+}
+
 /** Finner første schema.org-node med @type som slutter på 'Event'. */
 function findEventNode(data: unknown): Record<string, unknown> | null {
     if (Array.isArray(data)) {
@@ -216,8 +349,39 @@ function fieldsFromJsonLd(event: Record<string, unknown>): ParsedEventFields {
     fields.title = firstString(event.name);
     const desc = firstString(event.description);
     if (desc) fields.description = stripHtml(desc).slice(0, 4000);
-    fields.startsAt = isoOrUndefined(firstString(event.startDate));
-    fields.endsAt = isoOrUndefined(firstString(event.endDate));
+    const startRaw = firstString(event.startDate);
+    const endRaw = firstString(event.endDate);
+    fields.startsAt = isoOrUndefined(startRaw);
+    fields.endsAt = isoOrUndefined(endRaw);
+    if (fields.startsAt) fields.startsAtHasTime = hasTimeComponent(startRaw);
+    if (fields.endsAt) fields.endsAtHasTime = hasTimeComponent(endRaw);
+
+    // Gjentakende events (f.eks. lesestunder) bruker ofte eventSchedule
+    // (schema.org Schedule) i stedet for startDate på event-nivå.
+    if (!fields.startsAt && event.eventSchedule) {
+        const schedule = Array.isArray(event.eventSchedule)
+            ? event.eventSchedule[0]
+            : event.eventSchedule;
+        if (schedule && typeof schedule === 'object') {
+            const s = schedule as Record<string, unknown>;
+            const scheduleStart =
+                composeIso(firstString(s.startDate), firstString(s.startTime)) ??
+                isoOrUndefined(firstString(s.startDate));
+            if (scheduleStart) {
+                fields.startsAt = scheduleStart;
+                fields.startsAtHasTime = !!firstString(s.startTime) || hasTimeComponent(firstString(s.startDate));
+                const scheduleEnd = composeIso(
+                    firstString(s.endDate) ?? firstString(s.startDate),
+                    firstString(s.endTime)
+                );
+                if (scheduleEnd) {
+                    fields.endsAt = scheduleEnd;
+                    fields.endsAtHasTime = true;
+                }
+            }
+        }
+    }
+
     fields.url = firstString(event.url);
     fields.imageUrl = firstString(event.image);
 
@@ -251,10 +415,84 @@ function fieldsFromJsonLd(event: Record<string, unknown>): ParsedEventFields {
         }
     }
 
+    return prune(fields);
+}
+
+function prune(fields: ParsedEventFields): ParsedEventFields {
     for (const key of Object.keys(fields) as (keyof ParsedEventFields)[]) {
         if (fields[key] === undefined) delete fields[key];
     }
     return fields;
+}
+
+/** Kopierer felter fra source som mangler i target (forslag overstyrer aldri). */
+function fillMissing(target: ParsedEventFields, source: ParsedEventFields): void {
+    for (const key of Object.keys(source) as (keyof ParsedEventFields)[]) {
+        if (target[key] === undefined && source[key] !== undefined) {
+            (target as Record<string, unknown>)[key] = source[key];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// __NEXT_DATA__-fallback: Next.js-sider (f.eks. deichman.no) har ofte
+// komplette eventdata i initial state selv når JSON-LD mangler tidspunkt.
+// Heuristikk: første objekt med title + (startTime eller date).
+// ---------------------------------------------------------------------------
+
+function findNextDataEvent(data: unknown, depth = 0): Record<string, unknown> | null {
+    if (depth > 10 || data === null || typeof data !== 'object') return null;
+    if (Array.isArray(data)) {
+        for (const item of data) {
+            const found = findNextDataEvent(item, depth + 1);
+            if (found) return found;
+        }
+        return null;
+    }
+    const node = data as Record<string, unknown>;
+    if (
+        typeof node.title === 'string' &&
+        node.title.trim() &&
+        (typeof node.startTime === 'string' || typeof node.date === 'string')
+    ) {
+        return node;
+    }
+    for (const value of Object.values(node)) {
+        const found = findNextDataEvent(value, depth + 1);
+        if (found) return found;
+    }
+    return null;
+}
+
+function fieldsFromNextData(node: Record<string, unknown>): ParsedEventFields {
+    const fields: ParsedEventFields = {};
+    if (typeof node.title === 'string') fields.title = node.title.trim();
+    const desc = firstString(node.ingress) ?? firstString(node.description);
+    if (desc) fields.description = stripHtml(desc).slice(0, 4000);
+
+    // Deichman leverer date/startTime/endTime som fulle ISO-tidsstempler,
+    // men vi tåler også 'HH:mm' kombinert med date (samme som ingest).
+    const startRaw = firstString(node.startTime);
+    const dateRaw = firstString(node.date);
+    fields.startsAt =
+        (hasTimeComponent(startRaw) ? isoOrUndefined(startRaw) : undefined) ??
+        composeIso(dateRaw, startRaw) ??
+        isoOrUndefined(dateRaw);
+    if (fields.startsAt) {
+        fields.startsAtHasTime =
+            hasTimeComponent(startRaw) || /^\d{2}:\d{2}/.test(startRaw ?? '') || hasTimeComponent(dateRaw);
+    }
+    const endRaw = firstString(node.endTime);
+    fields.endsAt =
+        (hasTimeComponent(endRaw) ? isoOrUndefined(endRaw) : undefined) ?? composeIso(dateRaw, endRaw);
+    if (fields.endsAt) fields.endsAtHasTime = true;
+
+    const location = node.location;
+    if (location && typeof location === 'object') {
+        fields.venueName = firstString((location as Record<string, unknown>).name);
+    }
+    fields.venueName = fields.venueName ?? firstString(node.library);
+    return prune(fields);
 }
 
 function ogContent(html: string, property: string): string | undefined {
@@ -269,7 +507,7 @@ function ogContent(html: string, property: string): string | undefined {
 
 export async function parseEventUrl(rawUrl: string): Promise<{
     fields: ParsedEventFields;
-    parser: 'jsonld' | 'opengraph' | 'none';
+    parser: 'jsonld' | 'nextdata' | 'opengraph' | 'none';
 }> {
     let url: URL;
     try {
@@ -290,6 +528,9 @@ export async function parseEventUrl(rawUrl: string): Promise<{
     if (!res.ok) throw new Error(`Fikk ikke hentet siden (HTTP ${res.status}).`);
     const html = (await res.text()).slice(0, MAX_HTML_BYTES);
 
+    const fields: ParsedEventFields = {};
+    let parser: 'jsonld' | 'nextdata' | 'opengraph' | 'none' = 'none';
+
     // JSON-LD først: strukturert og komplett når den finnes.
     const ldBlocks = html.matchAll(
         /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
@@ -298,24 +539,43 @@ export async function parseEventUrl(rawUrl: string): Promise<{
         try {
             const event = findEventNode(JSON.parse(match[1]));
             if (event) {
-                const fields = fieldsFromJsonLd(event);
-                if (fields.title) return { fields: { url: url.href, ...fields }, parser: 'jsonld' };
+                fillMissing(fields, fieldsFromJsonLd(event));
+                if (fields.title || fields.startsAt) parser = 'jsonld';
+                if (fields.title && fields.startsAt) break;
             }
         } catch {
             // Ugyldig JSON-LD-blokk; prøv neste.
         }
     }
 
-    const og: ParsedEventFields = {
-        title: ogContent(html, 'og:title'),
-        description: ogContent(html, 'og:description'),
-        imageUrl: ogContent(html, 'og:image'),
-        url: url.href,
-    };
-    for (const key of Object.keys(og) as (keyof ParsedEventFields)[]) {
-        if (og[key] === undefined) delete og[key];
+    // __NEXT_DATA__ tetter hull JSON-LD-en lot stå åpne (typisk tidspunkt).
+    if (!fields.startsAt || !fields.title) {
+        const nextData = html.match(
+            /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i
+        );
+        if (nextData) {
+            try {
+                const node = findNextDataEvent(JSON.parse(nextData[1]));
+                if (node) {
+                    fillMissing(fields, fieldsFromNextData(node));
+                    if (parser === 'none' && (fields.title || fields.startsAt)) parser = 'nextdata';
+                }
+            } catch {
+                // Ugyldig eller avkuttet __NEXT_DATA__; hopp over.
+            }
+        }
     }
-    if (og.title) return { fields: og, parser: 'opengraph' };
 
-    return { fields: { url: url.href }, parser: 'none' };
+    // OpenGraph som siste lag for tittel/beskrivelse/bilde.
+    fillMissing(
+        fields,
+        prune({
+            title: ogContent(html, 'og:title'),
+            description: ogContent(html, 'og:description'),
+            imageUrl: ogContent(html, 'og:image'),
+        })
+    );
+    if (parser === 'none' && fields.title) parser = 'opengraph';
+
+    return { fields: { url: url.href, ...prune(fields) }, parser };
 }

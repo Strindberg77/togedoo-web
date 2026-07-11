@@ -35,9 +35,9 @@ interface MyActivity {
 }
 
 const STATUS_LABELS: Record<string, { text: string; cls: string }> = {
-    pending: { text: 'Venter på gjennomgang', cls: 'bg-yellow-100 text-yellow-800' },
-    published: { text: 'Publisert', cls: 'bg-green-100 text-green-800' },
-    rejected: { text: 'Avvist', cls: 'bg-red-100 text-red-800' },
+    pending: { text: 'Venter på gjennomgang', cls: 'bg-warning-amber/25 text-forest-dark' },
+    published: { text: 'Publisert', cls: 'bg-safety-green/15 text-safety-green' },
+    rejected: { text: 'Avvist', cls: 'bg-alert-red/10 text-alert-red' },
     expired: { text: 'Utløpt', cls: 'bg-gray-100 text-gray-600' },
 };
 
@@ -151,7 +151,7 @@ export default function KontoPage() {
             <main className="p-6 max-w-2xl mx-auto">
                 <h1 className="text-2xl font-bold mb-4">Arrangørkonto</h1>
                 <p>Kontofunksjonen er ikke aktivert ennå. Du kan fortsatt{' '}
-                    <Link href="/arranger" className="text-blue-600 underline">
+                    <Link href="/arranger" className="text-family-blue underline">
                         sende inn aktiviteter uten konto
                     </Link>.
                 </p>
@@ -193,15 +193,15 @@ export default function KontoPage() {
                         />
                         <button
                             type="submit"
-                            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 whitespace-nowrap"
+                            className="bg-family-blue text-white px-4 py-2 rounded hover:bg-family-blue-light whitespace-nowrap"
                         >
                             Send lenke
                         </button>
                     </form>
                 )}
-                {message && <p className="mt-3 text-red-600 text-sm">{message}</p>}
+                {message && <p className="mt-3 text-alert-red text-sm">{message}</p>}
                 <p className="mt-6 text-sm text-gray-500">
-                    <Link href="/arranger" className="text-blue-600 underline">
+                    <Link href="/arranger" className="text-family-blue underline">
                         Send inn uten konto
                     </Link>
                 </p>
@@ -221,65 +221,52 @@ export default function KontoPage() {
                 </button>
             </div>
 
-            <section className="border rounded p-4 mb-8">
-                <p className="text-sm text-gray-600 mb-3">
-                    Innlogget som <strong>{organizer.contact_email}</strong>
-                    {organizer.verified && (
-                        <span className="ml-2 inline-block px-2 py-0.5 rounded text-xs bg-green-100 text-green-800">
-                            Verifisert — innsendinger publiseres direkte
-                        </span>
-                    )}
-                </p>
-                <form onSubmit={handleSaveProfile} className="space-y-3">
-                    <div>
-                        <label className="block text-sm font-medium mb-1">
-                            Arrangørnavn (vises som kilde)
-                        </label>
-                        <input
-                            className="w-full border rounded px-3 py-2"
-                            maxLength={200}
-                            value={name}
-                            onChange={(e) => setName(e.target.value)}
-                        />
-                    </div>
-                    <label className="flex items-center gap-2 text-sm">
-                        <input
-                            type="checkbox"
-                            checked={notify}
-                            onChange={(e) => setNotify(e.target.checked)}
-                        />
-                        Send meg bekreftelse på e-post ved innsending
-                        {!emailConfigured && (
-                            <span className="text-gray-400">(e-postutsending er ikke aktivert ennå)</span>
-                        )}
-                    </label>
-                    <button
-                        type="submit"
-                        disabled={saving}
-                        className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
-                    >
-                        {saving ? 'Lagrer…' : 'Lagre'}
-                    </button>
-                    {message && <span className="ml-3 text-sm text-gray-600">{message}</span>}
-                </form>
-            </section>
+            <p className="text-sm text-gray-600 mb-6">
+                Innlogget som <strong>{organizer.contact_email}</strong>
+                {organizer.verified && (
+                    <span className="ml-2 inline-block px-2 py-0.5 rounded text-xs bg-safety-green/15 text-safety-green font-medium">
+                        Verifisert — innsendinger publiseres direkte
+                    </span>
+                )}
+            </p>
 
-            <div className="flex items-center justify-between mb-3">
-                <h2 className="text-xl font-semibold">Mine aktiviteter</h2>
+            {/* Hovedhandlingen først: skal kunne forstås uten opplæring. */}
+            <section className="border border-family-blue/30 bg-family-blue/5 rounded p-5 mb-8 text-center">
+                <p className="mb-3 font-medium">
+                    Skal dere arrangere noe for barn, ungdom eller familier?
+                </p>
                 <Link
                     href="/arranger"
-                    className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm"
+                    className="inline-block bg-family-blue text-white px-6 py-3 rounded hover:bg-family-blue-light font-medium"
                 >
-                    Ny aktivitet
+                    Legg inn nytt arrangement
                 </Link>
-            </div>
-            {activities.length === 0 ? (
-                <p className="text-gray-600">
-                    Ingen aktiviteter ennå.{' '}
-                    <Link href="/arranger" className="text-blue-600 underline">
-                        Legg inn den første
-                    </Link>.
+                <p className="mt-3 text-sm text-gray-600">
+                    {organizer.verified
+                        ? 'Arrangementet blir synlig i Togedoo med en gang.'
+                        : 'Arrangementet blir synlig i Togedoo etter en rask gjennomgang.'}
                 </p>
+            </section>
+
+            <h2 className="text-lg font-semibold border-l-4 border-family-blue pl-3 mb-3">
+                Mine aktiviteter
+            </h2>
+            {activities.length === 0 ? (
+                <section className="border rounded p-5 mb-8">
+                    <p className="font-medium mb-2">Kom i gang</p>
+                    <ol className="list-decimal pl-5 space-y-1 text-sm text-gray-700">
+                        <li>
+                            Trykk «Legg inn nytt arrangement» og fyll inn skjemaet — har dere en
+                            nettside for arrangementet, kan lenken fylle ut det meste automatisk.
+                        </li>
+                        <li>
+                            {organizer.verified
+                                ? 'Arrangementet publiseres direkte, siden kontoen er verifisert.'
+                                : 'Vi går raskt gjennom innsendingen før den publiseres.'}
+                        </li>
+                        <li>Følg status her, og bruk «Dupliser» neste gang dere gjentar noe.</li>
+                    </ol>
+                </section>
             ) : (
                 <ul className="space-y-3">
                     {activities.map((activity) => {
@@ -307,7 +294,7 @@ export default function KontoPage() {
                                             {status.text}
                                         </span>
                                         <button
-                                            className="text-sm text-blue-600 underline"
+                                            className="text-sm text-family-blue underline"
                                             onClick={() => handleDuplicate(activity)}
                                         >
                                             Dupliser
@@ -319,6 +306,45 @@ export default function KontoPage() {
                     })}
                 </ul>
             )}
+
+            <h2 className="text-lg font-semibold border-l-4 border-family-blue pl-3 mb-3 mt-10">
+                Kontoinnstillinger
+            </h2>
+            <section className="border rounded p-4">
+                <form onSubmit={handleSaveProfile} className="space-y-3">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">
+                            Arrangørnavn (vises som kilde)
+                        </label>
+                        <input
+                            className="w-full border rounded px-3 py-2"
+                            maxLength={200}
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                        />
+                    </div>
+                    <label className="flex items-center gap-2 text-sm">
+                        <input
+                            type="checkbox"
+                            className="accent-family-blue"
+                            checked={notify}
+                            onChange={(e) => setNotify(e.target.checked)}
+                        />
+                        Send meg bekreftelse på e-post ved innsending
+                        {!emailConfigured && (
+                            <span className="text-gray-400">(e-postutsending er ikke aktivert ennå)</span>
+                        )}
+                    </label>
+                    <button
+                        type="submit"
+                        disabled={saving}
+                        className="bg-family-blue text-white px-4 py-2 rounded hover:bg-family-blue-light disabled:opacity-50"
+                    >
+                        {saving ? 'Lagrer…' : 'Lagre'}
+                    </button>
+                    {message && <span className="ml-3 text-sm text-gray-600">{message}</span>}
+                </form>
+            </section>
         </main>
     );
 }

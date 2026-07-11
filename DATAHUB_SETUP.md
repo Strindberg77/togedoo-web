@@ -120,6 +120,23 @@ ingen e-post (stille av), selv om arrangører har slått på varsling.
 | `GET /api/organizer/activities` | Bearer (brukersesjon) | Mine aktiviteter, alle statuser |
 | `GET/PATCH /api/admin/organizers` | `Bearer ADMIN_SECRET` | Liste kontoer; `{ id, verified }` |
 
+### Brukertips og feilrapporter for steder
+
+Tips om nye steder sendes inn på `/tips` og lander som `kind='place'`,
+`status='pending'` på kilden `bruker-tips` — modereres med samme
+admin-API som arrangementer. Feilrapporter («finnes ikke», «feil
+lokasjon», «feil info») lagres i `place_reports`; medhold i «finnes
+ikke» setter `rejected + locked`, som OSM-re-importen aldri rører.
+Krever migrasjon 0006. «Meld feil»-knappen i Flutter-appen skal POSTe
+til `/api/places/report`.
+
+| Endepunkt | Auth | Beskrivelse |
+|---|---|---|
+| `POST /api/places/submit` | ingen (rate-limited) | Tips om nytt sted → pending |
+| `POST /api/places/report` | ingen (rate-limited) | `{ activityId, reason, comment? }` |
+| `GET /api/admin/reports` | `Bearer ADMIN_SECRET` | Åpne rapporter med stedsinfo |
+| `PATCH /api/admin/reports` | `Bearer ADMIN_SECRET` | `{ id, action: "fjern_sted"\|"lukk" }` |
+
 Moderering fra terminalen:
 
 ```bash
@@ -137,9 +154,9 @@ curl -X POST -H "Authorization: Bearer $ADMIN_SECRET" \
 | Kategori | Strategi | Vedlikehold |
 |---|---|---|
 | Bibliotek-events (Deichman, Bergen) | Crawl/feed, implementert | Lav; overvåk `sources.last_sync_status` |
-| Ungfritid | Feed/API-adapter i `lib/ingest.ts` (neste kilde) | Lav når adapter er skrevet |
+| Ungfritid | PÅ PAUSE (jul. 2026): internt søk (`POST /api/search`) er ikke-deterministisk — fullstendig uttrekk umulig uten endring hos Ungfritid. Fremtidig lavterskel-mulighet: lite nærhets-kall (~20 treff nær brukerens posisjon) der fullstendighet ikke kreves; body-kontrakt og probe-skript ligger i `scripts/ungfritid-probe*.mjs` | — |
 | Kommunale events | Per-kommune adapter, start med Oslo | Middels; én adapter per kommune |
-| Lekeplasser, skateparker, treningsapparater | Engangsimport fra OpenStreetMap Overpass (`leisure=playground` osv.) som `kind='place'`, deretter manuell kuratering | Lav; steder endres sjelden, årlig re-import |
+| Faste steder (lekeplasser, ballbinger, parker, idrettshaller, badeplasser) | Månedlig batch-import fra OpenStreetMap Overpass: `npx tsx scripts/import-places.ts` (dry-run først). Titler fra OSM-navn eller revers-geokodet «Lekeplass ved <gate>» (`lib/places.ts`). Rader med `locked=true` røres aldri. Krever migrasjon 0005. ODbL-KRAV: «© OpenStreetMap contributors» synlig der stedene vises. Utsatt til senere vurdering (for tynn OSM-dekning nå): svømmehall/badeland, ishall, akebakke, fornøyelsespark, minigolf, klatrepark | Lav; månedlig kjøring |
 | Strender, badeplasser | Kartverket stedsnavn + OSM, manuell kuratering | Lav |
 | Teatre, kinoer | Statisk liste (få objekter), manuelt vedlikeholdt | Svært lav |
 | Arrangør-events | Oppgave 2.9: skjema + lenketolkning + feed | Selvbetjent |

@@ -29,6 +29,7 @@ interface ActivityRow {
     price_text: string | null;
     url: string | null;
     image_url: string | null;
+    opening_hours: string | null;
 }
 
 function toApiShape(row: ActivityRow) {
@@ -50,11 +51,12 @@ function toApiShape(row: ActivityRow) {
         priceText: row.price_text,
         url: row.url,
         imageUrl: row.image_url,
+        openingHours: row.opening_hours,
     };
 }
 
 const ROW_COLUMNS =
-    'id, kind, title, description, category, target_audience, venue_name, address, municipality, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url';
+    'id, kind, title, description, category, target_audience, venue_name, address, municipality, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, opening_hours';
 
 async function fromDatabase(searchParams: URLSearchParams) {
     const db = supabaseAdmin();
@@ -108,6 +110,8 @@ async function fromDatabase(searchParams: URLSearchParams) {
         mode: 'datahub',
         data: rows.map(toApiShape),
         count: rows.length,
+        // ODbL-krav: steder (kind='place') kommer fra OpenStreetMap.
+        attribution: 'Stedsdata © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',
         timestamp: new Date().toISOString(),
     });
 }

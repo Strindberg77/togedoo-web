@@ -7,9 +7,20 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabaseBrowser } from '../../lib/supabaseBrowser';
+import {
+    expandOccurrences,
+    MAX_OCCURRENCES,
+    Recurrence,
+    RecurrenceFrequency,
+} from '../../lib/organizer';
 
 const CATEGORIES = ['Kultur', 'Læring', 'Kreativt', 'Aktivitet'];
 const TARGET_AUDIENCES = ['Barn', 'Ungdom', 'Familie', 'For alle'];
+const FREQUENCY_LABELS: Record<RecurrenceFrequency, string> = {
+    weekly: 'Ukentlig',
+    biweekly: 'Annenhver uke',
+    monthly: 'Månedlig',
+};
 
 interface FormState {
     title: string;
@@ -73,10 +84,19 @@ export default function ArrangorPage() {
     const [parseUrl, setParseUrl] = useState('');
     const [parsing, setParsing] = useState(false);
     const [parseInfo, setParseInfo] = useState<string | null>(null);
+    const [parseTone, setParseTone] = useState<'ok' | 'warn'>('warn');
     const [submitting, setSubmitting] = useState(false);
     const [errors, setErrors] = useState<string[]>([]);
     const [submitted, setSubmitted] = useState(false);
     const [submittedMessage, setSubmittedMessage] = useState<string | null>(null);
+    // Dato-UI: sluttdato og gjentakelse er skjult bak hver sin toggle,
+    // siden de fleste arrangementer er én enkelthendelse på én dag.
+    const [multiDay, setMultiDay] = useState(false);
+    const [recurring, setRecurring] = useState(false);
+    const [frequency, setFrequency] = useState<RecurrenceFrequency>('weekly');
+    const [recurrenceMethod, setRecurrenceMethod] = useState<'count' | 'until'>('count');
+    const [recurrenceCount, setRecurrenceCount] = useState('4');
+    const [recurrenceUntil, setRecurrenceUntil] = useState('');
     const [sessionToken, setSessionToken] = useState<string | null>(null);
     const [sessionEmail, setSessionEmail] = useState<string | null>(null);
 
@@ -111,6 +131,38 @@ export default function ArrangorPage() {
     const set = (field: keyof FormState, value: string | boolean) =>
         setForm((f) => ({ ...f, [field]: value }));
 
+    function buildRecurrence(): Recurrence | null {
+        if (!recurring) return null;
+        return {
+            frequency,
+            count: recurrenceMethod === 'count' ? Number(recurrenceCount) || 0 : null,
+            until: recurrenceMethod === 'until' && recurrenceUntil ? recurrenceUntil : null,
+        };
+    }
+
+    /** Sammendrag for gjentakelse: bruker samme ekspansjon som serveren. */
+    function recurrenceSummary(): { text: string; isError: boolean } | null {
+        if (!recurring) return null;
+        const startsAt = partsToIso(form.startsDate, form.startsTime);
+        if (!startsAt) return { text: 'Fyll inn dato og starttid for å se sammendraget.', isError: false };
+        const rec = buildRecurrence();
+        if (rec && rec.count !== null && (rec.count < 2 || rec.count > MAX_OCCURRENCES)) {
+            return { text: `Antall ganger må være mellom 2 og ${MAX_OCCURRENCES}.`, isError: true };
+        }
+        if (rec && rec.count === null && !rec.until) {
+            return { text: 'Velg en til-dato for å se sammendraget.', isError: false };
+        }
+        const expanded = expandOccurrences(startsAt, null, rec);
+        if ('error' in expanded) return { text: expanded.error, isError: true };
+        const dates = expanded.occurrences;
+        const fmt = (iso: string) =>
+            new Date(iso).toLocaleDateString('nb-NO', { day: 'numeric', month: 'long', year: 'numeric' });
+        return {
+            text: `Dette vil opprette ${dates.length} aktiviteter, fra ${fmt(dates[0].startsAt)} til ${fmt(dates[dates.length - 1].startsAt)}.`,
+            isError: false,
+        };
+    }
+
     async function handleParse() {
         if (!parseUrl.trim()) return;
         setParsing(true);
@@ -129,6 +181,9 @@ export default function ArrangorPage() {
             const f = data.fields ?? {};
             const starts = toLocalParts(f.startsAt);
             const ends = toLocalParts(f.endsAt);
+            // Dato uten klokkeslett i kilden: foreslå bare datoen, ikke 00:00.
+            if (f.startsAtHasTime === false) starts.time = '';
+            if (f.endsAtHasTime === false) ends.time = '';
             setForm((prev) => ({
                 ...prev,
                 title: f.title ?? prev.title,
@@ -138,18 +193,21 @@ export default function ArrangorPage() {
                 municipality: f.municipality ?? prev.municipality,
                 startsDate: starts.date || prev.startsDate,
                 startsTime: starts.time || prev.startsTime,
-                endsDate: ends.date || prev.endsDate,
+                endsDate: ends.date && ends.date !== starts.date ? ends.date : prev.endsDate,
                 endsTime: ends.time || prev.endsTime,
                 isFree: f.isFree ?? prev.isFree,
                 priceText: f.priceText ?? prev.priceText,
                 url: f.url ?? prev.url,
                 imageUrl: f.imageUrl ?? prev.imageUrl,
             }));
+            if (ends.date && starts.date && ends.date !== starts.date) setMultiDay(true);
+            const structured = data.parser === 'jsonld' || data.parser === 'nextdata';
+            setParseTone(structured && starts.time ? 'ok' : 'warn');
             setParseInfo(
-                data.parser === 'jsonld'
+                structured && starts.time
                     ? 'Fant strukturert eventdata — sjekk feltene under og juster om noe mangler.'
-                    : data.parser === 'opengraph'
-                      ? 'Fant tittel og beskrivelse — fyll inn tid og sted manuelt.'
+                    : structured || data.parser === 'opengraph'
+                      ? 'Fant ikke tidspunkt automatisk — fyll inn dato og klokkeslett manuelt.'
                       : 'Fant ingen eventdata på siden — fyll inn feltene manuelt.'
             );
         } catch {
@@ -165,14 +223,27 @@ export default function ArrangorPage() {
 
         const startsAt = partsToIso(form.startsDate, form.startsTime);
         if (!startsAt) {
-            setErrors(['Oppgi både startdato og klokkeslett.']);
+            setErrors(['Oppgi både dato og starttid.']);
             return;
         }
-        const hasEndsInput = !!(form.endsDate || form.endsTime);
-        const endsAt = partsToIso(form.endsDate, form.endsTime);
-        if (hasEndsInput && !endsAt) {
-            setErrors(['Oppgi både dato og klokkeslett for slutt, eller la begge stå tomme.']);
-            return;
+        // Slutt: samme dag som standard; egen sluttdato kun ved flerdagers.
+        let endsAt: string | null = null;
+        if (multiDay) {
+            if (!form.endsDate) {
+                setErrors(['Oppgi sluttdato, eller skru av «Strekker seg over flere dager».']);
+                return;
+            }
+            endsAt = partsToIso(form.endsDate, form.endsTime || form.startsTime);
+        } else if (form.endsTime) {
+            endsAt = partsToIso(form.startsDate, form.endsTime);
+        }
+        const recurrence = buildRecurrence();
+        if (recurrence) {
+            const check = expandOccurrences(startsAt, endsAt, recurrence);
+            if ('error' in check) {
+                setErrors([check.error]);
+                return;
+            }
         }
 
         setSubmitting(true);
@@ -187,6 +258,7 @@ export default function ArrangorPage() {
                     ...form,
                     startsAt,
                     endsAt,
+                    recurrence,
                     venueName: form.venueName || null,
                     address: form.address || null,
                     priceText: form.priceText || null,
@@ -218,7 +290,7 @@ export default function ArrangorPage() {
                     Vi kontakter deg på e-post hvis noe må avklares.
                 </p>
                 <button
-                    className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                    className="bg-family-blue text-white px-4 py-2 rounded hover:bg-family-blue-light"
                     onClick={() => {
                         setForm(EMPTY_FORM);
                         setParseUrl('');
@@ -234,6 +306,7 @@ export default function ArrangorPage() {
 
     const inputCls = 'w-full border rounded px-3 py-2';
     const labelCls = 'block text-sm font-medium mb-1';
+    const sectionCls = 'text-lg font-semibold border-l-4 border-family-blue pl-3';
 
     return (
         <main className="p-6 max-w-2xl mx-auto">
@@ -246,14 +319,14 @@ export default function ArrangorPage() {
                 {sessionEmail ? (
                     <>
                         Innlogget som <strong>{sessionEmail}</strong> — innsendingen knyttes til{' '}
-                        <Link href="/arranger/konto" className="text-blue-600 underline">
+                        <Link href="/arranger/konto" className="text-family-blue underline">
                             kontoen din
                         </Link>.
                     </>
                 ) : (
                     <>
                         Arrangerer du ofte?{' '}
-                        <Link href="/arranger/konto" className="text-blue-600 underline">
+                        <Link href="/arranger/konto" className="text-family-blue underline">
                             Logg inn med arrangørkonto
                         </Link>{' '}
                         for å samle og gjenbruke aktivitetene dine.
@@ -261,7 +334,7 @@ export default function ArrangorPage() {
                 )}
             </p>
 
-            <div className="border rounded p-4 mb-8 bg-gray-50">
+            <div className="border border-warm-orange/40 rounded p-4 mb-8 bg-warm-orange/10">
                 <label className={labelCls} htmlFor="parseUrl">
                     Har du en nettside for arrangementet? Lim inn lenken, så fyller vi ut det vi finner.
                 </label>
@@ -278,15 +351,26 @@ export default function ArrangorPage() {
                         type="button"
                         onClick={handleParse}
                         disabled={parsing}
-                        className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+                        className="bg-family-blue text-white px-4 py-2 rounded hover:bg-family-blue-light disabled:opacity-50 whitespace-nowrap"
                     >
                         {parsing ? 'Henter…' : 'Hent fra lenke'}
                     </button>
                 </div>
-                {parseInfo && <p className="mt-2 text-sm text-gray-700">{parseInfo}</p>}
+                {parseInfo && (
+                    <p
+                        className={`mt-2 text-sm rounded px-2 py-1 inline-block ${
+                            parseTone === 'ok'
+                                ? 'bg-safety-green/15 text-forest-dark'
+                                : 'bg-warning-amber/25 text-forest-dark'
+                        }`}
+                    >
+                        {parseInfo}
+                    </p>
+                )}
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
+                <h2 className={sectionCls}>Om aktiviteten</h2>
                 <div>
                     <label className={labelCls}>Tittel *</label>
                     <input
@@ -333,9 +417,10 @@ export default function ArrangorPage() {
                         </select>
                     </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
+                <h2 className={`${sectionCls} pt-4`}>Tid og sted</h2>
+                <div className="grid grid-cols-3 gap-4">
                     <div>
-                        <label className={labelCls}>Startdato *</label>
+                        <label className={labelCls}>Dato *</label>
                         <input
                             type="date"
                             className={inputCls}
@@ -354,17 +439,6 @@ export default function ArrangorPage() {
                             onChange={(e) => set('startsTime', e.target.value)}
                         />
                     </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                    <div>
-                        <label className={labelCls}>Sluttdato</label>
-                        <input
-                            type="date"
-                            className={inputCls}
-                            value={form.endsDate}
-                            onChange={(e) => set('endsDate', e.target.value)}
-                        />
-                    </div>
                     <div>
                         <label className={labelCls}>Klokkeslett slutt</label>
                         <input
@@ -375,6 +449,120 @@ export default function ArrangorPage() {
                         />
                     </div>
                 </div>
+
+                <label className="flex items-center gap-2 text-sm">
+                    <input
+                        type="checkbox"
+                        className="accent-family-blue"
+                        checked={multiDay}
+                        onChange={(e) => setMultiDay(e.target.checked)}
+                    />
+                    Strekker seg over flere dager
+                </label>
+                {multiDay && (
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className={labelCls}>Sluttdato *</label>
+                            <input
+                                type="date"
+                                className={inputCls}
+                                required={multiDay}
+                                value={form.endsDate}
+                                onChange={(e) => set('endsDate', e.target.value)}
+                            />
+                            <p className="text-sm text-gray-500 mt-1">
+                                Klokkeslett slutt gjelder sluttdatoen.
+                            </p>
+                        </div>
+                    </div>
+                )}
+
+                <label className="flex items-center gap-2 text-sm">
+                    <input
+                        type="checkbox"
+                        className="accent-family-blue"
+                        checked={recurring}
+                        onChange={(e) => setRecurring(e.target.checked)}
+                    />
+                    Gjentakende aktivitet
+                </label>
+                {recurring && (
+                    <div className="border rounded p-4 space-y-3">
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className={labelCls}>Frekvens</label>
+                                <select
+                                    className={inputCls}
+                                    value={frequency}
+                                    onChange={(e) => setFrequency(e.target.value as RecurrenceFrequency)}
+                                >
+                                    {(Object.keys(FREQUENCY_LABELS) as RecurrenceFrequency[]).map((f) => (
+                                        <option key={f} value={f}>
+                                            {FREQUENCY_LABELS[f]}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label className={labelCls}>Avslutt etter</label>
+                                <div className="flex gap-4 items-center h-10">
+                                    <label className="flex items-center gap-1 text-sm">
+                                        <input
+                                            type="radio"
+                                            className="accent-family-blue"
+                                            name="recurrenceMethod"
+                                            checked={recurrenceMethod === 'count'}
+                                            onChange={() => setRecurrenceMethod('count')}
+                                        />
+                                        Antall ganger
+                                    </label>
+                                    <label className="flex items-center gap-1 text-sm">
+                                        <input
+                                            type="radio"
+                                            className="accent-family-blue"
+                                            name="recurrenceMethod"
+                                            checked={recurrenceMethod === 'until'}
+                                            onChange={() => setRecurrenceMethod('until')}
+                                        />
+                                        Til dato
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        {recurrenceMethod === 'count' ? (
+                            <div>
+                                <label className={labelCls}>Antall ganger (2–{MAX_OCCURRENCES})</label>
+                                <input
+                                    type="number"
+                                    min={2}
+                                    max={MAX_OCCURRENCES}
+                                    className={inputCls}
+                                    value={recurrenceCount}
+                                    onChange={(e) => setRecurrenceCount(e.target.value)}
+                                />
+                            </div>
+                        ) : (
+                            <div>
+                                <label className={labelCls}>Til dato</label>
+                                <input
+                                    type="date"
+                                    className={inputCls}
+                                    value={recurrenceUntil}
+                                    onChange={(e) => setRecurrenceUntil(e.target.value)}
+                                />
+                            </div>
+                        )}
+                        {(() => {
+                            const summary = recurrenceSummary();
+                            if (!summary) return null;
+                            return (
+                                <p className={`text-sm ${summary.isError ? 'text-alert-red' : 'text-gray-700'}`}>
+                                    {summary.text}
+                                </p>
+                            );
+                        })()}
+                    </div>
+                )}
                 <div>
                     <label className={labelCls}>Stedsnavn (f.eks. lokale eller bygg)</label>
                     <input
@@ -408,10 +596,14 @@ export default function ArrangorPage() {
                 <p className="text-sm text-gray-500 -mt-2">
                     Oppgi stedsnavn eller adresse, så vises aktiviteten på kartet.
                 </p>
+                <h2 className={`${sectionCls} pt-4`}>Pris og kontakt</h2>
                 <div className="flex items-center gap-4">
-                    <label className="flex items-center gap-2">
+                    <label
+                        className={`flex items-center gap-2 ${form.isFree ? 'text-safety-green font-medium' : ''}`}
+                    >
                         <input
                             type="checkbox"
+                            className="accent-safety-green"
                             checked={form.isFree}
                             onChange={(e) => set('isFree', e.target.checked)}
                         />
@@ -460,7 +652,7 @@ export default function ArrangorPage() {
                 </div>
 
                 {errors.length > 0 && (
-                    <ul className="text-red-600 text-sm list-disc pl-5">
+                    <ul className="text-alert-red text-sm list-disc pl-5">
                         {errors.map((err) => (
                             <li key={err}>{err}</li>
                         ))}
@@ -470,7 +662,7 @@ export default function ArrangorPage() {
                 <button
                     type="submit"
                     disabled={submitting}
-                    className="bg-blue-600 text-white px-6 py-3 rounded hover:bg-blue-700 disabled:opacity-50"
+                    className="bg-family-blue text-white px-6 py-3 rounded hover:bg-family-blue-light disabled:opacity-50"
                 >
                     {submitting ? 'Sender inn…' : 'Send inn aktivitet'}
                 </button>
