@@ -1,5 +1,9 @@
 // app/api/admin/reports/route.ts
-// Behandling av stedsrapporter. GET lister åpne rapporter med stedsinfo.
+// Behandling av stedsrapporter. GET lister åpne rapporter med stedsinfo,
+// prioritert: rapporter der flere unike rapportører har meldt samme
+// sted+årsak («bekreftelser») ligger øverst — feil_lokasjon/feil_info får
+// aldri auto-handling, kun denne prioriteringen (finnes_ikke autobekreftes
+// i /api/places/report ved terskel).
 // PATCH { id, action }:
 //   'fjern_sted' -> aktiviteten settes rejected + locked (re-import rører
 //                   den aldri), rapporten lukkes
@@ -17,11 +21,35 @@ export async function GET(request: NextRequest) {
 
     const { data, error } = await supabaseAdmin()
         .from('place_reports')
-        .select('id, reason, comment, status, created_at, activity:activities(id, title, category, municipality, status, locked)')
+        .select(
+            'id, activity_id, reason, comment, status, created_at, reporter_hash, reported_from_distance_m, activity:activities(id, title, category, municipality, status, locked)'
+        )
         .eq('status', 'ny')
         .order('created_at', { ascending: true });
     if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-    return NextResponse.json({ success: true, count: data.length, data });
+
+    // Unike rapportører per sted+årsak; rapporter uten fingerprint teller
+    // som maks én bekreftelse hver seg imellom (kan ikke skilles fra
+    // hverandre, så de gis ikke vekt).
+    const uniqueReporters = new Map<string, Set<string>>();
+    for (const report of data) {
+        const key = `${report.activity_id}:${report.reason}`;
+        const set = uniqueReporters.get(key) ?? new Set<string>();
+        set.add(report.reporter_hash ?? 'uten-fingerprint');
+        uniqueReporters.set(key, set);
+    }
+    const annotated = data
+        .map(({ reporter_hash: _rh, ...report }) => ({
+            ...report,
+            bekreftelser: uniqueReporters.get(`${report.activity_id}:${report.reason}`)!.size,
+        }))
+        .sort(
+            (a, b) =>
+                b.bekreftelser - a.bekreftelser ||
+                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+
+    return NextResponse.json({ success: true, count: annotated.length, data: annotated });
 }
 
 export async function PATCH(request: NextRequest) {

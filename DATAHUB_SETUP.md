@@ -124,17 +124,35 @@ ingen e-post (stille av), selv om arrangører har slått på varsling.
 
 Tips om nye steder sendes inn på `/tips` og lander som `kind='place'`,
 `status='pending'` på kilden `bruker-tips` — modereres med samme
-admin-API som arrangementer. Feilrapporter («finnes ikke», «feil
-lokasjon», «feil info») lagres i `place_reports`; medhold i «finnes
-ikke» setter `rejected + locked`, som OSM-re-importen aldri rører.
-Krever migrasjon 0006. «Meld feil»-knappen i Flutter-appen skal POSTe
-til `/api/places/report`.
+admin-API som arrangementer. To uavhengige pending-tips innen ~75 m med
+samme kategori flagges `high_trust` og løftes øverst i pending-køen
+(ingen autopublisering — brukergenerert innhold ses fortsatt av et
+menneske). Feilrapporter («finnes ikke», «feil lokasjon», «feil info»)
+lagres i `place_reports`; medhold i «finnes ikke» setter
+`rejected + locked`, som OSM-re-importen aldri rører. Krever migrasjon
+0006 + 0007. «Meld feil»-knappen i Flutter-appen POSTer til
+`/api/places/report` (lib/services/place_report_service.dart).
+
+Mengde-basert selvbekreftelse (migrasjon 0007): appen sender en anonym,
+stabil device-ID som saltes og hashes server-side (`REPORT_HASH_SALT` i
+Vercel, f.eks. `openssl rand -hex 32`) til `reporter_hash` — IP brukes
+aldri til unikhets-telling (familier deler wifi), kun saltet til
+rate-limiting i databasen. Klientposisjon gir
+`reported_from_distance_m`; rapporter uten posisjon/fingerprint teller i
+admin-køen, men aldri mot auto-terskelen. Når 3 unike rapportører har
+meldt «finnes ikke» på samme sted innen 60 dager, alle innenfor 5 km fra
+stedet, settes stedet automatisk `rejected + locked` og rapportene
+lukkes med status `auto_behandlet` (skilles fra manuell `behandlet` i
+loggen). `feil_lokasjon`/`feil_info` har ingen auto-handling — de
+sorteres bare øverst i `GET /api/admin/reports` når flere unike
+rapportører har meldt det samme (`bekreftelser`-feltet). Tersklene
+ligger i `lib/reports.ts`.
 
 | Endepunkt | Auth | Beskrivelse |
 |---|---|---|
-| `POST /api/places/submit` | ingen (rate-limited) | Tips om nytt sted → pending |
-| `POST /api/places/report` | ingen (rate-limited) | `{ activityId, reason, comment? }` |
-| `GET /api/admin/reports` | `Bearer ADMIN_SECRET` | Åpne rapporter med stedsinfo |
+| `POST /api/places/submit` | ingen (rate-limited) | Tips om nytt sted → pending (+ high_trust ved 75 m-duplikat) |
+| `POST /api/places/report` | ingen (rate-limited i DB) | `{ activityId, reason, comment?, deviceId?, lat?, lng? }` |
+| `GET /api/admin/reports` | `Bearer ADMIN_SECRET` | Åpne rapporter med stedsinfo, sortert på `bekreftelser` |
 | `PATCH /api/admin/reports` | `Bearer ADMIN_SECRET` | `{ id, action: "fjern_sted"\|"lukk" }` |
 
 Moderering fra terminalen:

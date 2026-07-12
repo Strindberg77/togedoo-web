@@ -12,12 +12,16 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ success: false, error: 'Datahub er ikke konfigurert.' }, { status: 503 });
     }
 
+    // high_trust øverst: tips som er uavhengig bekreftet av et annet tips
+    // innen ~75 m med samme kategori (satt i /api/places/submit). kind er
+    // med så stedstips kan skilles fra arrangør-arrangementer i lista.
     const { data, error } = await supabaseAdmin()
         .from('activities')
         .select(
-            'id, title, description, category, target_audience, venue_name, address, municipality, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, contact_email, created_at'
+            'id, kind, high_trust, title, description, category, target_audience, venue_name, address, municipality, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, contact_email, created_at'
         )
         .eq('status', 'pending')
+        .order('high_trust', { ascending: false })
         .order('created_at', { ascending: true });
     if (error) {
         return NextResponse.json({ success: false, error: error.message }, { status: 500 });
