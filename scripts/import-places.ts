@@ -145,6 +145,10 @@ export interface ImportRow {
     opening_hours: string | null;
     is_free: boolean | null;
     url: string;
+    // Alle rå OSM-tagger (migrasjon 0008). API-et plukker visningsfelter
+    // herfra (surface/lit i første omgang, jf. tag-proben jul. 2026) —
+    // nye visningsfelter senere krever da ingen ny import-runde.
+    osm_tags: OsmTags;
     status: 'published';
     // Kun rapportering, fjernes før upsert:
     titleSource: TitleSource;
@@ -200,6 +204,7 @@ export async function buildRows(city: string, elements: OsmElement[], limit: num
             opening_hours: tags.opening_hours ?? null,
             is_free: tags.fee === 'yes' ? false : cat.isFree,
             url: `https://www.openstreetmap.org/${el.type}/${el.id}`,
+            osm_tags: tags,
             status: 'published',
             titleSource: titled.source,
             geocodeError: titled.geocodeError,

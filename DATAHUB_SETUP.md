@@ -68,6 +68,13 @@ oppsettet er gjort.
 | `targetAudience` | F.eks. `Barn`, `Familie` |
 | `limit` | Default 200, maks 500 |
 
+Steder (kind='place') har i tillegg feltene `surface` og `lit` — utvalgte
+OSM-tagger fra `osm_tags`-kolonnen (migrasjon 0008; alle rå tagger lagres
+ved import, men bare felter med reell dekning eksponeres: tag-proben
+jul. 2026 viste surface 63,7 % / lit 27,2 % på Ballbane, alt annet under
+terskelen). Feltene fylles først ved neste kjøring av
+`scripts/import-places.ts`.
+
 `GET|POST /api/sync` — full ingestion, krever `Authorization: Bearer CRON_SECRET`.
 
 ## Arrangørflyt (oppgave 2.9)

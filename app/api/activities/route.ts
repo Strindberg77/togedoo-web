@@ -30,6 +30,7 @@ interface ActivityRow {
     url: string | null;
     image_url: string | null;
     opening_hours: string | null;
+    osm_tags: Record<string, string> | null;
 }
 
 function toApiShape(row: ActivityRow) {
@@ -52,11 +53,16 @@ function toApiShape(row: ActivityRow) {
         url: row.url,
         imageUrl: row.image_url,
         openingHours: row.opening_hours,
+        // Utvalgte OSM-tagger med reell dekning (tag-proben jul. 2026:
+        // surface 63,7 % / lit 27,2 % på Ballbane; alt annet under
+        // terskelen). Rå osm_tags eksponeres bevisst aldri i sin helhet.
+        surface: row.osm_tags?.surface ?? null,
+        lit: row.osm_tags?.lit ?? null,
     };
 }
 
 const ROW_COLUMNS =
-    'id, kind, title, description, category, target_audience, venue_name, address, municipality, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, opening_hours';
+    'id, kind, title, description, category, target_audience, venue_name, address, municipality, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, opening_hours, osm_tags';
 
 async function fromDatabase(searchParams: URLSearchParams) {
     const db = supabaseAdmin();
