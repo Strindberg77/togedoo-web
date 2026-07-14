@@ -47,6 +47,19 @@ interface OsmElement {
 // Rekkefølgen er match-prioritet (et element kategoriseres av første treff).
 export const PLACE_CATEGORIES = [
     {
+        // Først i match-prioritet: institusjonen vinner over evt. park-/
+        // leisure-tagger på samme objekt. Tag-proben (jul. 2026, Oslo/
+        // Bergen/Stavanger): 132 steder, 97 % navn, fee 62,1 %,
+        // opening_hours 51,5 %, charge med kronebeløp 12,9 %.
+        key: 'museum',
+        label: 'Museum',
+        category: 'Museum',
+        audience: 'For alle',
+        selector: 'nwr["tourism"="museum"](area.a);',
+        matches: (t: OsmTags) => t.tourism === 'museum',
+        isFree: false as boolean | null,
+    },
+    {
         key: 'lekeplass',
         label: 'Lekeplass',
         category: 'Lekeplass',
@@ -144,6 +157,7 @@ export interface ImportRow {
     lng: number;
     opening_hours: string | null;
     is_free: boolean | null;
+    price_text: string | null;
     url: string;
     // Alle rå OSM-tagger (migrasjon 0008). API-et plukker visningsfelter
     // herfra (surface/lit i første omgang, jf. tag-proben jul. 2026) —
@@ -202,7 +216,10 @@ export async function buildRows(city: string, elements: OsmElement[], limit: num
             lat: pos.lat,
             lng: pos.lng,
             opening_hours: tags.opening_hours ?? null,
-            is_free: tags.fee === 'yes' ? false : cat.isFree,
+            is_free: tags.fee === 'yes' ? false : tags.fee === 'no' ? true : cat.isFree,
+            price_text: tags.charge
+                ? tags.charge.replace(/\bNOK\b/g, 'kr').trim().slice(0, 100) || null
+                : null,
             url: `https://www.openstreetmap.org/${el.type}/${el.id}`,
             osm_tags: tags,
             status: 'published',

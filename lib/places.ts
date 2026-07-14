@@ -231,6 +231,7 @@ export const PLACE_TIP_CATEGORIES = [
     'Park',
     'Idrettshall',
     'Badeplass',
+    'Museum',
     'Annet',
 ] as const;
 

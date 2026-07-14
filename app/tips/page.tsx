@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 
-const CATEGORIES = ['Lekeplass', 'Ballbane', 'Park', 'Idrettshall', 'Badeplass', 'Annet'];
+const CATEGORIES = ['Lekeplass', 'Ballbane', 'Park', 'Idrettshall', 'Badeplass', 'Museum', 'Annet'];
 
 interface FormState {
     title: string;
