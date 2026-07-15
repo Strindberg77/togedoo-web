@@ -33,6 +33,25 @@ interface ActivityRow {
     osm_tags: Record<string, string> | null;
 }
 
+/** Kun http/https-URL-er slipper gjennom til appens webview — OSM-tagger
+ *  er fri tekst og kan i verste fall inneholde hva som helst. */
+function sanitizeWebsite(raw: string | null): string | null {
+    if (!raw) return null;
+    try {
+        const url = new URL(raw.trim());
+        if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
+    } catch {
+        // Vanlig OSM-slurv: «www.museum.no» uten skjema.
+        try {
+            const url = new URL(`https://${raw.trim()}`);
+            if (url.hostname.includes('.')) return url.href;
+        } catch {
+            /* ugyldig — dropp */
+        }
+    }
+    return null;
+}
+
 function toApiShape(row: ActivityRow) {
     return {
         id: row.id,
@@ -54,10 +73,13 @@ function toApiShape(row: ActivityRow) {
         imageUrl: row.image_url,
         openingHours: row.opening_hours,
         // Utvalgte OSM-tagger med reell dekning (tag-proben jul. 2026:
-        // surface 63,7 % / lit 27,2 % på Ballbane; alt annet under
-        // terskelen). Rå osm_tags eksponeres bevisst aldri i sin helhet.
+        // surface 63,7 % / lit 27,2 % på Ballbane; website 64,4 % på
+        // Museum). Rå osm_tags eksponeres bevisst aldri i sin helhet.
         surface: row.osm_tags?.surface ?? null,
         lit: row.osm_tags?.lit ?? null,
+        website: sanitizeWebsite(
+            row.osm_tags?.website ?? row.osm_tags?.['contact:website'] ?? null
+        ),
     };
 }
 
