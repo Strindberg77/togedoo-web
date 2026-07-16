@@ -123,6 +123,10 @@
   --color-warning-amber: #ffc107;
   --color-alert-red: #f44336;
   --color-natur-grey: #8e8e93;
+  /* Kategori-aksenter (jul. 2026) — kun stedskategorier (Badeplass/Museum),
+     ikke generell UI. Kontrastverifisert for hvit tekst i begge temaer. */
+  --color-water-blue: #1976d2;
+  --color-terracotta: #795548;
   --color-snow-white: #fafafa;
   --color-forest-dark: #1c1c1e;
 }
