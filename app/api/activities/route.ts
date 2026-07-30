@@ -97,6 +97,13 @@ async function fromDatabase(searchParams: URLSearchParams) {
     const municipality = searchParams.get('municipality');
     const targetAudience = searchParams.get('targetAudience');
     const limit = Math.min(Number(searchParams.get('limit') ?? 200) || 200, 500);
+    // Fritekstsøk: saner til kun bokstaver (inkl. æøå via \p{L}), tall,
+    // mellomrom og bindestrek, maks 50 tegn. Det fjerner både ilike-wildcards
+    // (%/_) og PostgREST .or()-metategn (,/()/*), så q kan embeddes trygt.
+    const q = (searchParams.get('q') ?? '')
+        .replace(/[^\p{L}\p{N}\s-]/gu, '')
+        .trim()
+        .slice(0, 50);
 
     let rows: ActivityRow[];
 
@@ -108,6 +115,7 @@ async function fromDatabase(searchParams: URLSearchParams) {
             p_radius_m: radius,
             p_kind: kind,
             p_category: category,
+            p_q: q || null,
             p_limit: limit,
         });
         if (error) throw new Error(error.message);
@@ -128,6 +136,14 @@ async function fromDatabase(searchParams: URLSearchParams) {
         if (category) query = query.eq('category', category);
         if (municipality) query = query.ilike('municipality', municipality);
         if (targetAudience) query = query.ilike('target_audience', targetAudience);
+        if (q) {
+            // q er sanert over → trygt å embedde i .or(). PostgREST bruker *
+            // som ilike-wildcard.
+            query = query.or(
+                `title.ilike.*${q}*,description.ilike.*${q}*,` +
+                    `venue_name.ilike.*${q}*,address.ilike.*${q}*`
+            );
+        }
         const { data, error } = await query;
         if (error) throw new Error(error.message);
         rows = (data ?? []) as unknown as ActivityRow[];
