@@ -38,6 +38,9 @@ interface DyremoteSeed {
     description: string; // kort, kuratert
     municipality: 'Oslo' | 'Bergen' | 'Trondheim' | 'Stavanger';
     address: string; // web-verifisert, geokodes mot Kartverket
+    // Alternative adresser å prøve hvis primæradressen ikke gir entydig treff
+    // (f.eks. der kilder er uenige om postnummer). Prøves i rekkefølge.
+    addressAlternatives?: string[];
     fallbackLat: number; // estimert — brukes hvis geokoding feiler/tvetydig
     fallbackLng: number;
     isFree: boolean | null; // true=gratis, false=betalt, null=ukjent
@@ -61,7 +64,7 @@ const SEED: DyremoteSeed[] = [
         externalId: 'nordre-lindeberg-gard',
         title: 'Nordre Lindeberg gård',
         description: 'Oslo kommunes besøksgård i Groruddalen, med dyr og aktiviteter, åpen for alle.',
-        municipality: 'Oslo', address: 'Sam Eydes vei 9, 1084 Oslo',
+        municipality: 'Oslo', address: 'Sam Eydes vei 13, 1081 Oslo',
         fallbackLat: 59.9490, fallbackLng: 10.8760,
         isFree: true, url: 'https://www.nordrelindeberggard.com',
     },
@@ -69,7 +72,10 @@ const SEED: DyremoteSeed[] = [
         externalId: 'ekt-rideskole-husdyrpark',
         title: 'EKT Rideskole og Husdyrpark',
         description: 'Rideskole og husdyrpark på Ekebergsletta med dyr å hilse på.',
+        // Kilder uenige om postnummer (vilbli.no: 1181, Proff.no/1881: 1178) —
+        // prøv 1181 først, fall tilbake til 1178 hvis 1181 ikke gir treff.
         municipality: 'Oslo', address: 'Ekebergveien 99, 1181 Oslo',
+        addressAlternatives: ['Ekebergveien 99, 1178 Oslo'],
         fallbackLat: 59.8830, fallbackLng: 10.7830,
         isFree: null, url: 'https://www.rideskole.no',
     },
@@ -222,17 +228,33 @@ async function main() {
         let lng = seed.fallbackLng;
         let verified = false;
         let note = 'estimert (–no-geocode)';
+        let usedAddress = seed.address;
         if (!noGeocode) {
-            const geo = await geocode(seed.address);
-            note = geo.note;
+            const candidates = [seed.address, ...(seed.addressAlternatives ?? [])];
+            let best: { geo: GeoResult; addr: string } | null = null;
+            for (const addr of candidates) {
+                const geo = await geocode(addr);
+                await new Promise((r) => setTimeout(r, 300)); // høflig mot Kartverket
+                // Behold beste kandidat: entydig treff vinner, ellers første
+                // med koordinat, ellers første forsøk (for rapportnoten).
+                if (
+                    !best ||
+                    (geo.verified && !best.geo.verified) ||
+                    (typeof geo.lat === 'number' && best.geo.lat == null)
+                ) {
+                    best = { geo, addr };
+                }
+                if (geo.verified) break; // entydig — ikke prøv flere postnumre
+            }
+            const geo = best!.geo;
+            usedAddress = best!.addr;
+            note = candidates.length > 1 ? `${geo.note} [${usedAddress}]` : geo.note;
             if (typeof geo.lat === 'number' && typeof geo.lng === 'number') {
                 lat = geo.lat;
                 lng = geo.lng;
             }
             verified = geo.verified;
-            if (!verified) warnings.push(`  ⚠ ${seed.title} — ${seed.address}: ${note}`);
-            // Kartverket ber om maks ~1 kall/sek for høflig bruk.
-            await new Promise((r) => setTimeout(r, 300));
+            if (!verified) warnings.push(`  ⚠ ${seed.title} — ${usedAddress}: ${note}`);
         }
         resolved.push({ seed, lat, lng, verified, note });
     }
