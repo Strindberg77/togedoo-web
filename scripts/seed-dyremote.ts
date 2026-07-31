@@ -2,22 +2,24 @@
 //
 // Kuratert seed for «Dyremøte»-kategorien: dyre-/gårdsbesøksmål i de fire
 // dekkede byene (Oslo, Bergen, Trondheim, Stavanger). Ren OSM-tag-henting
-// (tourism=zoo/aquarium) underrapporterer kraftig — de fleste av disse er
-// besøksgårder uten dyretagg, eller tagget sprikende — så de vedlikeholdes
-// manuelt her som en egen kilde ved siden av 'osm-steder'.
+// (tourism=zoo/aquarium) underrapporterer kraftig — de fleste er besøksgårder
+// uten dyretagg, eller tagget sprikende — så de vedlikeholdes manuelt her som
+// en egen kilde ved siden av 'osm-steder'.
 //
-//   npx tsx scripts/seed-dyremote.ts --dry-run   (rapport, ingen skriving)
-//   npx tsx scripts/seed-dyremote.ts             (upsert)
+//   npx tsx scripts/seed-dyremote.ts --dry-run     (geokod + rapport, ingen skriving)
+//   npx tsx scripts/seed-dyremote.ts               (geokod + upsert)
+//   npx tsx scripts/seed-dyremote.ts --no-geocode  (bruk kun estimerte fallbacks)
 //
 // Krever SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (unntatt --dry-run).
 //
-// KOORDINATER: adressene er web-verifiserte. lat/lng er verifisert KUN der
-// coordVerified=true; ellers er de estimert fra adressen, og raden seedes som
-// status='pending' (API-et serverer bare 'published'), slik at den ikke går
-// live før koordinaten er bekreftet. Bekreft/korriger lat/lng + sett
-// coordVerified=true → status blir 'published' ved neste kjøring.
+// KOORDINATER: adressene er web-verifiserte. Ved kjøring geokodes hver adresse
+// mot KARTVERKET (samme ws.geonorge.no/adresser/v1-API som OSM-importens
+// punktsok, her forover via /sok). Entydig treff (totaltAntallTreff=1) →
+// koordinat brukes og status='published'. Tvetydig (>1 treff), ingen treff,
+// eller geokoding utilgjengelig → den ESTIMERTE fallback-koordinaten beholdes
+// og status='pending' (API-et serverer bare 'published'), med en advarsel i
+// rapporten — bekreft manuelt og korriger fallbackLat/fallbackLng ved behov.
 //
-// Denne fila er sannhetskilden for kategorien: rediger her og kjør på nytt.
 // Rader med locked=true (brukerrapport «finnes ikke») røres aldri, som i
 // OSM-importen.
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
@@ -28,15 +30,16 @@ const SOURCE = {
     kind: 'manual' as const,
 };
 
+const KARTVERKET_UA = 'Togedoo datahub (hello@togedoo.com)';
+
 interface DyremoteSeed {
     externalId: string; // stabil upsert-nøkkel
     title: string;
     description: string; // kort, kuratert
     municipality: 'Oslo' | 'Bergen' | 'Trondheim' | 'Stavanger';
-    address: string; // web-verifisert
-    lat: number;
-    lng: number;
-    coordVerified: boolean; // true → publiseres; false → pending til bekreftet
+    address: string; // web-verifisert, geokodes mot Kartverket
+    fallbackLat: number; // estimert — brukes hvis geokoding feiler/tvetydig
+    fallbackLng: number;
     isFree: boolean | null; // true=gratis, false=betalt, null=ukjent
     priceText?: string | null;
     url: string;
@@ -44,86 +47,72 @@ interface DyremoteSeed {
     openingHours?: string | null;
 }
 
-// coordVerified: kun Akvariet i Bergen har en web-verifisert koordinat.
-// De øvrige er estimert fra verifisert adresse og MÅ bekreftes før publisering.
 const SEED: DyremoteSeed[] = [
     // --- Oslo ---
     {
         externalId: 'kampen-barnebondegard',
         title: 'Kampen økologiske barnebondegård',
         description: 'Bybondegård med hest, esel, minigris, sau, geit og høner — for barnefamilier.',
-        municipality: 'Oslo',
-        address: 'Skedsmogata 23, 0655 Oslo',
-        lat: 59.9137, lng: 10.7828, coordVerified: false,
+        municipality: 'Oslo', address: 'Skedsmogata 23, 0655 Oslo',
+        fallbackLat: 59.9137, fallbackLng: 10.7828,
         isFree: true, url: 'https://kampenbarnebondegard.com',
     },
     {
         externalId: 'nordre-lindeberg-gard',
         title: 'Nordre Lindeberg gård',
         description: 'Oslo kommunes besøksgård i Groruddalen, med dyr og aktiviteter, åpen for alle.',
-        municipality: 'Oslo',
-        address: 'Sam Eydes vei 9, 1084 Oslo',
-        lat: 59.9490, lng: 10.8760, coordVerified: false,
+        municipality: 'Oslo', address: 'Sam Eydes vei 9, 1084 Oslo',
+        fallbackLat: 59.9490, fallbackLng: 10.8760,
         isFree: true, url: 'https://www.nordrelindeberggard.com',
     },
     {
         externalId: 'ekt-rideskole-husdyrpark',
         title: 'EKT Rideskole og Husdyrpark',
         description: 'Rideskole og husdyrpark på Ekebergsletta med dyr å hilse på.',
-        municipality: 'Oslo',
-        address: 'Ekebergveien 99, 1181 Oslo',
-        lat: 59.8830, lng: 10.7830, coordVerified: false,
+        municipality: 'Oslo', address: 'Ekebergveien 99, 1181 Oslo',
+        fallbackLat: 59.8830, fallbackLng: 10.7830,
         isFree: null, url: 'https://www.rideskole.no',
     },
     {
         externalId: 'oslo-reptilpark',
         title: 'Oslo Reptilpark',
         description: 'Innendørs dyrepark med slanger, øgler, skilpadder og andre reptiler — midt i sentrum.',
-        municipality: 'Oslo',
-        address: 'St. Olavs gate 2, 0165 Oslo',
-        lat: 59.9167, lng: 10.7383, coordVerified: false,
-        isFree: false, url: 'https://www.reptilpark.no',
-        targetAudience: 'For alle',
+        municipality: 'Oslo', address: 'St. Olavs gate 2, 0165 Oslo',
+        fallbackLat: 59.9167, fallbackLng: 10.7383,
+        isFree: false, url: 'https://www.reptilpark.no', targetAudience: 'For alle',
     },
     // --- Bergen ---
     {
         externalId: 'akvariet-bergen',
         title: 'Akvariet i Bergen',
         description: 'Et av Nordens eldste akvarier, på Nordnes — fisk, pingviner, krypdyr og sjøpattedyr.',
-        municipality: 'Bergen',
-        address: 'Nordnesbakken 4, 5005 Bergen',
-        lat: 60.399655, lng: 5.303323, coordVerified: true,
-        isFree: false, url: 'https://akvariet.no',
-        targetAudience: 'For alle',
+        municipality: 'Bergen', address: 'Nordnesbakken 4, 5005 Bergen',
+        fallbackLat: 60.399655, fallbackLng: 5.303323,
+        isFree: false, url: 'https://akvariet.no', targetAudience: 'For alle',
     },
     {
         externalId: 'ovre-eide-gard',
         title: 'Øvre-Eide gård',
         description: 'Besøksgård ved Jordalsvannet i Åsane med gårdsbesøk, dyr og åpne gårdsdager.',
-        municipality: 'Bergen',
-        address: 'Eidsvåg, Åsane, Bergen',
-        lat: 60.4790, lng: 5.3490, coordVerified: false,
-        isFree: null, url: 'https://www.ovre-eide.no',
-        targetAudience: 'For alle',
+        municipality: 'Bergen', address: 'Øvre-Eide 36, 5105 Eidsvåg i Åsane',
+        fallbackLat: 60.4790, fallbackLng: 5.3490,
+        isFree: null, url: 'https://www.ovre-eide.no', targetAudience: 'For alle',
     },
     {
         externalId: 'bergen-strutsefarm',
         title: 'Bergen Strutsefarm',
         description: 'Strutsefarm i Fyllingsdalen med omvisning og dyr.',
-        municipality: 'Bergen',
-        address: 'Rosenlundveien 31, 5146 Fyllingsdalen',
-        lat: 60.3470, lng: 5.2760, coordVerified: false,
-        isFree: false, url: 'https://strutsefarmen.no',
-        targetAudience: 'For alle',
+        municipality: 'Bergen', address: 'Rosenlundveien 31, 5146 Fyllingsdalen',
+        fallbackLat: 60.3470, fallbackLng: 5.2760,
+        isFree: false, url: 'https://strutsefarmen.no', targetAudience: 'For alle',
     },
     // --- Trondheim ---
     {
         externalId: 'voll-gard-trondheim',
         title: 'Voll gård',
         description: 'Hele byens bondegård på Moholt — dyr, gårdskafé og aktiviteter året rundt.',
-        municipality: 'Trondheim',
-        address: 'Gamle Jonsvannsveien 1, 7049 Trondheim',
-        lat: 63.4090, lng: 10.4500, coordVerified: false,
+        municipality: 'Trondheim', address: 'Gamle Jonsvannsveien 1, 7049 Trondheim',
+        fallbackLat: 63.4090, fallbackLng: 10.4500,
         isFree: true, url: 'https://www.vollgard.no',
     },
     // --- Stavanger ---
@@ -131,23 +120,76 @@ const SEED: DyremoteSeed[] = [
         externalId: 'gausel-fritidsgard',
         title: 'Gausel fritidsgård',
         description: 'Stavanger kommunes besøksgård med geit, sau, høner, gris, ku og alpakka.',
-        municipality: 'Stavanger',
-        address: 'Keramikkveien 36, 4032 Stavanger',
-        lat: 58.9010, lng: 5.7250, coordVerified: false,
+        municipality: 'Stavanger', address: 'Keramikkveien 36, 4032 Stavanger',
+        fallbackLat: 58.9010, fallbackLng: 5.7250,
         isFree: true, url: 'https://www.stavanger.kommune.no',
     },
     {
         externalId: 'ullandhaug-okologisk-gard',
         title: 'Ullandhaug økologiske gård',
         description: 'Økologisk gård med turstier, lekeplass og dyr — kaniner, ullgris, ender, hester og høner.',
-        municipality: 'Stavanger',
-        address: 'Ullandhaugveien 150, 4021 Stavanger',
-        lat: 58.9330, lng: 5.7060, coordVerified: false,
+        municipality: 'Stavanger', address: 'Ullandhaugveien 150, 4021 Stavanger',
+        fallbackLat: 58.9330, fallbackLng: 5.7060,
         isFree: true, url: 'http://www.ullandhaug-gard.no',
     },
 ];
 
-function toRow(seed: DyremoteSeed, sourceId: string) {
+interface GeoResult {
+    lat?: number;
+    lng?: number;
+    total: number;
+    verified: boolean; // entydig treff (totaltAntallTreff === 1)
+    note: string;
+}
+
+// Forover-geokoding mot Kartverket (samme API/UA/retry-filosofi som
+// OSM-importens punktsok i lib/places.ts; her /sok, fuzzy=false for presisjon).
+// representasjonspunkt returneres i EPSG:4258 ≈ WGS84 — rett for appen.
+async function geocode(address: string): Promise<GeoResult> {
+    const params = new URLSearchParams({ sok: address, fuzzy: 'false', treffPerSide: '5' });
+    const url = `https://ws.geonorge.no/adresser/v1/sok?${params}`;
+    const TIMEOUT_MS = Number(process.env.KARTVERKET_TIMEOUT_MS ?? 8000);
+    const BACKOFFS_MS = [2000, 4000];
+
+    let res: Response | null = null;
+    let transient = '';
+    for (let attempt = 0; ; attempt++) {
+        try {
+            res = await fetch(url, { headers: { 'User-Agent': KARTVERKET_UA }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+        } catch (err) {
+            res = null;
+            transient =
+                err instanceof Error && err.name === 'TimeoutError'
+                    ? `timeout etter ${TIMEOUT_MS / 1000} s`
+                    : `nettverksfeil: ${err instanceof Error ? err.message : String(err)}`;
+        }
+        if (res) {
+            if (res.ok) break;
+            if (![429, 500, 502, 503].includes(res.status)) {
+                return { total: 0, verified: false, note: `geokoding feilet: HTTP ${res.status}` };
+            }
+            transient = `HTTP ${res.status}`;
+        }
+        if (attempt >= BACKOFFS_MS.length) {
+            return { total: 0, verified: false, note: `geokoding utilgjengelig: ${transient}` };
+        }
+        await new Promise((r) => setTimeout(r, BACKOFFS_MS[attempt]));
+    }
+
+    const data = await res!.json();
+    const total: number = data?.metadata?.totaltAntallTreff ?? (data?.adresser?.length ?? 0);
+    const hit = data?.adresser?.[0];
+    const p = hit?.representasjonspunkt;
+    if (!hit || typeof p?.lat !== 'number' || typeof p?.lon !== 'number') {
+        return { total, verified: false, note: total > 1 ? `tvetydig (${total} treff)` : 'ingen treff' };
+    }
+    if (total === 1) {
+        return { lat: p.lat, lng: p.lon, total, verified: true, note: `entydig: ${hit.adressetekst}` };
+    }
+    return { lat: p.lat, lng: p.lon, total, verified: false, note: `tvetydig (${total} treff), topp: ${hit.adressetekst}` };
+}
+
+function toRow(seed: DyremoteSeed, sourceId: string, lat: number, lng: number, verified: boolean) {
     return {
         source_id: sourceId,
         external_id: seed.externalId,
@@ -158,29 +200,54 @@ function toRow(seed: DyremoteSeed, sourceId: string) {
         target_audience: seed.targetAudience ?? 'Barn',
         address: seed.address,
         municipality: seed.municipality,
-        lat: seed.lat,
-        lng: seed.lng,
+        lat,
+        lng,
         is_free: seed.isFree,
         price_text: seed.priceText ?? null,
         url: seed.url,
         opening_hours: seed.openingHours ?? null,
-        status: seed.coordVerified ? 'published' : 'pending',
+        status: verified ? 'published' : 'pending',
     };
 }
 
 async function main() {
     const dryRun = process.argv.includes('--dry-run');
+    const noGeocode = process.argv.includes('--no-geocode');
 
-    const published = SEED.filter((s) => s.coordVerified).length;
-    console.log(
-        `Dyremøte-seed: ${SEED.length} steder — ${published} med verifisert ` +
-            `koordinat (published), ${SEED.length - published} estimert (pending).`
-    );
-    for (const s of SEED) {
+    // Løs koordinater per sted: Kartverket-geokoding, ellers fallback.
+    const resolved: { seed: DyremoteSeed; lat: number; lng: number; verified: boolean; note: string }[] = [];
+    const warnings: string[] = [];
+    for (const seed of SEED) {
+        let lat = seed.fallbackLat;
+        let lng = seed.fallbackLng;
+        let verified = false;
+        let note = 'estimert (–no-geocode)';
+        if (!noGeocode) {
+            const geo = await geocode(seed.address);
+            note = geo.note;
+            if (typeof geo.lat === 'number' && typeof geo.lng === 'number') {
+                lat = geo.lat;
+                lng = geo.lng;
+            }
+            verified = geo.verified;
+            if (!verified) warnings.push(`  ⚠ ${seed.title} — ${seed.address}: ${note}`);
+            // Kartverket ber om maks ~1 kall/sek for høflig bruk.
+            await new Promise((r) => setTimeout(r, 300));
+        }
+        resolved.push({ seed, lat, lng, verified, note });
+    }
+
+    const verifiedCount = resolved.filter((r) => r.verified).length;
+    console.log(`Dyremøte-seed: ${SEED.length} steder — ${verifiedCount} entydig geokodet (published), ${SEED.length - verifiedCount} pending.\n`);
+    for (const r of resolved) {
         console.log(
-            `  [${s.coordVerified ? 'PUBLISHED' : 'pending  '}] ${s.municipality.padEnd(10)} ` +
-                `${s.title} — ${s.address}`
+            `  [${r.verified ? 'PUBLISHED' : 'pending  '}] ${r.seed.municipality.padEnd(10)} ` +
+                `${r.seed.title.padEnd(34)} ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}  (${r.note})`
         );
+    }
+    if (warnings.length) {
+        console.log(`\nTrenger bekreftelse (${warnings.length}):`);
+        warnings.forEach((w) => console.log(w));
     }
 
     if (dryRun) {
@@ -191,7 +258,6 @@ async function main() {
 
     const db = supabaseAdmin();
 
-    // 1) Sikre kilden.
     const { data: source, error: sourceError } = await db
         .from('sources')
         .upsert({ slug: SOURCE.slug, name: SOURCE.name, kind: SOURCE.kind, active: true }, { onConflict: 'slug' })
@@ -199,7 +265,6 @@ async function main() {
         .single();
     if (sourceError || !source) throw new Error(`Kunne ikke sikre kilden: ${sourceError?.message}`);
 
-    // 2) Respekter låste rader (brukerrapport «finnes ikke») — rør dem aldri.
     const { data: lockedRows, error: lockedError } = await db
         .from('activities')
         .select('external_id')
@@ -208,15 +273,17 @@ async function main() {
     if (lockedError) throw new Error(`Oppslag av låste rader feilet: ${lockedError.message}`);
     const locked = new Set((lockedRows ?? []).map((r) => r.external_id));
 
-    const rows = SEED.filter((s) => !locked.has(s.externalId)).map((s) => toRow(s, source.id));
-    if (locked.size) console.log(`Hopper over ${SEED.length - rows.length} låste rader.`);
+    const rows = resolved
+        .filter((r) => !locked.has(r.seed.externalId))
+        .map((r) => toRow(r.seed, source.id, r.lat, r.lng, r.verified));
+    if (locked.size) console.log(`\nHopper over ${resolved.length - rows.length} låste rader.`);
 
     const { error } = await db.from('activities').upsert(rows, { onConflict: 'source_id,external_id' });
     if (error) throw new Error(`Upsert feilet: ${error.message}`);
 
     await db
         .from('sources')
-        .update({ last_synced_at: new Date().toISOString(), last_sync_status: `ok: ${rows.length} dyremøte-steder` })
+        .update({ last_synced_at: new Date().toISOString(), last_sync_status: `ok: ${rows.length} dyremøte-steder (${verifiedCount} geokodet)` })
         .eq('id', source.id);
 
     console.log(`\nFerdig: upsertet ${rows.length} steder i kategorien Dyremøte.`);
