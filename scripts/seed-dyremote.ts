@@ -87,6 +87,17 @@ const SEED: DyremoteSeed[] = [
         fallbackLat: 59.9167, fallbackLng: 10.7383,
         isFree: false, url: 'https://www.reptilpark.no', targetAudience: 'For alle',
     },
+    {
+        // Besøksfjøset (Bymiljøetaten) — atskilt fra Bogstad gård MUSEUM
+        // (herskapshuset, Norsk Folkemuseum, forblir kategori Museum). Det er
+        // besøksgården med husdyr som hører hjemme i Dyremøte.
+        externalId: 'bogstad-besoksgard',
+        title: 'Bogstad besøksgård',
+        description: 'Økologisk besøksgård ved Bogstadvannet med storfe, hester, sauer, geiter, kaniner, kalkuner og høns — gratis besøksfjøs, drevet av Bymiljøetaten.',
+        municipality: 'Oslo', address: 'Sørkedalsveien 450, 0758 Oslo',
+        fallbackLat: 59.9497, fallbackLng: 10.6284,
+        isFree: true, url: 'https://bogstad.no/besoksgard',
+    },
     // --- Bergen ---
     {
         externalId: 'akvariet-bergen',
