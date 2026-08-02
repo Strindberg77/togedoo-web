@@ -94,7 +94,10 @@ const SEED: DyremoteSeed[] = [
         externalId: 'bogstad-besoksgard',
         title: 'Bogstad besøksgård',
         description: 'Økologisk besøksgård ved Bogstadvannet med storfe, hester, sauer, geiter, kaniner, kalkuner og høns — gratis besøksfjøs, drevet av Bymiljøetaten.',
-        municipality: 'Oslo', address: 'Sørkedalsveien 450, 0758 Oslo',
+        // Offisiell registrert adresse har bokstav-suffiks «A» (Brønnøysund/
+        // Proff); prøv den først, fall til uten bokstav hvis den ikke treffer.
+        municipality: 'Oslo', address: 'Sørkedalsveien 450 A, 0758 Oslo',
+        addressAlternatives: ['Sørkedalsveien 450, 0758 Oslo'],
         fallbackLat: 59.9497, fallbackLng: 10.6284,
         isFree: true, url: 'https://bogstad.no/besoksgard',
     },
