@@ -41,6 +41,10 @@ interface DyremoteSeed {
     // Alternative adresser å prøve hvis primæradressen ikke gir entydig treff
     // (f.eks. der kilder er uenige om postnummer). Prøves i rekkefølge.
     addressAlternatives?: string[];
+    // Manuelt verifisert koordinat: hopper over Kartverket-geokoding og
+    // publiseres direkte (coordVerified). Bruk når geokoding ikke gir entydig
+    // treff, men koordinaten er bekreftet for hånd.
+    manualCoord?: { lat: number; lng: number };
     fallbackLat: number; // estimert — brukes hvis geokoding feiler/tvetydig
     fallbackLng: number;
     isFree: boolean | null; // true=gratis, false=betalt, null=ukjent
@@ -98,6 +102,8 @@ const SEED: DyremoteSeed[] = [
         // Proff); prøv den først, fall til uten bokstav hvis den ikke treffer.
         municipality: 'Oslo', address: 'Sørkedalsveien 450 A, 0758 Oslo',
         addressAlternatives: ['Sørkedalsveien 450, 0758 Oslo'],
+        // Manuelt verifiserte koordinater (Kartverket ga ingen entydig treff).
+        manualCoord: { lat: 59.972153, lng: 10.626059 },
         fallbackLat: 59.9497, fallbackLng: 10.6284,
         isFree: true, url: 'https://bogstad.no/besoksgard',
     },
@@ -243,7 +249,13 @@ async function main() {
         let verified = false;
         let note = 'estimert (–no-geocode)';
         let usedAddress = seed.address;
-        if (!noGeocode) {
+        if (seed.manualCoord) {
+            // Manuelt verifisert — hopp over geokoding, publiser direkte.
+            lat = seed.manualCoord.lat;
+            lng = seed.manualCoord.lng;
+            verified = true;
+            note = 'manuelt verifisert';
+        } else if (!noGeocode) {
             const candidates = [seed.address, ...(seed.addressAlternatives ?? [])];
             let best: { geo: GeoResult; addr: string } | null = null;
             for (const addr of candidates) {
