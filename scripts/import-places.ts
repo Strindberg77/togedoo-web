@@ -60,6 +60,19 @@ export const PLACE_CATEGORIES = [
         isFree: false as boolean | null,
     },
     {
+        // Rik OSM-dekning i de fire byene (Deichman, Bergen off. bibliotek,
+        // Trondheim folkebibliotek, Sølvberget m/filialer). Nesten alle har
+        // name-tag → få trenger geokodet tittel. access!=private siler bort
+        // institusjons-/skolebibliotek. Gratis inngang.
+        key: 'bibliotek',
+        label: 'Bibliotek',
+        category: 'Bibliotek',
+        audience: 'For alle',
+        selector: 'nwr["amenity"="library"]["access"!="private"](area.a);',
+        matches: (t: OsmTags) => t.amenity === 'library',
+        isFree: true,
+    },
+    {
         key: 'lekeplass',
         label: 'Lekeplass',
         category: 'Lekeplass',
