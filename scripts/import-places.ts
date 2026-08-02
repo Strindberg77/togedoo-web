@@ -330,11 +330,29 @@ async function main() {
 
     console.log(`Import av faste steder: ${cities.join(', ')}${dryRun ? ' [DRY-RUN]' : ''}${limit !== Infinity ? ` [limit=${limit}/kategori]` : ''}`);
     let total = 0;
+    // Feiltoleranse per by: én bys feil (f.eks. konsekvent Overpass-504 for
+    // Trondheim) skal IKKE avbryte hele kjøringen — de øvrige byene fullføres
+    // og skrives, og de feilede oppsummeres til slutt med exit-kode 1.
+    const failed: { city: string; error: string }[] = [];
     for (const city of cities) {
-        total += await importCity(city, dryRun, limit);
+        try {
+            total += await importCity(city, dryRun, limit);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`  ✗ ${city} FEILET — hoppes over, fortsetter til neste by: ${msg}`);
+            failed.push({ city, error: msg });
+        }
         if (city !== cities[cities.length - 1]) await sleep(CITY_PAUSE_MS);
     }
-    console.log(`\nFerdig: ${total} steder ${dryRun ? 'klare (ingenting skrevet)' : 'importert'}.`);
+    const okCount = cities.length - failed.length;
+    console.log(`\nFerdig: ${total} steder ${dryRun ? 'klare (ingenting skrevet)' : 'importert'} — ${okCount}/${cities.length} byer gikk gjennom.`);
+    if (failed.length) {
+        console.log(`\nFEILEDE BYER (${failed.length}):`);
+        for (const f of failed) console.log(`  ✗ ${f.city}: ${f.error}`);
+        // Delvis feil: de vellykkede byene er skrevet, men signaliser til
+        // operatør/CI at minst én by mangler ved å avslutte med kode 1.
+        process.exitCode = 1;
+    }
     console.log('Husk ODbL-attribusjon der dataene vises: «© OpenStreetMap contributors».');
 }
 
