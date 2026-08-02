@@ -138,10 +138,13 @@ async function fromDatabase(searchParams: URLSearchParams) {
         if (targetAudience) query = query.ilike('target_audience', targetAudience);
         if (q) {
             // q er sanert over → trygt å embedde i .or(). PostgREST bruker *
-            // som ilike-wildcard.
+            // som ilike-wildcard. category er med fordi kategorinavnet
+            // («Ballbane», «Museum» …) er nettopp det brukeren skriver i
+            // fritekst — uten den bommer «BALL» på navngitte baner.
             query = query.or(
                 `title.ilike.*${q}*,description.ilike.*${q}*,` +
-                    `venue_name.ilike.*${q}*,address.ilike.*${q}*`
+                    `venue_name.ilike.*${q}*,address.ilike.*${q}*,` +
+                    `category.ilike.*${q}*`
             );
         }
         const { data, error } = await query;
