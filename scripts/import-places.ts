@@ -25,6 +25,11 @@ const OVERPASS_ENDPOINTS = [
 ];
 const UA = 'Togedoo datahub (hello@togedoo.com)';
 const CITY_PAUSE_MS = 5000;
+// 2b: ekte eksponentiell backoff mellom Overpass-forsøk (5s→15s→45s), brukt
+// over TO runder på speilene (opptil ENDPOINTS.length × 2 forsøk per spørring).
+const OVERPASS_BACKOFF_MS = [5000, 15000, 45000];
+// 2a: kort høflighetspause mellom de per-kategori-spørringene innen én by.
+const OVERPASS_QUERY_PAUSE_MS = 1000;
 // Kartverket punktsøk svarte 502 under 100 ms-kadens og var treg (timeouts)
 // ved 400 ms (jul. 2026). 900 ms default; overstyr med PLACES_PAUSE_MS for
 // å eksperimentere uten kodeendring. Egen pause, uavhengig av Overpass.
@@ -121,33 +126,71 @@ export const PLACE_CATEGORIES = [
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function overpassCity(city: string): Promise<OsmElement[]> {
-    const query = `[out:json][timeout:180];
-area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
-(
-${PLACE_CATEGORIES.map((c) => '  ' + c.selector).join('\n')}
-);
-out center tags;`;
-    for (const endpoint of OVERPASS_ENDPOINTS) {
+/// Kjør ÉN Overpass-spørring med retry. 2b: to runder over speilene med ekte
+/// eksponentiell backoff (5s→15s→45s) mellom forsøkene. 429/504 og nettverks-/
+/// parse-feil er retrybare; annen HTTP-status (4xx/5xx) kastes umiddelbart —
+/// det er en spørringsfeil retry ikke løser.
+async function fetchOverpass(query: string, label: string): Promise<OsmElement[]> {
+    const attempts = [...OVERPASS_ENDPOINTS, ...OVERPASS_ENDPOINTS];
+    for (let i = 0; i < attempts.length; i++) {
+        const endpoint = attempts[i];
+        const isLast = i === attempts.length - 1;
         try {
             const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
                 body: 'data=' + encodeURIComponent(query),
             });
-            if (res.status === 429 || res.status === 504) {
-                console.log(`  ${endpoint} svarte ${res.status}, prøver neste speil...`);
-                await sleep(CITY_PAUSE_MS);
-                continue;
+            if (res.ok) {
+                const json = await res.json();
+                return (json.elements ?? []) as OsmElement[];
             }
-            if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
-            const json = await res.json();
-            return (json.elements ?? []) as OsmElement[];
+            // Kun 429/504 er verdt å prøve på nytt; andre statuser er faste feil.
+            if (res.status !== 429 && res.status !== 504) {
+                throw new Error(`Overpass HTTP ${res.status} (${label})`);
+            }
+            console.log(`    ${label}: ${endpoint} svarte ${res.status} (forsøk ${i + 1}/${attempts.length})`);
         } catch (err) {
-            console.log(`  ${endpoint} feilet (${err instanceof Error ? err.message : err}), prøver neste...`);
+            // Ikke-retrybar HTTP-feil kastes videre; nettverks-/parse-feil retryes.
+            if (err instanceof Error && err.message.startsWith('Overpass HTTP')) throw err;
+            console.log(`    ${label}: ${endpoint} feilet (${err instanceof Error ? err.message : err}) (forsøk ${i + 1}/${attempts.length})`);
+        }
+        if (!isLast) {
+            await sleep(OVERPASS_BACKOFF_MS[Math.min(i, OVERPASS_BACKOFF_MS.length - 1)]);
         }
     }
-    throw new Error(`Alle Overpass-speil feilet for ${city}`);
+    throw new Error(`Alle Overpass-forsøk feilet for ${label}`);
+}
+
+/// 2a: én spørring PER kategori i stedet for én kombinert. Hver delspørring
+/// (område + én selektor) er langt lettere enn område + syv selektorer, så den
+/// holder seg godt under gateway-timeouten — særlig for Trondheims tunge
+/// sammensatte kommunegrense. Resultatene slås sammen og dedupes på
+/// type/id; første kategori som treffer et element vinner (samme match-
+/// prioritet som før, siden PLACE_CATEGORIES itereres i rekkefølge).
+async function overpassCity(city: string): Promise<OsmElement[]> {
+    const seen = new Set<string>();
+    const all: OsmElement[] = [];
+    for (const cat of PLACE_CATEGORIES) {
+        const query = `[out:json][timeout:180];
+area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
+(
+  ${cat.selector}
+);
+out center tags;`;
+        const elements = await fetchOverpass(query, `${city}/${cat.key}`);
+        let added = 0;
+        for (const el of elements) {
+            const id = `${el.type}/${el.id}`;
+            if (seen.has(id)) continue;
+            seen.add(id);
+            all.push(el);
+            added += 1;
+        }
+        console.log(`  ${city}/${cat.key.padEnd(11)} ${String(elements.length).padStart(4)} elementer (${added} nye)`);
+        await sleep(OVERPASS_QUERY_PAUSE_MS);
+    }
+    return all;
 }
 
 function coords(el: OsmElement): { lat: number; lng: number } | null {
