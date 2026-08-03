@@ -136,6 +136,8 @@ export const PLACE_CATEGORIES = [
     },
 ];
 
+type PlaceCategory = (typeof PLACE_CATEGORIES)[number];
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /// Kjør ÉN Overpass-spørring med retry. 2b: to runder over speilene med ekte
@@ -180,10 +182,13 @@ async function fetchOverpass(query: string, label: string): Promise<OsmElement[]
 /// sammensatte kommunegrense. Resultatene slås sammen og dedupes på
 /// type/id; første kategori som treffer et element vinner (samme match-
 /// prioritet som før, siden PLACE_CATEGORIES itereres i rekkefølge).
-async function overpassCity(city: string): Promise<OsmElement[]> {
+async function overpassCity(
+    city: string,
+    cats: PlaceCategory[] = PLACE_CATEGORIES
+): Promise<OsmElement[]> {
     const seen = new Set<string>();
     const all: OsmElement[] = [];
-    for (const cat of PLACE_CATEGORIES) {
+    for (const cat of cats) {
         const query = `[out:json][timeout:180];
 area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
 (
@@ -238,14 +243,19 @@ export interface ImportRow {
     osmName: string | null;
 }
 
-export async function buildRows(city: string, elements: OsmElement[], limit: number): Promise<ImportRow[]> {
+export async function buildRows(
+    city: string,
+    elements: OsmElement[],
+    limit: number,
+    cats: PlaceCategory[] = PLACE_CATEGORIES
+): Promise<ImportRow[]> {
     // Første pass: velg elementer (kategori + koordinater + limit), så vi
     // vet totalt geokodingsbehov før vi starter — gir ekte fremdriftslinje.
     const selected: { el: OsmElement; cat: (typeof PLACE_CATEGORIES)[number]; pos: { lat: number; lng: number } }[] = [];
     const perCategory = new Map<string, number>();
     for (const el of elements) {
         const tags = el.tags ?? {};
-        const cat = PLACE_CATEGORIES.find((c) => c.matches(tags));
+        const cat = cats.find((c) => c.matches(tags));
         const pos = coords(el);
         if (!cat || !pos) continue;
         if ((perCategory.get(cat.key) ?? 0) >= limit) continue;
@@ -299,15 +309,20 @@ export async function buildRows(city: string, elements: OsmElement[], limit: num
     return rows;
 }
 
-async function importCity(city: string, dryRun: boolean, limit: number) {
+async function importCity(
+    city: string,
+    dryRun: boolean,
+    limit: number,
+    cats: PlaceCategory[] = PLACE_CATEGORIES
+) {
     console.log(`\n=== ${city} ===`);
-    const elements = await overpassCity(city);
+    const elements = await overpassCity(city, cats);
     console.log(`  Overpass ga ${elements.length} elementer`);
-    const rows = await buildRows(city, elements, limit);
+    const rows = await buildRows(city, elements, limit, cats);
 
     // Vaktbikkje + tittelkilde-fordeling per kategori. 'kun-kategori' med
     // geocodeError betyr at revers-geokodingen FEILET — ikke at adressen mangler.
-    for (const cat of PLACE_CATEGORIES) {
+    for (const cat of cats) {
         const catRows = rows.filter((r) => r.category === cat.category);
         const bySource = (s: TitleSource) => catRows.filter((r) => r.titleSource === s).length;
         const failed = catRows.filter((r) => r.geocodeError).length;
@@ -383,7 +398,26 @@ async function main() {
     const limit = Number(args.find((a) => a.startsWith('--limit='))?.split('=')[1] ?? Infinity) || Infinity;
     const cities = cityArg ? [cityArg] : DEFAULT_CITIES;
 
-    console.log(`Import av faste steder: ${cities.join(', ')}${dryRun ? ' [DRY-RUN]' : ''}${limit !== Infinity ? ` [limit=${limit}/kategori]` : ''}`);
+    // --category=<key>[,<key>] kjører kun de valgte kategoriene, så et enkelt
+    // feilende punkt (f.eks. den tunge «lekeplass»-selektoren) kan fylles inn
+    // uten å hente hele byen på nytt. Sammen med --city=<by> gir det ett
+    // presist by+kategori-kall.
+    const catArg = args.find((a) => a.startsWith('--category='))?.split('=')[1];
+    let cats: PlaceCategory[] = PLACE_CATEGORIES;
+    if (catArg) {
+        const wanted = catArg.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+        cats = PLACE_CATEGORIES.filter((c) => wanted.includes(c.key));
+        const found = new Set(cats.map((c) => c.key));
+        const missing = wanted.filter((w) => !found.has(w));
+        if (missing.length) {
+            console.error(
+                `Ukjent kategori: ${missing.join(', ')}. Gyldige: ${PLACE_CATEGORIES.map((c) => c.key).join(', ')}`
+            );
+            process.exit(1);
+        }
+    }
+
+    console.log(`Import av faste steder: ${cities.join(', ')}${dryRun ? ' [DRY-RUN]' : ''}${limit !== Infinity ? ` [limit=${limit}/kategori]` : ''}${catArg ? ` [kategori=${cats.map((c) => c.key).join(',')}]` : ''}`);
     let total = 0;
     // Feiltoleranse per by: én bys feil (f.eks. konsekvent Overpass-504 for
     // Trondheim) skal IKKE avbryte hele kjøringen — de øvrige byene fullføres
@@ -391,7 +425,7 @@ async function main() {
     const failed: { city: string; error: string }[] = [];
     for (const city of cities) {
         try {
-            total += await importCity(city, dryRun, limit);
+            total += await importCity(city, dryRun, limit, cats);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.error(`  ✗ ${city} FEILET — hoppes over, fortsetter til neste by: ${msg}`);
