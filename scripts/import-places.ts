@@ -19,15 +19,27 @@
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
 
-const OVERPASS_ENDPOINTS = [
-    'https://overpass-api.de/api/interpreter',
-    'https://overpass.kumi.systems/api/interpreter',
-];
+// Speilene kan overstyres via env (komma-separert) — nyttig for selvhostet
+// Overpass og for å verifisere feilhåndteringen mot et test-endepunkt.
+const OVERPASS_ENDPOINTS = (
+    process.env.PLACES_OVERPASS_ENDPOINTS ??
+    'https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter'
+)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 const UA = 'Togedoo datahub (hello@togedoo.com)';
 const CITY_PAUSE_MS = 5000;
 // 2b: ekte eksponentiell backoff mellom Overpass-forsøk (5s→15s→45s), brukt
 // over TO runder på speilene (opptil ENDPOINTS.length × 2 forsøk per spørring).
-const OVERPASS_BACKOFF_MS = [5000, 15000, 45000];
+// Overstyrbar via env (komma-separert ms) for testing/tuning.
+const OVERPASS_BACKOFF_MS = (() => {
+    const parsed = (process.env.PLACES_OVERPASS_BACKOFF_MS ?? '5000,15000,45000')
+        .split(',')
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n >= 0);
+    return parsed.length ? parsed : [5000, 15000, 45000];
+})();
 // 2a: kort høflighetspause mellom de per-kategori-spørringene innen én by.
 const OVERPASS_QUERY_PAUSE_MS = 1000;
 // Kartverket punktsøk svarte 502 under 100 ms-kadens og var treg (timeouts)
