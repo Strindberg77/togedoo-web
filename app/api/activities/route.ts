@@ -94,7 +94,14 @@ async function fromDatabase(searchParams: URLSearchParams) {
     const radius = Math.min(Number(searchParams.get('radius') ?? 10000) || 10000, 100000);
     const kind = searchParams.get('kind');
     const category = searchParams.get('category');
-    const municipality = searchParams.get('municipality');
+    // By-modus matcher også near_city (kuraterte «nærliggende utflukter» som
+    // ligger utenfor kommunegrensen, men hører til byens nærområde). Saneres
+    // som q (kun bokstaver/tall/mellomrom/bindestrek) så den trygt kan
+    // embeddes i .or().
+    const municipality = (searchParams.get('municipality') ?? '')
+        .replace(/[^\p{L}\p{N}\s-]/gu, '')
+        .trim()
+        .slice(0, 50);
     const targetAudience = searchParams.get('targetAudience');
     const limit = Math.min(Number(searchParams.get('limit') ?? 200) || 200, 500);
     // Fritekstsøk: saner til kun bokstaver (inkl. æøå via \p{L}), tall,
@@ -134,7 +141,13 @@ async function fromDatabase(searchParams: URLSearchParams) {
             .limit(limit);
         if (kind) query = query.eq('kind', kind);
         if (category) query = query.eq('category', category);
-        if (municipality) query = query.ilike('municipality', municipality);
+        if (municipality) {
+            // Ekte kommune ELLER hjemby-tilknytning (near_city). To .or()-kall
+            // ANDes med q-blokken under, så (by ELLER near_city) OG (søk).
+            query = query.or(
+                `municipality.ilike.${municipality},near_city.ilike.${municipality}`
+            );
+        }
         if (targetAudience) query = query.ilike('target_audience', targetAudience);
         if (q) {
             // q er sanert over → trygt å embedde i .or(). PostgREST bruker *
