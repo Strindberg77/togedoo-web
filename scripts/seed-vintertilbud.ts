@@ -184,7 +184,10 @@ const SEED: VinterSeed[] = [
         title: 'Rush Trampolinepark Bergen',
         description: 'Stor innendørs trampolinepark på Kokstad — hoppegroper, hinderløyper og aktiviteter for alle aldre.',
         municipality: 'Bergen',
-        address: 'Kokstadveien 23, 5257 Kokstad',
+        // Offisielle kilder (Brønnøysund/1881/Rush) bruker «-vegen»; behold
+        // «-veien»-skrivemåten som fallback.
+        address: 'Kokstadvegen 23, 5257 Kokstad',
+        addressAlternatives: ['Kokstadveien 23, 5257 Kokstad'],
         fallbackLat: 60.2900, fallbackLng: 5.2580,
         isFree: false, url: 'https://www.rushtrampolinepark.no/bergen',
     },
