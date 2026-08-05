@@ -138,12 +138,17 @@ export const PLACE_CATEGORIES = [
 
 type PlaceCategory = (typeof PLACE_CATEGORIES)[number];
 
+// Forbigående server-/gateway-statuser verdt å prøve på nytt: 429 (rate limit),
+// 502 (bad gateway — Overpass kan svare dette mellom forsøk under last) og
+// 504 (gateway timeout). Andre statuser er faste feil retry ikke løser.
+const OVERPASS_RETRY_STATUS = new Set([429, 502, 504]);
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /// Kjør ÉN Overpass-spørring med retry. 2b: to runder over speilene med ekte
-/// eksponentiell backoff (5s→15s→45s) mellom forsøkene. 429/504 og nettverks-/
-/// parse-feil er retrybare; annen HTTP-status (4xx/5xx) kastes umiddelbart —
-/// det er en spørringsfeil retry ikke løser.
+/// eksponentiell backoff (5s→15s→45s) mellom forsøkene. 429/502/504 og
+/// nettverks-/parse-feil er retrybare; annen HTTP-status (4xx/5xx) kastes
+/// umiddelbart — det er en spørringsfeil retry ikke løser.
 async function fetchOverpass(query: string, label: string): Promise<OsmElement[]> {
     const attempts = [...OVERPASS_ENDPOINTS, ...OVERPASS_ENDPOINTS];
     for (let i = 0; i < attempts.length; i++) {
@@ -159,8 +164,9 @@ async function fetchOverpass(query: string, label: string): Promise<OsmElement[]
                 const json = await res.json();
                 return (json.elements ?? []) as OsmElement[];
             }
-            // Kun 429/504 er verdt å prøve på nytt; andre statuser er faste feil.
-            if (res.status !== 429 && res.status !== 504) {
+            // Kun forbigående statuser (429/502/504) er verdt å prøve på nytt;
+            // andre er faste feil.
+            if (!OVERPASS_RETRY_STATUS.has(res.status)) {
                 throw new Error(`Overpass HTTP ${res.status} (${label})`);
             }
             console.log(`    ${label}: ${endpoint} svarte ${res.status} (forsøk ${i + 1}/${attempts.length})`);
