@@ -47,6 +47,7 @@ interface VinterSeed {
     address: string; // web-verifisert, geokodes mot Kartverket
     addressAlternatives?: string[];
     manualCoord?: { lat: number; lng: number }; // hopp over geokoding (f.eks. akebakke)
+    coordVerified?: boolean; // false = manualCoord er OMTRENTLIG, kan finjusteres (default true)
     fallbackLat: number; // estimert — brukes hvis geokoding feiler/tvetydig
     fallbackLng: number;
     isFree: boolean | null; // true=gratis, false=betalt, null=ukjent
@@ -171,9 +172,10 @@ const SEED: VinterSeed[] = [
         title: 'Vannkanten Badeland',
         description: 'Bergens største badeland i Vestkanten Storsenter, Loddefjord — Norges lengste innendørs sklie (120 m).',
         municipality: 'Bergen',
-        // FLAGG: senteret har ingen entydig gateadresse i Kartverket. Bekreft
-        // gateadresse før publisering; geokoding kan gi «ingen treff» (pending).
-        address: 'Vestkanten Storsenter, 5171 Loddefjord',
+        // Primær fra Brønnøysundregistrene/180.no; Apple Maps-adressen som
+        // fallback (samme mønster som EKT/Risenga).
+        address: 'Loddefjordveien 2, 5171 Loddefjord',
+        addressAlternatives: ['Lyderhornsveien 351, 5171 Loddefjord'],
         fallbackLat: 60.3648, fallbackLng: 5.2345,
         isFree: false, url: 'https://svom.no/bad/bergen/vannkanten-badeland',
     },
@@ -240,10 +242,12 @@ const SEED: VinterSeed[] = [
         title: 'Vassfjellet Skisenter',
         description: 'Familievennlig alpinanlegg (12 løyper, barneheis, skiskole) ca. 40 min sør for Trondheim.',
         municipality: 'Melhus', nearCity: 'Trondheim',
-        // FLAGG: ingen gateadresse i Kartverket. manualCoord er OMTRENTLIG
-        // (~1–2 km) — bekreft eksakt posisjon før publisering.
+        // Ingen gateadresse finnes for anlegget. manualCoord er OMTRENTLIG
+        // (~1–2 km — godt nok for et alpinsenter med stort areal).
+        // coordVerified:false markerer at koordinaten kan finjusteres senere.
         address: 'Vassfjellet, 7224 Melhus',
         manualCoord: { lat: 63.2930, lng: 10.3690 },
+        coordVerified: false,
         fallbackLat: 63.2930, fallbackLng: 10.3690,
         isFree: false, url: 'https://vassfjellet.no/',
     },
@@ -395,8 +399,15 @@ async function main() {
         if (seed.manualCoord) {
             lat = seed.manualCoord.lat;
             lng = seed.manualCoord.lng;
+            // Publiseres uansett (koordinat finnes), men coordVerified:false
+            // markerer at den er omtrentlig og kan finjusteres senere.
             verified = true;
-            note = 'manuelt verifisert';
+            if (seed.coordVerified === false) {
+                note = 'manualCoord OMTRENTLIG (coordVerified:false — finjuster senere)';
+                warnings.push(`  ⚠ ${seed.title} — omtrentlig koordinat (coordVerified:false), finjuster senere`);
+            } else {
+                note = 'manuelt verifisert';
+            }
         } else if (!noGeocode) {
             const candidates = [seed.address, ...(seed.addressAlternatives ?? [])];
             let best: { geo: GeoResult; addr: string } | null = null;
