@@ -145,6 +145,15 @@ const SEED: VinterSeed[] = [
         targetAudience: 'Barn',
     },
     {
+        externalId: 'rush-trampolinepark-oslo',
+        title: 'Rush Trampolinepark Oslo',
+        description: 'Norges første Rush-trampolinepark (2016) ved Rosenholm på Holmlia — trampoliner, airbag og hinderløyper.',
+        municipality: 'Oslo',
+        address: 'Rosenholmveien 22, 1252 Oslo',
+        fallbackLat: 59.8355, fallbackLng: 10.8065,
+        isFree: false, url: 'https://www.rushtrampolinepark.no/oslo',
+    },
+    {
         externalId: 'korketrekkeren-aking',
         title: 'Korketrekkeren (akebakke)',
         description: 'Oslos mest kjente akebakke — ca. 2 km fra Frognerseteren til Midtstuen. Gratis å ake; kjelke kan leies. Åpen når det er nok snø.',
@@ -225,9 +234,14 @@ const SEED: VinterSeed[] = [
         title: 'Rush Trampolinepark Trondheim',
         description: 'Innendørs aktivitetspark på Tiller — trampoliner, airbag, skumgroper og hinderløyper.',
         municipality: 'Trondheim',
+        // FLAGG: drives som «Rush Trampolinepark Trondheim» (Instagram
+        // @rushtrondheim, BarnasNorge, Moovit) på Østre Rosten 20, men står
+        // IKKE på rushtrampolinepark.no sin offisielle avdelingsliste — kan
+        // være franchise eller nedlagt. VERIFISER at den er åpen før
+        // publisering. URL peker til hovedsiden (/trondheim finnes trolig ikke).
         address: 'Østre Rosten 20, 7075 Tiller',
         fallbackLat: 63.3580, fallbackLng: 10.3770,
-        isFree: false, url: 'https://www.rushtrampolinepark.no/trondheim',
+        isFree: false, url: 'https://www.rushtrampolinepark.no/',
     },
     {
         externalId: 'leos-lekeland-trondheim',
