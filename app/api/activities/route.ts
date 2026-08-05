@@ -21,6 +21,7 @@ interface ActivityRow {
     venue_name: string | null;
     address: string | null;
     municipality: string | null;
+    near_city: string | null;
     lat: number | null;
     lng: number | null;
     starts_at: string | null;
@@ -63,6 +64,9 @@ function toApiShape(row: ActivityRow) {
         venueName: row.venue_name,
         address: row.address,
         municipality: row.municipality,
+        // «Hjemby» for nærliggende utflukter (utenfor kommunegrensen). Lar
+        // klienten merke kortet med at stedet ligger i en annen kommune.
+        nearCity: row.near_city,
         lat: row.lat,
         lng: row.lng,
         startsAt: row.starts_at,
@@ -84,7 +88,7 @@ function toApiShape(row: ActivityRow) {
 }
 
 const ROW_COLUMNS =
-    'id, kind, title, description, category, target_audience, venue_name, address, municipality, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, opening_hours, osm_tags';
+    'id, kind, title, description, category, target_audience, venue_name, address, municipality, near_city, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, opening_hours, osm_tags';
 
 async function fromDatabase(searchParams: URLSearchParams) {
     const db = supabaseAdmin();
