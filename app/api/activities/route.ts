@@ -97,7 +97,15 @@ async function fromDatabase(searchParams: URLSearchParams) {
     const lng = searchParams.get('lng') ? Number(searchParams.get('lng')) : null;
     const radius = Math.min(Number(searchParams.get('radius') ?? 10000) || 10000, 100000);
     const kind = searchParams.get('kind');
-    const category = searchParams.get('category');
+    // Kategori kan være komma-separert (flervalg) → liste. Verdiene
+    // parameteriseres av .in()/p_categories, så ingen sanering nødvendig
+    // (kategorinavn inneholder ikke komma). Én verdi ≡ tidligere .eq/p_category
+    // → bakoverkompatibelt. Tom → null (intet kategorifilter).
+    const categories = (searchParams.get('category') ?? '')
+        .split(',')
+        .map((c) => c.trim())
+        .filter(Boolean);
+    const categoryList = categories.length > 0 ? categories : null;
     // By-modus matcher også near_city (kuraterte «nærliggende utflukter» som
     // ligger utenfor kommunegrensen, men hører til byens nærområde). Saneres
     // som q (kun bokstaver/tall/mellomrom/bindestrek) så den trygt kan
@@ -125,7 +133,7 @@ async function fromDatabase(searchParams: URLSearchParams) {
             p_lng: lng,
             p_radius_m: radius,
             p_kind: kind,
-            p_category: category,
+            p_categories: categoryList,
             p_q: q || null,
             p_limit: limit,
         });
@@ -144,7 +152,7 @@ async function fromDatabase(searchParams: URLSearchParams) {
             .order('starts_at', { ascending: true, nullsFirst: false })
             .limit(limit);
         if (kind) query = query.eq('kind', kind);
-        if (category) query = query.eq('category', category);
+        if (categoryList) query = query.in('category', categoryList);
         if (municipality) {
             // Ekte kommune ELLER hjemby-tilknytning (near_city). To .or()-kall
             // ANDes med q-blokken under, så (by ELLER near_city) OG (søk).
