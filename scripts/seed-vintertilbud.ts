@@ -155,6 +155,153 @@ const SEED: VinterSeed[] = [
         fallbackLat: 59.9836, fallbackLng: 10.6790,
         isFree: true, url: 'https://akeforeningen.no', targetAudience: 'For alle',
     },
+
+    // ================= BERGEN =================
+    {
+        externalId: 'ado-arena-bergen',
+        title: 'AdO arena',
+        description: 'Badeanlegg i Bergen sentrum med sklier (26 m og 68 m), stupetårn og barnebasseng.',
+        municipality: 'Bergen',
+        address: 'Lungegårdskaien 40, 5015 Bergen',
+        fallbackLat: 60.3830, fallbackLng: 5.3390,
+        isFree: false, priceText: 'Barn 50 kr', url: 'https://adoarena.no',
+    },
+    {
+        externalId: 'vannkanten-badeland-loddefjord',
+        title: 'Vannkanten Badeland',
+        description: 'Bergens største badeland i Vestkanten Storsenter, Loddefjord — Norges lengste innendørs sklie (120 m).',
+        municipality: 'Bergen',
+        // FLAGG: senteret har ingen entydig gateadresse i Kartverket. Bekreft
+        // gateadresse før publisering; geokoding kan gi «ingen treff» (pending).
+        address: 'Vestkanten Storsenter, 5171 Loddefjord',
+        fallbackLat: 60.3648, fallbackLng: 5.2345,
+        isFree: false, url: 'https://svom.no/bad/bergen/vannkanten-badeland',
+    },
+    {
+        externalId: 'rush-trampolinepark-bergen',
+        title: 'Rush Trampolinepark Bergen',
+        description: 'Stor innendørs trampolinepark på Kokstad — hoppegroper, hinderløyper og aktiviteter for alle aldre.',
+        municipality: 'Bergen',
+        address: 'Kokstadveien 23, 5257 Kokstad',
+        fallbackLat: 60.2900, fallbackLng: 5.2580,
+        isFree: false, url: 'https://www.rushtrampolinepark.no/bergen',
+    },
+    {
+        externalId: 'leos-lekeland-bergen',
+        title: 'Leos Lekeland Bergen',
+        description: 'Innendørs lekeland på Kokstad — klatring, sklier, ballhav og hoppeslott for barn.',
+        municipality: 'Bergen',
+        address: 'Kokstaddalen 18, 5257 Kokstad',
+        fallbackLat: 60.2890, fallbackLng: 5.2560,
+        isFree: false, url: 'https://www.leoslekeland.no/', targetAudience: 'Barn',
+    },
+    {
+        externalId: 'eikedalen-skisenter',
+        title: 'Eikedalen Skisenter',
+        description: 'Familievennlig alpinanlegg ved Kvamskogen (8 heiser, 12 løyper), ca. 1 t fra Bergen.',
+        municipality: 'Samnanger', nearCity: 'Bergen',
+        address: 'Kråvegen 108, 5650 Tysse',
+        fallbackLat: 60.4000, fallbackLng: 5.9600,
+        isFree: false, url: 'https://www.eikedalen.no/',
+    },
+
+    // ================= TRONDHEIM =================
+    {
+        externalId: 'pirbadet-trondheim',
+        title: 'Pirbadet',
+        description: 'Trondheims store innendørs badeland på Brattøra — basseng, sklier, boblebad og barneområde.',
+        municipality: 'Trondheim',
+        address: 'Havnegata 12, 7010 Trondheim',
+        fallbackLat: 63.4370, fallbackLng: 10.3980,
+        isFree: false, url: 'https://pirbadet.no',
+    },
+    {
+        externalId: 'rush-trampolinepark-trondheim',
+        title: 'Rush Trampolinepark Trondheim',
+        description: 'Innendørs aktivitetspark på Tiller — trampoliner, airbag, skumgroper og hinderløyper.',
+        municipality: 'Trondheim',
+        address: 'Østre Rosten 20, 7075 Tiller',
+        fallbackLat: 63.3580, fallbackLng: 10.3770,
+        isFree: false, url: 'https://www.rushtrampolinepark.no/trondheim',
+    },
+    {
+        externalId: 'leos-lekeland-trondheim',
+        title: 'Leos Lekeland Trondheim',
+        description: 'Innendørs lekeland på Lade — klatrestativ, ballhav, tunneler, trampoliner og sklier.',
+        municipality: 'Trondheim',
+        // Kilder oppgir både Ladebekken 6 og 3 — bruker 6, med 3 som fallback.
+        address: 'Ladebekken 6, 7041 Trondheim',
+        addressAlternatives: ['Ladebekken 3, 7041 Trondheim'],
+        fallbackLat: 63.4420, fallbackLng: 10.4300,
+        isFree: false, url: 'https://www.leoslekeland.no/', targetAudience: 'Barn',
+    },
+    {
+        externalId: 'vassfjellet-skisenter',
+        title: 'Vassfjellet Skisenter',
+        description: 'Familievennlig alpinanlegg (12 løyper, barneheis, skiskole) ca. 40 min sør for Trondheim.',
+        municipality: 'Melhus', nearCity: 'Trondheim',
+        // FLAGG: ingen gateadresse i Kartverket. manualCoord er OMTRENTLIG
+        // (~1–2 km) — bekreft eksakt posisjon før publisering.
+        address: 'Vassfjellet, 7224 Melhus',
+        manualCoord: { lat: 63.2930, lng: 10.3690 },
+        fallbackLat: 63.2930, fallbackLng: 10.3690,
+        isFree: false, url: 'https://vassfjellet.no/',
+    },
+
+    // ================= STAVANGER =================
+    {
+        externalId: 'stavanger-svommehall',
+        title: 'Stavanger svømmehall',
+        description: 'Svømmehall i Stavanger sentrum med 25 m-basseng, barnebasseng og plaskebasseng.',
+        municipality: 'Stavanger',
+        address: 'Lars Hertervigs gate 4, 4005 Stavanger',
+        fallbackLat: 58.9680, fallbackLng: 5.7350,
+        isFree: false, url: 'https://www.stavanger.kommune.no/kultur-og-fritid/svommehaller/stavanger-svommehall2/',
+    },
+    {
+        // KORRIGERT: Lagerveien 2 er 4033 Stavanger (Forus/Stavanger-siden) →
+        // ligger I Stavanger kommune, så INGEN near_city (ville gitt feil
+        // «· nær Stavanger»-merke).
+        externalId: 'playground-forus',
+        title: 'Playground',
+        description: 'Norges/regionens største innendørs aktivitetspark (3 500 m²) på Forus — klatring, trampoliner, nettpark, skate.',
+        municipality: 'Stavanger',
+        address: 'Lagerveien 2, 4033 Stavanger',
+        fallbackLat: 58.9130, fallbackLng: 5.7170,
+        isFree: false, url: 'https://playground.no/',
+    },
+    {
+        // KORRIGERT: Lagerveien 13 er 4033 Stavanger → I Stavanger kommune,
+        // ingen near_city.
+        externalId: 'rush-trampolinepark-stavanger',
+        title: 'Rush Trampolinepark Stavanger',
+        description: 'Stor innendørs trampolinepark på Forus — trampoliner, airbag, hinderløyper.',
+        municipality: 'Stavanger',
+        address: 'Lagerveien 13, 4033 Stavanger',
+        fallbackLat: 58.9120, fallbackLng: 5.7160,
+        isFree: false, url: 'https://www.rushtrampolinepark.no/',
+    },
+    {
+        externalId: 'austratt-svommehall-sandnes',
+        title: 'Austrått svømmehall',
+        description: 'Svømmehall i Sandnes med basseng for hele familien.',
+        municipality: 'Sandnes', nearCity: 'Stavanger',
+        address: 'Kjervastadveien 2, 4325 Sandnes',
+        fallbackLat: 58.8420, fallbackLng: 5.7450,
+        isFree: false, priceText: 'Barn under 10 gratis',
+        url: 'https://www.sandnes.kommune.no/sti/idrett-park-og-friluftsliv/svommehaller/austratt-svommehall/',
+    },
+    {
+        // KORRIGERT: Sørmarkveien 20 er 4019 Stavanger → I Stavanger kommune,
+        // ingen near_city.
+        externalId: 'sormarka-arena-stavanger',
+        title: 'Sørmarka Arena',
+        description: 'Innendørs skøytehall og flerbrukshall med 17 m klatrevegg, ved Sørmarka.',
+        municipality: 'Stavanger',
+        address: 'Sørmarkveien 20, 4019 Stavanger',
+        fallbackLat: 58.9260, fallbackLng: 5.7420,
+        isFree: false, url: 'https://www.sormarka-arena.no/',
+    },
 ];
 
 interface GeoResult {
