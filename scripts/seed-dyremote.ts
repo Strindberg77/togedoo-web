@@ -81,7 +81,8 @@ const SEED: DyremoteSeed[] = [
         municipality: 'Oslo', address: 'Ekebergveien 99, 1181 Oslo',
         addressAlternatives: ['Ekebergveien 99, 1178 Oslo'],
         fallbackLat: 59.8830, fallbackLng: 10.7830,
-        isFree: null, url: 'https://www.rideskole.no',
+        isFree: false, priceText: 'Inngang 50 kr, under 2 år gratis',
+        url: 'https://www.rideskole.no',
     },
     {
         externalId: 'oslo-reptilpark',
