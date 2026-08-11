@@ -44,9 +44,12 @@ const OVERPASS_BACKOFF_MS = (() => {
 // 2a: kort høflighetspause mellom de per-kategori-spørringene innen én by.
 const OVERPASS_QUERY_PAUSE_MS = 1000;
 // Kartverket punktsøk svarte 502 under 100 ms-kadens og var treg (timeouts)
-// ved 400 ms (jul. 2026). 900 ms default; overstyr med PLACES_PAUSE_MS for
-// å eksperimentere uten kodeendring. Egen pause, uavhengig av Overpass.
-const TITLE_PAUSE_MS = Number(process.env.PLACES_PAUSE_MS ?? 900);
+// ved 400 ms (jul. 2026). Pausen dekker nå OGSÅ Nominatim-bydeloppslaget
+// (i-omraade), som krever ≥1 req/s — derfor 1100 ms default. Pausen kjøres
+// etter hvert steds tittelgenerering, og bydeloppslaget er det siste eksterne
+// kallet i kaskaden, så ≥1100 ms mellom to Nominatim-kall er garantert.
+// Overstyr med PLACES_PAUSE_MS. Egen pause, uavhengig av Overpass.
+const TITLE_PAUSE_MS = Number(process.env.PLACES_PAUSE_MS ?? 1100);
 const SOURCE_SLUG = 'osm-steder';
 const DEFAULT_CITIES = ['Oslo', 'Bergen', 'Trondheim', 'Stavanger'];
 

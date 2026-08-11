@@ -5,12 +5,12 @@
 // i norsk OSM (0 % i alle utvalg) og at name-taggen er ujevn (0–57 %) og
 // ofte kopiert fra gate- eller institusjonsnavn. Strategi:
 //   1. Bruk name-taggen når den finnes OG ser ut som et ekte stedsnavn.
-//   2. Ellers: revers-geokod punktet (Kartverket adresse-punktsøk) og generer
-//      "Lekeplass ved Storgata" / "Badeplass i Vollen".
-//   3. Ellers (ingen adresse innen 200 m): hent bydel/nabolag (Nominatim
-//      revers) og generer "Badeplass i Nordstrand" — områdekontekst er bedre
-//      enn bare "Badeplass" for steder langt fra vei (typisk badeplasser/parker).
-//   4. Siste utvei: ren kategoritekst.
+//   2. Ellers: "<Kategori> ved <gate>" fra Kartverket adresse-punktsøk.
+//   3. Ellers: "<Kategori> i <bydel>" fra Nominatim revers (suburb/bydel/
+//      nabolag) — områdekontekst er bedre enn bare "Badeplass" for steder langt
+//      fra vei (typisk badeplasser/parker), og mer nyttig enn poststed.
+//   4. Ellers: "<Kategori> i <poststed>" (Kartverket) som grovere fallback.
+//   5. Siste utvei: ren kategoritekst.
 // Koordinatene fra OSM brukes alltid direkte (100 % dekning i utvalgene);
 // revers-geokodingen er kun for lesbare titler.
 import { supabaseAdmin, isDatahubConfigured } from './supabase';
@@ -187,9 +187,9 @@ export async function reverseGeocode(lat: number, lng: number): Promise<ReverseG
 }
 
 // ---------------------------------------------------------------------------
-// Område-lag: bydel/nabolag via Nominatim revers-geokoding. Brukes KUN når
-// adresse-punktsøket (Kartverket, over) ikke ga gate eller poststed — dvs. for
-// steder som ellers ville blitt bare «Lekeplass». Punktet ligger per definisjon
+// Område-lag: bydel/nabolag via Nominatim revers-geokoding. Brukes når adresse-
+// punktsøket (Kartverket, over) ikke ga gate — dvs. for steder som ellers ville
+// blitt «Lekeplass» eller bare «Badeplass i Oslo». Punktet ligger per definisjon
 // inni bydel-/delområde-polygonet, så «Badeplass i Nordstrand» er en ærlig
 // stedskontekst (i motsetning til å strekke adresse-radiusen og risikere en
 // gate på feil side av et vann).
@@ -292,9 +292,9 @@ export interface PlaceTitle {
 
 /**
  * Tittel for et importert sted, med sporbar kilde: ekte OSM-navn hvis
- * brukbart, ellers "<Kategori> ved <gate>" / "<Kategori> i <poststed>" /
- * "<Kategori> i <bydel>" / ren kategoritekst (siste utvei — geocodeError
- * skiller feil fra mangel).
+ * brukbart, ellers "<Kategori> ved <gate>" (Kartverket) / "<Kategori> i
+ * <bydel>" (Nominatim) / "<Kategori> i <poststed>" (Kartverket, grovere) /
+ * ren kategoritekst (siste utvei — geocodeError skiller feil fra mangel).
  */
 export async function makePlaceTitleDetailed(
     categoryLabel: string,
@@ -307,14 +307,16 @@ export async function makePlaceTitleDetailed(
     if (outcome.ok && outcome.result.street) {
         return { title: `${categoryLabel} ved ${outcome.result.street}`, source: 'ved-gate' };
     }
-    if (outcome.ok && outcome.result.postalPlace) {
-        return { title: `${categoryLabel} i ${outcome.result.postalPlace}`, source: 'i-poststed' };
-    }
-    // Ingen adresse innen 200 m (typisk badeplasser/parker langt fra vei):
-    // fall tilbake på bydel/nabolag før ren kategoritekst.
+    // Bydel/nabolag (Nominatim) FØR poststed: «Badeplass i Sørenga» er alltid mer
+    // nyttig enn «Badeplass i Oslo», og lista er allerede merket med byen — så
+    // poststed-nivået («Oslo») gir null ekstra informasjon. Poststed beholdes kun
+    // som grovere fallback når Nominatim IKKE gir bydel men Kartverket ga poststed.
     const area = await reverseAreaDetailed(lat, lng);
     if (area.ok && area.result.area) {
         return { title: `${categoryLabel} i ${area.result.area}`, source: 'i-omraade' };
+    }
+    if (outcome.ok && outcome.result.postalPlace) {
+        return { title: `${categoryLabel} i ${outcome.result.postalPlace}`, source: 'i-poststed' };
     }
     return {
         title: categoryLabel,
