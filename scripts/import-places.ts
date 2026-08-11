@@ -11,7 +11,8 @@
 //
 // Krever SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY i miljøet (unntatt
 // --dry-run uten cache, som fungerer uten). Titler: OSM-navn når brukbart,
-// ellers revers-geokodet "Lekeplass ved <gate>" (lib/places.ts).
+// ellers revers-geokodet "Lekeplass ved <gate>", så "Badeplass i <bydel>"
+// (Nominatim) for steder uten adresse innen 200 m (lib/places.ts).
 // Rader med locked=true røres aldri (brukerrapport/manuell korrigering).
 //
 // ODbL-KRAV: der disse dataene vises, skal "© OpenStreetMap contributors"
@@ -335,7 +336,8 @@ async function importCity(
         console.log(
             `  ${cat.category.padEnd(12)} ${String(catRows.length).padStart(5)} steder — titler: ` +
                 `${bySource('osm-navn')} OSM-navn, ${bySource('ved-gate')} «ved gate», ` +
-                `${bySource('i-poststed')} «i poststed», ${bySource('kun-kategori')} kun kategori` +
+                `${bySource('i-poststed')} «i poststed», ${bySource('i-omraade')} «i område», ` +
+                `${bySource('kun-kategori')} kun kategori` +
                 (failed ? ` (HERAV ${failed} GEOKODINGSFEIL)` : '')
         );
         if (catRows.length === 0) console.log(`    ADVARSEL: 0 treff for ${cat.category} i ${city} — sjekk tag-endring i OSM.`);

@@ -5,13 +5,23 @@
 // i norsk OSM (0 % i alle utvalg) og at name-taggen er ujevn (0–57 %) og
 // ofte kopiert fra gate- eller institusjonsnavn. Strategi:
 //   1. Bruk name-taggen når den finnes OG ser ut som et ekte stedsnavn.
-//   2. Ellers: revers-geokod punktet (Kartverket punktsøk) og generer
+//   2. Ellers: revers-geokod punktet (Kartverket adresse-punktsøk) og generer
 //      "Lekeplass ved Storgata" / "Badeplass i Vollen".
+//   3. Ellers (ingen adresse innen 200 m): hent bydel/nabolag (Nominatim
+//      revers) og generer "Badeplass i Nordstrand" — områdekontekst er bedre
+//      enn bare "Badeplass" for steder langt fra vei (typisk badeplasser/parker).
+//   4. Siste utvei: ren kategoritekst.
 // Koordinatene fra OSM brukes alltid direkte (100 % dekning i utvalgene);
 // revers-geokodingen er kun for lesbare titler.
 import { supabaseAdmin, isDatahubConfigured } from './supabase';
 
 const USER_AGENT = 'Togedoo datahub (hello@togedoo.com)';
+
+// Område-laget (bydel/nabolag) bruker Nominatim revers-geokoding. Zoom 16 gir
+// suburb/bydel-nivå uten å gå helt ned til bygning. Nominatim krever ≤1 req/s
+// og identifiserende User-Agent — importen pauser allerede mellom geokodinger.
+const AREA_ZOOM = Number(process.env.PLACES_AREA_ZOOM ?? 16);
+const AREA_TIMEOUT_MS = Number(process.env.PLACES_AREA_TIMEOUT_MS ?? 10000);
 
 // Ord som viser at navnet beskriver stedet selv — da stoler vi på det,
 // selv om det også inneholder gate-/institusjonsord.
@@ -176,7 +186,102 @@ export async function reverseGeocode(lat: number, lng: number): Promise<ReverseG
     return outcome.ok ? outcome.result : null;
 }
 
-export type TitleSource = 'osm-navn' | 'ved-gate' | 'i-poststed' | 'kun-kategori';
+// ---------------------------------------------------------------------------
+// Område-lag: bydel/nabolag via Nominatim revers-geokoding. Brukes KUN når
+// adresse-punktsøket (Kartverket, over) ikke ga gate eller poststed — dvs. for
+// steder som ellers ville blitt bare «Lekeplass». Punktet ligger per definisjon
+// inni bydel-/delområde-polygonet, så «Badeplass i Nordstrand» er en ærlig
+// stedskontekst (i motsetning til å strekke adresse-radiusen og risikere en
+// gate på feil side av et vann).
+// ---------------------------------------------------------------------------
+
+export interface AreaResult {
+    /** Bydel/nabolag, f.eks. «Nordstrand». */
+    area: string | null;
+}
+
+export type AreaOutcome = { ok: true; result: AreaResult } | { ok: false; reason: string };
+
+// Egen cache-nøkkel (`revarea:`), atskilt fra adresse-punktsøkets `rev:` — et
+// cachet negativt adressetreff skal IKKE hindre et område-oppslag i å kjøre.
+async function fromAreaCache(key: string): Promise<AreaResult | null | undefined> {
+    if (!isDatahubConfigured()) return undefined;
+    const { data } = await supabaseAdmin()
+        .from('geocode_cache')
+        .select('formatted_address')
+        .eq('query', key)
+        .maybeSingle();
+    if (!data) return undefined;
+    if (!data.formatted_address) return null; // cachet negativt treff
+    return { area: data.formatted_address };
+}
+
+async function saveAreaCache(key: string, result: AreaResult | null): Promise<void> {
+    if (!isDatahubConfigured()) return;
+    await supabaseAdmin()
+        .from('geocode_cache')
+        .upsert(
+            {
+                query: key,
+                lat: null,
+                lng: null,
+                formatted_address: result?.area ?? null,
+                provider: 'nominatim-omraade',
+            },
+            { onConflict: 'query' }
+        );
+}
+
+/**
+ * Bydel/nabolag for et punkt (Nominatim revers, addressdetails), med cache i
+ * geocode_cache (nøkkel `revarea:<lat>,<lng>`). Feiler aldri stille: alle
+ * feilmoduser returneres som { ok: false, reason }.
+ */
+export async function reverseAreaDetailed(lat: number, lng: number): Promise<AreaOutcome> {
+    const key = `revarea:${lat.toFixed(5)},${lng.toFixed(5)}`;
+    const cached = await fromAreaCache(key);
+    if (cached === null) return { ok: false, reason: 'cachet negativt treff (område)' };
+    if (cached !== undefined) return { ok: true, result: cached };
+
+    try {
+        const params = new URLSearchParams({
+            format: 'jsonv2',
+            lat: String(lat),
+            lon: String(lng),
+            zoom: String(AREA_ZOOM),
+            addressdetails: '1',
+        });
+        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?${params}`, {
+            headers: { 'User-Agent': USER_AGENT },
+            signal: AbortSignal.timeout(AREA_TIMEOUT_MS),
+        });
+        if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+        const data = await res.json();
+        const addr = (data?.address ?? {}) as Record<string, string | undefined>;
+        // Prioritert fra mest til minst presist bydel-/områdebegrep.
+        const raw =
+            addr.suburb ??
+            addr.city_district ??
+            addr.borough ??
+            addr.quarter ??
+            addr.neighbourhood ??
+            null;
+        const area = typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+        await saveAreaCache(key, area ? { area } : null);
+        if (!area) return { ok: false, reason: 'ingen bydel/nabolag' };
+        return { ok: true, result: { area } };
+    } catch (err) {
+        // Nettverksfeil: ikke cache, prøv igjen neste import.
+        return { ok: false, reason: `nettverksfeil: ${err instanceof Error ? err.message : String(err)}` };
+    }
+}
+
+export async function reverseArea(lat: number, lng: number): Promise<AreaResult | null> {
+    const outcome = await reverseAreaDetailed(lat, lng);
+    return outcome.ok ? outcome.result : null;
+}
+
+export type TitleSource = 'osm-navn' | 'ved-gate' | 'i-poststed' | 'i-omraade' | 'kun-kategori';
 
 export interface PlaceTitle {
     title: string;
@@ -188,7 +293,8 @@ export interface PlaceTitle {
 /**
  * Tittel for et importert sted, med sporbar kilde: ekte OSM-navn hvis
  * brukbart, ellers "<Kategori> ved <gate>" / "<Kategori> i <poststed>" /
- * ren kategoritekst (siste utvei — geocodeError skiller feil fra mangel).
+ * "<Kategori> i <bydel>" / ren kategoritekst (siste utvei — geocodeError
+ * skiller feil fra mangel).
  */
 export async function makePlaceTitleDetailed(
     categoryLabel: string,
@@ -204,10 +310,18 @@ export async function makePlaceTitleDetailed(
     if (outcome.ok && outcome.result.postalPlace) {
         return { title: `${categoryLabel} i ${outcome.result.postalPlace}`, source: 'i-poststed' };
     }
+    // Ingen adresse innen 200 m (typisk badeplasser/parker langt fra vei):
+    // fall tilbake på bydel/nabolag før ren kategoritekst.
+    const area = await reverseAreaDetailed(lat, lng);
+    if (area.ok && area.result.area) {
+        return { title: `${categoryLabel} i ${area.result.area}`, source: 'i-omraade' };
+    }
     return {
         title: categoryLabel,
         source: 'kun-kategori',
-        geocodeError: outcome.ok ? undefined : outcome.reason,
+        // geocodeError = ekte oppslagsfeil (nettverk/HTTP/timeout), ikke bare
+        // «fant ingenting». Adressefeilen har forrang; ellers områdefeilen.
+        geocodeError: !outcome.ok ? outcome.reason : !area.ok ? area.reason : undefined,
     };
 }
 
