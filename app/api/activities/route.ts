@@ -67,6 +67,16 @@ function toApiShape(row: ActivityRow) {
         // «Hjemby» for nærliggende utflukter (utenfor kommunegrensen). Lar
         // klienten merke kortet med at stedet ligger i en annen kommune.
         nearCity: row.near_city,
+        // Bydel/strøk (kort-redesign): finere enn kommune, skiller steder
+        // innad i store byer. OSM legger dette i addr:suburb / addr:district
+        // (city_district/neighbourhood som fallback). Egen kontekst-linje på
+        // kortet — null når stedet ikke er merket med bydel.
+        bydel:
+            row.osm_tags?.['addr:suburb'] ??
+            row.osm_tags?.['addr:district'] ??
+            row.osm_tags?.['addr:city_district'] ??
+            row.osm_tags?.['addr:neighbourhood'] ??
+            null,
         lat: row.lat,
         lng: row.lng,
         startsAt: row.starts_at,
