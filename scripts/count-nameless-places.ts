@@ -69,6 +69,14 @@ async function main() {
     const rows = await fetchAllPlaces();
     const nameless = rows.filter((r) => titleIsJustCategory(r) && emptyVenue(r.venue_name));
 
+    // DIVERGENT-BØTTA (ballbane-name-bug): title == kategorinavn MEN venue_name
+    // ER satt. Navnet finnes altså i venue_name, mens title falt tilbake til
+    // kategori. Disse er IKKE «navnløse» (telles ikke over) — men et kort som
+    // viser `title` i stedet for displayName (venueName-først) vil vise
+    // «Ballbane» selv om detaljarket (displayName) viser det ekte navnet.
+    // Nøyaktig symptomet på skjermbildene. Dette bekrefter DATA-halvdelen.
+    const divergent = rows.filter((r) => titleIsJustCategory(r) && !emptyVenue(r.venue_name));
+
     // Grupper per kategori × by.
     const byCatCity = new Map<string, Map<string, number>>();
     const byCat = new Map<string, number>();
@@ -121,6 +129,22 @@ async function main() {
         for (const [city, cn] of cities) console.log(`    ${String(cn).padStart(4)}  ${city}`);
     }
     if (nameless.length === 0) console.log('Ingen navnløse steder funnet. 🎉');
+
+    // Divergent-bøtta: navnet i venue_name, title == kategori. Kort som viser
+    // `title` vil her vise kategori, mens detaljark (displayName) viser navnet.
+    console.log(`\nDivergent (title == kategori MEN venue_name satt): ${divergent.length}`);
+    console.log(`(navnet finnes i venue_name — displayName henter det fram, rå title gjør ikke)`);
+    if (divergent.length) {
+        const dCat = new Map<string, number>();
+        for (const r of divergent) dCat.set(r.category, (dCat.get(r.category) ?? 0) + 1);
+        for (const [cat, n] of [...dCat.entries()].sort((a, b) => b[1] - a[1])) {
+            console.log(`  ${cat.padEnd(12)} ${String(n).padStart(4)}`);
+        }
+        console.log(`  Eksempler (title → venue_name):`);
+        for (const r of divergent.slice(0, 8)) {
+            console.log(`    «${r.title}» → «${r.venue_name}» (${r.category}, ${r.municipality ?? '?'})`);
+        }
+    }
 }
 
 main().catch((e) => {
