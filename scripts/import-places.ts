@@ -11,7 +11,8 @@
 //
 // Krever SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY i miljøet (unntatt
 // --dry-run uten cache, som fungerer uten). Titler: OSM-navn når brukbart,
-// ellers revers-geokodet "Lekeplass ved <gate>" (lib/places.ts).
+// ellers revers-geokodet "Lekeplass ved <gate>", så "Badeplass i <bydel>"
+// (Nominatim) for steder uten adresse innen 200 m (lib/places.ts).
 // Rader med locked=true røres aldri (brukerrapport/manuell korrigering).
 //
 // ODbL-KRAV: der disse dataene vises, skal "© OpenStreetMap contributors"
@@ -43,9 +44,12 @@ const OVERPASS_BACKOFF_MS = (() => {
 // 2a: kort høflighetspause mellom de per-kategori-spørringene innen én by.
 const OVERPASS_QUERY_PAUSE_MS = 1000;
 // Kartverket punktsøk svarte 502 under 100 ms-kadens og var treg (timeouts)
-// ved 400 ms (jul. 2026). 900 ms default; overstyr med PLACES_PAUSE_MS for
-// å eksperimentere uten kodeendring. Egen pause, uavhengig av Overpass.
-const TITLE_PAUSE_MS = Number(process.env.PLACES_PAUSE_MS ?? 900);
+// ved 400 ms (jul. 2026). Pausen dekker nå OGSÅ Nominatim-bydeloppslaget
+// (i-omraade), som krever ≥1 req/s — derfor 1100 ms default. Pausen kjøres
+// etter hvert steds tittelgenerering, og bydeloppslaget er det siste eksterne
+// kallet i kaskaden, så ≥1100 ms mellom to Nominatim-kall er garantert.
+// Overstyr med PLACES_PAUSE_MS. Egen pause, uavhengig av Overpass.
+const TITLE_PAUSE_MS = Number(process.env.PLACES_PAUSE_MS ?? 1100);
 const SOURCE_SLUG = 'osm-steder';
 const DEFAULT_CITIES = ['Oslo', 'Bergen', 'Trondheim', 'Stavanger'];
 
@@ -335,7 +339,8 @@ async function importCity(
         console.log(
             `  ${cat.category.padEnd(12)} ${String(catRows.length).padStart(5)} steder — titler: ` +
                 `${bySource('osm-navn')} OSM-navn, ${bySource('ved-gate')} «ved gate», ` +
-                `${bySource('i-poststed')} «i poststed», ${bySource('kun-kategori')} kun kategori` +
+                `${bySource('i-poststed')} «i poststed», ${bySource('i-omraade')} «i område», ` +
+                `${bySource('kun-kategori')} kun kategori` +
                 (failed ? ` (HERAV ${failed} GEOKODINGSFEIL)` : '')
         );
         if (catRows.length === 0) console.log(`    ADVARSEL: 0 treff for ${cat.category} i ${city} — sjekk tag-endring i OSM.`);
