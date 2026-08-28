@@ -42,6 +42,11 @@ const PAUSE_MS = 1200;
 const RETRY_STATUS = new Set([429, 502, 504]);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Overpass-api.de avviser forespørsler UTEN gyldig User-Agent med HTTP 406.
+// Node/undici sin fetch setter ingen brukbar UA som standard — så vi MÅ sette
+// den eksplisitt, nøyaktig som det fungerende import-scriptet gjør.
+const UA = 'Togedoo datahub (hello@togedoo.com)';
+
 // Kjør en Overpass-spørring, returner ALLE «count»-elementenes total i rekkefølge.
 async function overpassCounts(query: string, label: string): Promise<number[]> {
     const attempts = [...OVERPASS_ENDPOINTS, ...OVERPASS_ENDPOINTS];
@@ -50,7 +55,7 @@ async function overpassCounts(query: string, label: string): Promise<number[]> {
         try {
             const res = await fetch(endpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA },
                 body: 'data=' + encodeURIComponent(query),
             });
             if (!res.ok) {
