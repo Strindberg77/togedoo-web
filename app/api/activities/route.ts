@@ -53,6 +53,19 @@ function sanitizeWebsite(raw: string | null): string | null {
     return null;
 }
 
+/** OSM-ens sport-tag på Ballbane er ofte semikolon-/komma-separert
+ *  («basketball;soccer») eller «multi». Normaliseres til en liten liste med
+ *  små bokstaver-tokens (['basketball','soccer'] | ['multi'] | []). Klienten
+ *  tolker tokenene til fotball/basket-fasetten — API-et påstår ingen semantikk. */
+function splitSports(raw: string | null | undefined): string[] {
+    if (!raw) return [];
+    return raw
+        .toLowerCase()
+        .split(/[;,]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+}
+
 function toApiShape(row: ActivityRow) {
     return {
         id: row.id,
@@ -91,6 +104,9 @@ function toApiShape(row: ActivityRow) {
         // Museum). Rå osm_tags eksponeres bevisst aldri i sin helhet.
         surface: row.osm_tags?.surface ?? null,
         lit: row.osm_tags?.lit ?? null,
+        // Ballsport-fasett (kun Ballbane har sport-tag). Normalisert token-liste;
+        // klienten mapper soccer/basketball/multi → fotball/basket.
+        sports: splitSports(row.osm_tags?.sport),
         website: sanitizeWebsite(
             row.osm_tags?.website ?? row.osm_tags?.['contact:website'] ?? null
         ),
