@@ -26,9 +26,47 @@
 // geokoding (for steder uten gateadresse, som en akebakke).
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
 
-// PROVISORISK kategori — bekreftes i steg 4 (egen «Vinter & innendørs»-chip vs.
-// fordeling på eksisterende). Endres ETT sted her hvis navnet justeres.
-const CATEGORY = 'Vinter & innendørs';
+// Vinter-splitt (steg 5): «Vinter & innendørs» er avviklet og fordelt på fem
+// nye kategorier + inne/ute-flagg (is_indoor). Nøkkel = seed.externalId. Alle
+// 25 MÅ finnes her — toRow feiler hardt hvis en mangler (fanges i --dry-run).
+const SPLIT: Record<string, { category: string; isIndoor: boolean }> = {
+    // Skianlegg (6): SNØ er innendørs, resten (alpint/akebakke) ute.
+    'sno-lorenskog': { category: 'Skianlegg', isIndoor: true },
+    'varingskollen-alpinsenter': { category: 'Skianlegg', isIndoor: false },
+    'kirkerudbakken-skisenter': { category: 'Skianlegg', isIndoor: false },
+    'eikedalen-skisenter': { category: 'Skianlegg', isIndoor: false },
+    'vassfjellet-skisenter': { category: 'Skianlegg', isIndoor: false },
+    'korketrekkeren-aking': { category: 'Skianlegg', isIndoor: false },
+    // Badeland (8): alle inne.
+    'risenga-svommehall': { category: 'Badeland', isIndoor: true },
+    'bolgen-bad-drobak': { category: 'Badeland', isIndoor: true },
+    'jessheimbadet': { category: 'Badeland', isIndoor: true },
+    'ado-arena-bergen': { category: 'Badeland', isIndoor: true },
+    'vannkanten-badeland-loddefjord': { category: 'Badeland', isIndoor: true },
+    'pirbadet-trondheim': { category: 'Badeland', isIndoor: true },
+    'stavanger-svommehall': { category: 'Badeland', isIndoor: true },
+    'austratt-svommehall-sandnes': { category: 'Badeland', isIndoor: true },
+    // Trampolinepark (5): alle inne.
+    'jumpyard-sno-lorenskog': { category: 'Trampolinepark', isIndoor: true },
+    'rush-trampolinepark-oslo': { category: 'Trampolinepark', isIndoor: true },
+    'rush-trampolinepark-bergen': { category: 'Trampolinepark', isIndoor: true },
+    'rush-trampolinepark-trondheim': { category: 'Trampolinepark', isIndoor: true },
+    'rush-trampolinepark-stavanger': { category: 'Trampolinepark', isIndoor: true },
+    // Innendørs lekeland (5): alle inne.
+    'leos-lekeland-baerum-grini': { category: 'Innendørs lekeland', isIndoor: true },
+    'leos-lekeland-oslo': { category: 'Innendørs lekeland', isIndoor: true },
+    'leos-lekeland-bergen': { category: 'Innendørs lekeland', isIndoor: true },
+    'leos-lekeland-trondheim': { category: 'Innendørs lekeland', isIndoor: true },
+    'playground-forus': { category: 'Innendørs lekeland', isIndoor: true },
+    // Skøyter (1): innendørs ishall.
+    'sormarka-arena-stavanger': { category: 'Skøyter', isIndoor: true },
+};
+
+function splitFor(externalId: string): { category: string; isIndoor: boolean } {
+    const s = SPLIT[externalId];
+    if (!s) throw new Error(`Mangler vinter-splitt-mapping for externalId="${externalId}"`);
+    return s;
+}
 
 const SOURCE = {
     slug: 'kuratert-vintertilbud',
@@ -386,7 +424,8 @@ function toRow(seed: VinterSeed, sourceId: string, lat: number, lng: number, ver
         kind: 'place',
         title: seed.title,
         description: seed.description,
-        category: CATEGORY,
+        category: splitFor(seed.externalId).category,
+        is_indoor: splitFor(seed.externalId).isIndoor,
         target_audience: seed.targetAudience ?? 'For alle',
         address: seed.address,
         municipality: seed.municipality,
@@ -454,7 +493,23 @@ async function main() {
     }
 
     const verifiedCount = resolved.filter((r) => r.verified).length;
-    console.log(`Vinter & innendørs-seed [kategori="${CATEGORY}"]: ${SEED.length} steder — ${verifiedCount} entydig geokodet (published), ${SEED.length - verifiedCount} pending.\n`);
+    console.log(`Vinter-splitt-seed: ${SEED.length} steder — ${verifiedCount} entydig geokodet (published), ${SEED.length - verifiedCount} pending.\n`);
+
+    // Fordelings-rapport (verifiser 6/8/5/5/1 FØR ekte kjøring).
+    const dist = new Map<string, { total: number; inne: number; ute: number }>();
+    for (const r of resolved) {
+        const s = splitFor(r.seed.externalId);
+        const d = dist.get(s.category) ?? { total: 0, inne: 0, ute: 0 };
+        d.total += 1;
+        s.isIndoor ? (d.inne += 1) : (d.ute += 1);
+        dist.set(s.category, d);
+    }
+    console.log('Kategori-fordeling (forventet 6/8/5/5/1):');
+    for (const [cat, d] of dist) {
+        console.log(`  ${cat.padEnd(20)} ${String(d.total).padStart(2)}  (inne ${d.inne}, ute ${d.ute})`);
+    }
+    const totalMapped = [...dist.values()].reduce((a, d) => a + d.total, 0);
+    console.log(`  ${'SUM'.padEnd(20)} ${String(totalMapped).padStart(2)}${totalMapped === SEED.length ? '' : '  ⚠ AVVIK fra ' + SEED.length}\n`);
     for (const r of resolved) {
         const homeCity = r.seed.nearCity ? `→${r.seed.nearCity}` : '   ';
         console.log(
@@ -503,7 +558,7 @@ async function main() {
         .update({ last_synced_at: new Date().toISOString(), last_sync_status: `ok: ${rows.length} vinter/innendørs-steder (${verifiedCount} geokodet)` })
         .eq('id', source.id);
 
-    console.log(`\nFerdig: upsertet ${rows.length} steder i kategorien "${CATEGORY}".`);
+    console.log(`\nFerdig: upsertet ${rows.length} steder (vinter-splitt: Skianlegg/Badeland/Trampolinepark/Innendørs lekeland/Skøyter).`);
 }
 
 main().catch((e) => {

@@ -1,0 +1,11 @@
+-- 0014_is_indoor.sql
+--
+-- Inne/ute-egenskap (vinter-splitt, steg 5). Ny nullable boolean — nøyaktig
+-- samme mønster som is_free. Null = ukjent (de aller fleste OSM-steder);
+-- settes eksplisitt for seed-steder der inne/ute er kjent (f.eks. SNØ Lørenskog
+-- = innendørs skianlegg, badeland/trampolinepark/lekeland/skøytehall = inne,
+-- utendørs skianlegg/akebakke = ute).
+--
+-- Ikke-destruktivt: legger kun til en kolonne (add column if not exists),
+-- eksisterende rader beholder alt og får is_indoor = null.
+alter table public.activities add column if not exists is_indoor boolean;

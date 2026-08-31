@@ -32,6 +32,7 @@ interface ActivityRow {
     image_url: string | null;
     opening_hours: string | null;
     osm_tags: Record<string, string> | null;
+    is_indoor: boolean | null;
 }
 
 /** Kun http/https-URL-er slipper gjennom til appens webview — OSM-tagger
@@ -95,6 +96,9 @@ function toApiShape(row: ActivityRow) {
         startsAt: row.starts_at,
         endsAt: row.ends_at,
         isFree: row.is_free,
+        // Inne/ute-egenskap (vinter-splitt): null = ukjent (utledes klient-side
+        // fra kategori der den mangler).
+        isIndoor: row.is_indoor,
         priceText: row.price_text,
         url: row.url,
         imageUrl: row.image_url,
@@ -114,7 +118,7 @@ function toApiShape(row: ActivityRow) {
 }
 
 const ROW_COLUMNS =
-    'id, kind, title, description, category, target_audience, venue_name, address, municipality, near_city, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, opening_hours, osm_tags';
+    'id, kind, title, description, category, target_audience, venue_name, address, municipality, near_city, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, opening_hours, osm_tags, is_indoor';
 
 async function fromDatabase(searchParams: URLSearchParams) {
     const db = supabaseAdmin();
