@@ -65,8 +65,73 @@ interface OsmElement {
     tags?: OsmTags;
 }
 
+/**
+ * Sport-tokens som gjør en pitch til en GENERISK ballbane. Vinner over de
+ * sport-spesifikke etikettene under: en bane tagget «tennis;soccer» er i
+ * praksis en flerbruksflate, og «Ballbane» er da den ærlige tittelen.
+ */
+const GENERIC_BALL_SPORTS = new Set(['soccer', 'basketball', 'multi']);
+
+/**
+ * Sport-spesifikke tittel-etiketter. Alle mønstre er ANKRET, så de er
+ * gjensidig utelukkende — `table_tennis` treffer aldri /^tennis$/. Beach-
+ * variantene faller inn under sine respektive hovedsporter.
+ *
+ * Rekkefølgen er derfor ikke en felle-forsvarsmekanisme, men en ekte
+ * PRIORITET for flersports-tagger: er en flate tagget «tennis;table_tennis»,
+ * navngir det STØRSTE anlegget stedet. Bordtennisbord står sist fordi et bord
+ * er det minst definerende av dem.
+ */
+const SPORT_TITLE_LABELS: ReadonlyArray<readonly [RegExp, string]> = [
+    [/^tennis$/, 'Tennisbane'],
+    [/^(beach[_-]?)?volleyball$/, 'Volleyballbane'],
+    [/^(beach[_-]?)?handball$/, 'Håndballbane'],
+    [/^table[_-]?tennis$/, 'Bordtennisbord'],
+];
+
+/**
+ * Tittel-etiketten for én pitch, utledet av OSM-ens `sport`-tag. Brukes KUN
+ * til å konstruere titler for steder uten brukbart OSM-navn («Tennisbane ved
+ * Sofienberggata») — kategoriverdien i databasen er «Ballbane» for alle seks
+ * sportene, uavhengig av hva denne returnerer.
+ *
+ * Merk samspillet med appen: DatahubPlace.displayTitle stripper prefikset kun
+ * når det er lik kategoriverdien, så «Tennisbane ved X» blir stående ustrippet
+ * på kortet. Det er tilsiktet — tittelen er det eneste stedet sporten navngis,
+ * ved siden av kategorilinja.
+ */
+export function ballTitleLabel(sportRaw: string | undefined): string {
+    const tokens = (sportRaw ?? '')
+        .toLowerCase()
+        .split(/[;,]/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+    if (tokens.some((t) => GENERIC_BALL_SPORTS.has(t))) return 'Ballbane';
+    for (const [pattern, label] of SPORT_TITLE_LABELS) {
+        if (tokens.some((t) => pattern.test(t))) return label;
+    }
+    return 'Ballbane'; // ukjent/manglende sport — generisk er tryggest
+}
+
+interface PlaceCategoryDef {
+    key: string;
+    /** Kategoriens navn OG standard tittel-prefiks. */
+    label: string;
+    /** Verdien som lagres i activities.category. */
+    category: string;
+    audience: string;
+    selector: string;
+    matches: (t: OsmTags) => boolean;
+    isFree: boolean | null;
+    /**
+     * Overstyrer [label] som tittel-prefiks, per element. Satt kun for
+     * ballbane, der én kategori dekker seks sporter.
+     */
+    titleLabelFor?: (t: OsmTags) => string;
+}
+
 // Rekkefølgen er match-prioritet (et element kategoriseres av første treff).
-export const PLACE_CATEGORIES = [
+export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
     {
         // Først i match-prioritet: institusjonen vinner over evt. park-/
         // leisure-tagger på samme objekt. Tag-proben (jul. 2026, Oslo/
@@ -103,13 +168,30 @@ export const PLACE_CATEGORIES = [
         isFree: true,
     },
     {
+        // Ball- OG RACKETSPORT (des. 2026, fase B). Selektoren hentet tidligere
+        // bare soccer|basketball|multi, så tennis (187), bordtennis (174),
+        // volleyball (173 inkl. beach/sand) og håndball (17) ble filtrert bort
+        // ved import og fantes ikke i databasen.
+        //
+        // Overpass' `~` er USNITT-forankret, så seks alternativer dekker alle
+        // variantene: `tennis` fanger også `table_tennis`, `volleyball` fanger
+        // `beachvolleyball`/`beach_volleyball`, `handball` fanger
+        // `beachhandball`. Flere ledd ville bare vært støy.
+        //
+        // Kategoriverdien er fortsatt «Ballbane» for alle seks — det er
+        // databasenøkkelen. Appen VISER «Ball- og racketsport» via
+        // CategoryTheme.label; nøkkelen renames bevisst ikke, fordi de
+        // konstruerte titlene («Ballbane ved X») er koblet til den gjennom
+        // DatahubPlace.displayTitle-strippingen.
         key: 'ballbane',
         label: 'Ballbane',
         category: 'Ballbane',
         audience: 'For alle',
-        selector: 'nwr["leisure"="pitch"]["sport"~"soccer|basketball|multi",i]["access"!="private"](area.a);',
+        selector:
+            'nwr["leisure"="pitch"]["sport"~"soccer|basketball|multi|tennis|volleyball|handball",i]["access"!="private"](area.a);',
         matches: (t: OsmTags) => t.leisure === 'pitch',
         isFree: true,
+        titleLabelFor: (t: OsmTags) => ballTitleLabel(t.sport),
     },
     {
         key: 'idrettshall',
@@ -284,7 +366,9 @@ export async function buildRows(
             geocoded += 1;
             console.log(`  geokoder ${el.type}/${el.id} (${geocoded}/${needGeocoding})...`);
         }
-        const titled = await makePlaceTitleDetailed(cat.label, tags.name ?? null, pos.lat, pos.lng);
+        // Tittel-prefikset kan være sport-spesifikt (ballbane), ellers kategoriens.
+        const titleLabel = cat.titleLabelFor?.(tags) ?? cat.label;
+        const titled = await makePlaceTitleDetailed(titleLabel, tags.name ?? null, pos.lat, pos.lng);
         if (!usableName) await sleep(TITLE_PAUSE_MS); // punktsøk-høflighet ved cache-miss
 
         const addrStreet = tags['addr:street']
