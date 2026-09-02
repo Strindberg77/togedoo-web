@@ -225,18 +225,37 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
 type PlaceCategory = (typeof PLACE_CATEGORIES)[number];
 
 // Forbigående server-/gateway-statuser verdt å prøve på nytt: 429 (rate limit),
-// 502 (bad gateway — Overpass kan svare dette mellom forsøk under last) og
-// 504 (gateway timeout). Andre statuser er faste feil retry ikke løser.
-const OVERPASS_RETRY_STATUS = new Set([429, 502, 504]);
+// 500, 502 (bad gateway), 503 (overbelastet) og 504 (gateway timeout).
+//
+// 500 kom inn des. 2026, etter at en ustabil Overpass-periode feilet HELE byer
+// på første forsøk: 500 lå ikke i settet, så det ble kastet umiddelbart — uten
+// retry OG uten å prøve speilet. Overpass svarer 500 både på ekte
+// spørringsfeil («Query run error») og når serveren er presset. Vi retryer
+// begge: spørringene her er statiske og verifiserte, så et 500 er i praksis
+// alltid last. Prisen for en ekte spørringsfeil er noen bortkastede forsøk,
+// mot at en travel time ikke lenger feller en hel by.
+export const OVERPASS_RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
+
+// Antall runder over speil-lista. To runder ga 4 forsøk med to speil; tre gir
+// 6, som dekker en lengre ustabil periode uten å bli plagsomt tregt (backoffen
+// flater ut på 45 s). Legg til flere speil med PLACES_OVERPASS_ENDPOINTS.
+const OVERPASS_ROUNDS = Math.max(
+    1,
+    Number(process.env.PLACES_OVERPASS_ROUNDS ?? 3) || 3
+);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/// Kjør ÉN Overpass-spørring med retry. 2b: to runder over speilene med ekte
-/// eksponentiell backoff (5s→15s→45s) mellom forsøkene. 429/502/504 og
-/// nettverks-/parse-feil er retrybare; annen HTTP-status (4xx/5xx) kastes
-/// umiddelbart — det er en spørringsfeil retry ikke løser.
-async function fetchOverpass(query: string, label: string): Promise<OsmElement[]> {
-    const attempts = [...OVERPASS_ENDPOINTS, ...OVERPASS_ENDPOINTS];
+/// Kjør ÉN Overpass-spørring med retry: [OVERPASS_ROUNDS] runder over speilene
+/// med ekte eksponentiell backoff (5s→15s→45s) mellom forsøkene.
+/// [OVERPASS_RETRY_STATUS] og nettverks-/parse-feil er retrybare; annen
+/// HTTP-status (typisk 4xx) kastes umiddelbart — det er en spørringsfeil retry
+/// ikke løser.
+export async function fetchOverpass(query: string, label: string): Promise<OsmElement[]> {
+    const attempts = Array.from(
+        { length: OVERPASS_ENDPOINTS.length * OVERPASS_ROUNDS },
+        (_, i) => OVERPASS_ENDPOINTS[i % OVERPASS_ENDPOINTS.length]
+    );
     for (let i = 0; i < attempts.length; i++) {
         const endpoint = attempts[i];
         const isLast = i === attempts.length - 1;
@@ -250,8 +269,7 @@ async function fetchOverpass(query: string, label: string): Promise<OsmElement[]
                 const json = await res.json();
                 return (json.elements ?? []) as OsmElement[];
             }
-            // Kun forbigående statuser (429/502/504) er verdt å prøve på nytt;
-            // andre er faste feil.
+            // Kun forbigående statuser er verdt å prøve på nytt; andre er faste feil.
             if (!OVERPASS_RETRY_STATUS.has(res.status)) {
                 throw new Error(`Overpass HTTP ${res.status} (${label})`);
             }
@@ -486,12 +504,46 @@ async function importCity(
     return writable.length;
 }
 
-async function main() {
-    const args = process.argv.slice(2);
+export interface ImportArgs {
+    dryRun: boolean;
+    cities: string[];
+    limit: number;
+    cats: PlaceCategory[];
+    catArg?: string;
+}
+
+const KNOWN_FLAGS = ['--dry-run', '--city=', '--limit=', '--category='];
+
+/**
+ * Argumentparsing, streng med vilje. ALLE verdiflagg bruker `=`
+ * (`--city=Oslo`, ikke `--city Oslo`). Skrivemåten med mellomrom ble tidligere
+ * IGNORERT i stillhet, slik at `--city Oslo` kjørte alle fire byene — en dyr
+ * overraskelse mot produksjonsdata. Ukjente argumenter avvises derfor nå.
+ */
+export function parseArgs(args: string[]): ImportArgs {
+    const unknown = args.filter((a) => !KNOWN_FLAGS.some((f) => a === f || a.startsWith(f)));
+    if (unknown.length) {
+        throw new Error(
+            `Ukjent argument: ${unknown.join(', ')}\n` +
+                `Verdiflagg krever «=»: --city=Oslo --limit=20 --category=ballbane\n` +
+                `Gyldige flagg: ${KNOWN_FLAGS.join(' ')}`
+        );
+    }
+
     const dryRun = args.includes('--dry-run');
     const cityArg = args.find((a) => a.startsWith('--city='))?.split('=')[1];
-    const limit = Number(args.find((a) => a.startsWith('--limit='))?.split('=')[1] ?? Infinity) || Infinity;
-    const cities = cityArg ? [cityArg] : DEFAULT_CITIES;
+    const limitRaw = args.find((a) => a.startsWith('--limit='))?.split('=')[1];
+    if (limitRaw !== undefined && !(Number(limitRaw) > 0)) {
+        throw new Error(`--limit= må være et positivt tall, fikk «${limitRaw}».`);
+    }
+    const limit = limitRaw !== undefined ? Number(limitRaw) : Infinity;
+
+    // --city=Oslo eller --city=Oslo,Bergen. Én by om gangen er den anbefalte
+    // strategien når Overpass er ustabil: en feil isolerer seg til den byen.
+    const cities = cityArg
+        ? cityArg.split(',').map((c) => c.trim()).filter(Boolean)
+        : DEFAULT_CITIES;
+    if (cityArg && !cities.length) throw new Error('--city= er tom.');
 
     // --category=<key>[,<key>] kjører kun de valgte kategoriene, så et enkelt
     // feilende punkt (f.eks. den tunge «lekeplass»-selektoren) kan fylles inn
@@ -505,12 +557,24 @@ async function main() {
         const found = new Set(cats.map((c) => c.key));
         const missing = wanted.filter((w) => !found.has(w));
         if (missing.length) {
-            console.error(
+            throw new Error(
                 `Ukjent kategori: ${missing.join(', ')}. Gyldige: ${PLACE_CATEGORIES.map((c) => c.key).join(', ')}`
             );
-            process.exit(1);
         }
     }
+
+    return { dryRun, cities, limit, cats, catArg };
+}
+
+async function main() {
+    let parsed: ImportArgs;
+    try {
+        parsed = parseArgs(process.argv.slice(2));
+    } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+    }
+    const { dryRun, cities, limit, cats, catArg } = parsed;
 
     console.log(`Import av faste steder: ${cities.join(', ')}${dryRun ? ' [DRY-RUN]' : ''}${limit !== Infinity ? ` [limit=${limit}/kategori]` : ''}${catArg ? ` [kategori=${cats.map((c) => c.key).join(',')}]` : ''}`);
     let total = 0;
@@ -533,6 +597,22 @@ async function main() {
     if (failed.length) {
         console.log(`\nFEILEDE BYER (${failed.length}):`);
         for (const f of failed) console.log(`  ✗ ${f.city}: ${f.error}`);
+        // Importen er additiv (upsert på source_id+external_id, ingen sletting),
+        // og en by skrives FØRST når hele byen er bygget. En feilet by har
+        // derfor ikke lagt igjen halv tilstand, og kan trygt kjøres på nytt —
+        // alene. Vi skriver ut den nøyaktige kommandoen, så gjenkjøringen ikke
+        // ved et uhell tar med byene som allerede gikk gjennom.
+        const rerunFlags = [
+            dryRun ? '--dry-run' : null,
+            limit !== Infinity ? `--limit=${limit}` : null,
+            catArg ? `--category=${catArg}` : null,
+        ].filter(Boolean);
+        console.log('\nKjør de feilede på nytt, én by om gangen (trygt — upsert er idempotent):');
+        for (const f of failed) {
+            console.log(
+                `  npx --yes tsx scripts/import-places.ts --city=${f.city} ${rerunFlags.join(' ')}`.trimEnd()
+            );
+        }
         // Delvis feil: de vellykkede byene er skrevet, men signaliser til
         // operatør/CI at minst én by mangler ved å avslutte med kode 1.
         process.exitCode = 1;
