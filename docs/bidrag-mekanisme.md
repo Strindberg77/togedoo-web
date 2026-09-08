@@ -33,6 +33,8 @@ Et crowdsourcing-system som skal løse 209 punkter er feil verktøy. 209 punkter
 
 ### 0.3 Sjekk at dataene ikke allerede finnes — det er én dag, og det kan gjøre halve dokumentet unødvendig
 
+> **Erstattet av §15 (8. september 2026).** Beslutningen er å ikke integrere kommunale bookingsystemer. Vurderingen under står som dokumentasjon.
+
 Rapporten min slo fast at ingen åpen kilde beskriver *tilbud*. Det står jeg ved for **registre**. Men jeg sjekket ikke **booking­systemene**, og det er der tilbudet faktisk bor:
 
 - Oslo kommune tildeler halltid gjennom et bookingsystem (Aktiv kommune / tilsvarende). Tildelingslistene viser hvilken klubb som har hvilken hall, hvilke dager. En håndballklubb med tirsdager 17–19 i Bjølsenhallen **er** svaret på «foregår det håndball her».
@@ -409,3 +411,45 @@ To ting er gjenbrukbare, ett er det ikke.
 **Praktisk konsekvens:** hold skåren og tersklene i en egen modul (`lib/consensus.ts`) uten import av aktivitetsbegreper, og la den ta vokabularet inn som parameter. Det koster ingenting nå og gjør flyttingen triviell senere.
 
 Én advarsel om Workplace: der er bidragsyterne kolleger i en kjent, liten krets. Pseudonymitet fungerer dårlig — folk vet hvem som svarte, og «vet ikke» blir sosialt dyrt. Vektingen og kontrollspørsmålene ville trolig gjort mer skade enn nytte i den konteksten. Kjernen flytter; **tillitsmodellen gjør det ikke.**
+
+---
+
+## 15. Prinsipp: hvilke datakilder Togedoo bruker — og hvorfor ikke flere
+
+*Beslutning tatt 8. september 2026. Erstatter anbefalingen i §0.3 om å
+undersøke kommunale bookingsystemer.*
+
+Togedoo henter data fra **tre kilder, og ikke flere**:
+
+1. **OpenStreetMap** (ODbL) — steder og geografi. Grunnmuren.
+2. **Anleggsregisteret** (NLOD) — idrettsanlegg, anleggstype, anleggsnummer.
+   Bekrefter og utvider OSM.
+3. **Brukere og aktører selv** — det de to andre ikke kan se: hvilke
+   aktiviteter som faktisk foregår, og tilbud fra aktører som melder seg inn.
+
+Kommunale bookingsystemer, tildelingslister, idrettskretsenes registre og
+tilsvarende **skal ikke integreres**, selv der dataene er tilgjengelige.
+
+### Begrunnelse
+
+**Skalering.** Kommunale kilder finnes i Oslo, kanskje i Bergen, i annen form
+i Trondheim, og ikke i det hele tatt i Sverige og Danmark. Bygger vi på dem,
+må grunnlaget reforhandles i hver by og hvert land. Brukermekanismen virker
+likt overalt fra dag én. Det er hele poenget med den.
+
+**Vedlikeholdskostnad.** Hver ekstra kilde er et integrasjonspunkt som kan
+endre seg, slutte å virke eller endre lisens. Én økt (8. september 2026) ga
+tre eksempler: Datahotellet er nedlagt, OSM-miljøets taksonomispeil var
+utdatert på anleggstypenavnene, og endepunktet vi faktisk bruker er
+udokumentert.
+
+**Datatype.** Bookingdata sier hvem som har leid halltid — ikke om det er et
+barnetilbud, om det er åpent for nye, eller om det passer for en femåring.
+Det er data av en annen art enn resten av biblioteket, med egen tolkning og
+egne feilkilder.
+
+### Hva dette betyr i praksis
+
+Kaldstart løses ved seeding (§6), ikke ved en ny integrasjon. Der vi ikke vet,
+sier vi at vi ikke vet, og spør brukerne. Tilliten bygges over tid gjennom
+mennesker — ikke gjennom flere leverandører.
