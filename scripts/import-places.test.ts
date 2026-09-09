@@ -97,11 +97,21 @@ test('ukjent eller manglende sport faller trygt til «Ballbane»', async () => {
     assert.equal(ballTitleLabel('cricket'), 'Ballbane');
 });
 
-test('etiketten er per element — kun ballbane har overstyring', async () => {
+test('etiketten er per element — kun kategorier med flere undertyper', async () => {
     const { PLACE_CATEGORIES } = await load();
+    // Overstyringen er OPT-IN: den finnes kun der én kategori dekker flere
+    // undertyper som fortjener hver sin tittel. Fase B ga ballbane seks
+    // sporter; fase C ga klatring to (klatresenter/klatrepark). Lista låses
+    // eksplisitt, så en ny overstyring aldri kan snike seg inn ubemerket.
+    const medOverstyring = PLACE_CATEGORIES.filter((c) => c.titleLabelFor).map((c) => c.key);
+    assert.deepEqual(medOverstyring.sort(), ['ballbane', 'klatring']);
+
     const ballbane = PLACE_CATEGORIES.find((c) => c.key === 'ballbane')!;
     assert.equal(ballbane.titleLabelFor?.({ sport: 'tennis' }), 'Tennisbane');
-    for (const cat of PLACE_CATEGORIES.filter((c) => c.key !== 'ballbane')) {
+    const klatring = PLACE_CATEGORIES.find((c) => c.key === 'klatring')!;
+    assert.equal(klatring.titleLabelFor?.({ sport: 'climbing_adventure' }), 'Klatrepark');
+
+    for (const cat of PLACE_CATEGORIES.filter((c) => !medOverstyring.includes(c.key))) {
         assert.equal(cat.titleLabelFor, undefined, `${cat.key} skal bruke label`);
     }
 });
@@ -211,4 +221,102 @@ test('ugyldig --limit= og ukjent kategori avvises', async () => {
     assert.throws(() => parseArgs(['--limit=0']), /positivt tall/);
     assert.throws(() => parseArgs(['--limit=abc']), /positivt tall/);
     assert.throws(() => parseArgs(['--category=fotballbane']), /Ukjent kategori/);
+});
+
+
+// ─── Fase C: Klatring ──────────────────────────────────────────────────────
+// Kategorien er forankret i leisure=sports_centre, ikke i sport=climbing.
+// Testene låser de tre måtene den kan gå galt på: at klippevegger slipper
+// inn, at flerbrukshaller kuppes, og at klatrepark og klatresenter smelter
+// sammen til én tittel.
+
+test('klatring står FØR idrettshall — første treff vinner', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const klatring = PLACE_CATEGORIES.findIndex((c) => c.key === 'klatring');
+    const idrettshall = PLACE_CATEGORIES.findIndex((c) => c.key === 'idrettshall');
+    assert.ok(klatring !== -1, 'klatring mangler i PLACE_CATEGORIES');
+    assert.ok(
+        klatring < idrettshall,
+        'klatring må stå før idrettshall — ellers svelger den ufiltrerte ' +
+            'sports_centre-selektoren alle klatreanleggene'
+    );
+});
+
+test('selektoren er forankret i sports_centre, ikke i sport=climbing', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const klatring = PLACE_CATEGORIES.find((c) => c.key === 'klatring')!;
+    // Uten leisure-forankringen ville ~1177 utendørs klatrefelt kommet med.
+    assert.ok(klatring.selector.includes('"leisure"="sports_centre"'));
+    assert.ok(klatring.selector.includes('climbing'));
+});
+
+test('klippevegg uten leisure-tagg matcher IKKE', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const klatring = PLACE_CATEGORIES.find((c) => c.key === 'klatring')!;
+    // Typisk utendørs klatrefelt: natural=cliff + sport=climbing, ingen leisure.
+    assert.equal(klatring.matches({ natural: 'cliff', sport: 'climbing' }), false);
+    assert.equal(klatring.matches({ sport: 'climbing' }), false);
+    assert.equal(klatring.matches({ leisure: 'pitch', sport: 'climbing' }), false);
+});
+
+test('sports_centre UTEN klatre-sport matcher ikke klatring', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const klatring = PLACE_CATEGORIES.find((c) => c.key === 'klatring')!;
+    // Uten sport-sjekken ville hvilket som helst sports_centre blitt Klatring.
+    assert.equal(klatring.matches({ leisure: 'sports_centre' }), false);
+    assert.equal(klatring.matches({ leisure: 'sports_centre', sport: 'swimming' }), false);
+});
+
+test('climbing;multi forblir Idrettshall — multi vinner', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const klatring = PLACE_CATEGORIES.find((c) => c.key === 'klatring')!;
+    const idrettshall = PLACE_CATEGORIES.find((c) => c.key === 'idrettshall')!;
+    for (const sport of ['climbing;multi', 'multi;climbing', 'climbing, multi']) {
+        const tags = { leisure: 'sports_centre', sport };
+        assert.equal(klatring.matches(tags), false, `${sport} skulle ikke være Klatring`);
+        assert.equal(idrettshall.matches(tags), true, `${sport} skulle falle til Idrettshall`);
+    }
+});
+
+test('ekte klatreanlegg matcher, uansett rekkefølge i sport-taggen', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const klatring = PLACE_CATEGORIES.find((c) => c.key === 'klatring')!;
+    for (const sport of ['climbing', 'climbing_adventure', 'climbing;fitness', 'fitness;climbing']) {
+        assert.equal(
+            klatring.matches({ leisure: 'sports_centre', sport }),
+            true,
+            `${sport} skulle vært Klatring`
+        );
+    }
+});
+
+test('tittel-etiketten skiller klatrepark fra klatresenter', async () => {
+    const { climbTitleLabel } = await load();
+    assert.equal(climbTitleLabel('climbing'), 'Klatresenter');
+    assert.equal(climbTitleLabel('climbing_adventure'), 'Klatrepark');
+    assert.equal(climbTitleLabel('climbing-adventure'), 'Klatrepark');
+    // Begge tagget: den mer SPESIFIKKE opplevelsen vinner. Klatresenter er
+    // standardforventningen til kategorien, så tittelen bærer det som ikke
+    // allerede følger av den. Rekkefølgen i taggen skal ikke ha betydning.
+    assert.equal(climbTitleLabel('climbing;climbing_adventure'), 'Klatrepark');
+    assert.equal(climbTitleLabel('climbing_adventure;climbing'), 'Klatrepark');
+    // Ukjent/manglende: kategorinavnet er tryggest.
+    assert.equal(climbTitleLabel(undefined), 'Klatring');
+    assert.equal(climbTitleLabel('bouldering'), 'Klatring');
+});
+
+test('climbing_adventure treffer ALDRI /^climbing$/ (understreng-fella)', async () => {
+    const { climbTitleLabel } = await load();
+    // Speilvendt av bordtennis-testen over: mønstrene er ankret begge veier.
+    assert.equal(climbTitleLabel('climbing_adventure'), 'Klatrepark');
+    assert.notEqual(climbTitleLabel('climbing_adventure'), 'Klatresenter');
+});
+
+test('kategoriverdien er «Klatring» — databasenøkkelen', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const klatring = PLACE_CATEGORIES.find((c) => c.key === 'klatring')!;
+    assert.equal(klatring.category, 'Klatring');
+    assert.equal(klatring.label, 'Klatring');
+    assert.equal(klatring.audience, 'For alle');
+    assert.equal(klatring.isFree, null);
 });

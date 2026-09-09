@@ -101,16 +101,73 @@ const SPORT_TITLE_LABELS: ReadonlyArray<readonly [RegExp, string]> = [
  * ved siden av kategorilinja.
  */
 export function ballTitleLabel(sportRaw: string | undefined): string {
-    const tokens = (sportRaw ?? '')
-        .toLowerCase()
-        .split(/[;,]/)
-        .map((t) => t.trim())
-        .filter(Boolean);
+    const tokens = sportTokens(sportRaw);
     if (tokens.some((t) => GENERIC_BALL_SPORTS.has(t))) return 'Ballbane';
     for (const [pattern, label] of SPORT_TITLE_LABELS) {
         if (tokens.some((t) => pattern.test(t))) return label;
     }
     return 'Ballbane'; // ukjent/manglende sport — generisk er tryggest
+}
+
+/**
+ * OSM-ens `sport`-tag som normaliserte tokens. Sammensatte verdier finnes
+ * gjennom hele datasettet, med varierende skilletegn OG rekkefølge
+ * («basketball;soccer» og «soccer;basketball» er samme type anlegg), så alle
+ * lesere må splitte — aldri sammenligne hele strengen.
+ */
+export function sportTokens(sportRaw: string | undefined): string[] {
+    return (sportRaw ?? '')
+        .toLowerCase()
+        .split(/[;,]/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+}
+
+/**
+ * Sport-tokens som gjør et sports_centre til et GENERISK flerbruksanlegg.
+ * Samme presedens som [GENERIC_BALL_SPORTS]: en hall tagget «climbing;multi»
+ * er en flerbrukshall som også har klatrevegg, ikke et klatresenter — den
+ * skal forbli «Idrettshall».
+ */
+const GENERIC_CENTRE_SPORTS = new Set(['multi']);
+
+/**
+ * Klatre-etiketter. Ankret og gjensidig utelukkende, som [SPORT_TITLE_LABELS]
+ * — `climbing_adventure` treffer aldri /^climbing$/, så understreng-fella er
+ * lukket i begge retninger.
+ *
+ * Rekkefølgen er en PRIORITET for anlegg tagget med begge: da vinner
+ * «Klatrepark». Klatrepark i trær er den mer SPESIFIKKE opplevelsen, mens
+ * klatresenter er standardforventningen til et sted i Klatring-kategorien —
+ * tittelen skal bære det som ikke allerede følger av kategorien. Merk at
+ * dette er motsatt regel av [SPORT_TITLE_LABELS], der det største anlegget
+ * navngir stedet; der er alle seks sportene like forventede.
+ */
+const CLIMB_TITLE_LABELS: ReadonlyArray<readonly [RegExp, string]> = [
+    [/^climbing[_-]?adventure$/, 'Klatrepark'],
+    [/^climbing$/, 'Klatresenter'],
+];
+
+/** Har taggen minst ett klatre-token? Brukes av både selektor-matchingen og
+ *  tittel-etiketten, så de to aldri kan komme i utakt. */
+export function hasClimbingSport(sportRaw: string | undefined): boolean {
+    return sportTokens(sportRaw).some((t) =>
+        CLIMB_TITLE_LABELS.some(([pattern]) => pattern.test(t))
+    );
+}
+
+/**
+ * Tittel-etiketten for ett klatreanlegg. «Klatrepark» (løype i trær, tagget
+ * `climbing_adventure`) og «Klatresenter» (innendørs vegg, `climbing`) er to
+ * ulike opplevelser og fortjener ulik tittel når stedet mangler OSM-navn.
+ * Kategoriverdien er «Klatring» for begge — det er databasenøkkelen.
+ */
+export function climbTitleLabel(sportRaw: string | undefined): string {
+    const tokens = sportTokens(sportRaw);
+    for (const [pattern, label] of CLIMB_TITLE_LABELS) {
+        if (tokens.some((t) => pattern.test(t))) return label;
+    }
+    return 'Klatring'; // ukjent/manglende sport — kategorinavnet er tryggest
 }
 
 interface PlaceCategoryDef {
@@ -192,6 +249,38 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         matches: (t: OsmTags) => t.leisure === 'pitch',
         isFree: true,
         titleLabelFor: (t: OsmTags) => ballTitleLabel(t.sport),
+    },
+    {
+        // KLATRING (fase C). Må stå FØR idrettshall: kategorisering skjer på
+        // første treff, og idrettshall-selektoren under er ufiltrert
+        // sports_centre — den ville ellers svelget alle klatreanleggene.
+        //
+        // Forankret i leisure=sports_centre, IKKE i sport=climbing. Nasjonalt
+        // har sport=climbing 1253 treff, men bare 63 har leisure-taggen. De
+        // øvrige ~1177 er utendørs klatrefelt og enkeltruter på klippevegger
+        // — utstyrskrevende og ikke familiesteder. De skal ikke inn, og en
+        // sport-forankret selektor ville tatt dem alle.
+        //
+        // Overpass' `~` er usnitt-forankret, så ett ledd dekker begge
+        // variantene: `climbing` fanger også `climbing_adventure` (12
+        // nasjonalt, alle sports_centre). Samme resonnement som for
+        // ball-/racketselektoren over.
+        key: 'klatring',
+        label: 'Klatring',
+        category: 'Klatring',
+        audience: 'For alle',
+        selector: 'nwr["leisure"="sports_centre"]["sport"~"climbing",i](area.a);',
+        // Sjekker BÅDE leisure og sport: samme objekt kommer tilbake fra
+        // idrettshall-spørringen også, og uten sport-sjekken ville hvilket
+        // som helst sports_centre blitt «Klatring».
+        matches: (t: OsmTags) =>
+            t.leisure === 'sports_centre' &&
+            hasClimbingSport(t.sport) &&
+            !sportTokens(t.sport).some((s) => GENERIC_CENTRE_SPORTS.has(s)),
+        // Klatresentre tar som regel betaling, men ikke alle — ukjent er
+        // ærligere enn en gjetning.
+        isFree: null as boolean | null,
+        titleLabelFor: (t: OsmTags) => climbTitleLabel(t.sport),
     },
     {
         key: 'idrettshall',
