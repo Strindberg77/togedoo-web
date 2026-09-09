@@ -320,3 +320,127 @@ test('kategoriverdien er «Klatring» — databasenøkkelen', async () => {
     assert.equal(klatring.audience, 'For alle');
     assert.equal(klatring.isFree, null);
 });
+
+// ---------------------------------------------------------------------------
+// Stille Overpass-kjøretidsfeil (sep. 2026): HTTP 200 + remark
+// ---------------------------------------------------------------------------
+// Overpass svarer på timeout/minnetak/rategrense med HTTP 200, tom `elements`
+// og en `remark`. Det så identisk ut med et genuint tomt område, så en tapt
+// kategori ble rapportert som «0 treff — sjekk tag-endring i OSM». Bevist over
+// tre dry-run av Oslo samme dag, uten kodeendring mellom dem: advarselen
+// flyttet seg fra Idrettshall til Ballbane mens totalen svingte 2956 → 2188.
+
+/** Mock som svarer HTTP 200 med hver kropp i [bodies], én per kall. */
+function mockFetchBodies(bodies: unknown[]) {
+    const calls: string[] = [];
+    let i = 0;
+    globalThis.fetch = (async (url: string | URL) => {
+        calls.push(String(url));
+        const body = bodies[Math.min(i++, bodies.length - 1)];
+        return new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }) as typeof fetch;
+    return { calls };
+}
+
+const TIMEOUT_REMARK = 'runtime error: Query timed out in "query" at line 3';
+
+test('200 med remark er en FEIL, ikke et tomt område', async (t) => {
+    t.after(() => { globalThis.fetch = realFetch; });
+    const { fetchOverpass } = await load();
+    const { calls } = mockFetchBodies([{ version: 0.6, elements: [], remark: TIMEOUT_REMARK }]);
+    await assert.rejects(
+        () => fetchOverpass('[out:json];out;', 'test/idrettshall'),
+        /Alle Overpass-forsøk feilet/,
+        'et tomt svar med remark skal ALDRI returneres som et gyldig resultat'
+    );
+    assert.equal(calls.length, 6, 'skal retryes som 504/429: 2 speil × 3 runder');
+});
+
+test('remark retryes — neste speil kan svare rent', async (t) => {
+    t.after(() => { globalThis.fetch = realFetch; });
+    const { fetchOverpass } = await load();
+    const { calls } = mockFetchBodies([
+        { elements: [], remark: TIMEOUT_REMARK },
+        { elements: [{ type: 'node', id: 1 }] },
+    ]);
+    const elements = await fetchOverpass('[out:json];out;', 'test/idrettshall');
+    assert.equal(elements.length, 1, 'det rene svaret fra speil B skal brukes');
+    assert.equal(calls.length, 2);
+});
+
+test('genuint tomt område er fortsatt et gyldig svar', async (t) => {
+    t.after(() => { globalThis.fetch = realFetch; });
+    const { fetchOverpass } = await load();
+    const { calls } = mockFetchBodies([{ version: 0.6, elements: [] }]);
+    const elements = await fetchOverpass('[out:json];out;', 'test/badeplass');
+    assert.deepEqual(elements, [], 'uten remark er tomt et ekte resultat');
+    assert.equal(calls.length, 1, 'ingen remark → ingen retry');
+});
+
+test('tom remark-streng er ingen feil', async (t) => {
+    t.after(() => { globalThis.fetch = realFetch; });
+    const { fetchOverpass } = await load();
+    // Vakt mot at et tomt/blankt felt feller en hel by på falskt grunnlag.
+    const { calls } = mockFetchBodies([{ elements: [{ type: 'node', id: 1 }], remark: '   ' }]);
+    const elements = await fetchOverpass('[out:json];out;', 'test/park');
+    assert.equal(elements.length, 1);
+    assert.equal(calls.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Prioritetsrekkefølge over HELE unionen (sep. 2026)
+// ---------------------------------------------------------------------------
+// Klatre-testene over sjekker matches() én tagg om gangen. Ingen av dem kjørte
+// unionen fra overpassCity gjennom buildRows — og det var nettopp der
+// mistanken lå da Idrettshall kom ut med 0 steder: klatre-spørringen leverer
+// sine elementer FØRST i unionen, og idrettshall-spørringens duplikater dedupes
+// bort. Denne testen låser at prioritetsrekkefølgen ikke sulter kategorien bak.
+
+test('umerket sports_centre overlever som Idrettshall når klatring ligger foran', async () => {
+    const { buildRows } = await load();
+    // Unionen i ekte rekkefølge: klatre-spørringens treff først, deretter de
+    // idrettshall-spørringen bidro med som nye. Alle har brukbare OSM-navn, så
+    // ingen revers-geokoding trigges og testen er nettverksfri.
+    const klatring = ['Klatreverket Torshov', 'Oslo Klatresenter Vest'].map((name, i) => ({
+        type: 'way' as const,
+        id: 1000 + i,
+        lat: 59.9,
+        lon: 10.7,
+        tags: { leisure: 'sports_centre', sport: 'climbing', name },
+    }));
+    const haller = ['Storhallen Nord', 'Vestre idrettspark', 'Bjerke flerbrukshus'].map((name, i) => ({
+        type: 'way' as const,
+        id: 2000 + i,
+        lat: 59.9,
+        lon: 10.7,
+        tags: { leisure: 'sports_centre', name },
+    }));
+    const rows = await buildRows('Oslo', [...klatring, ...haller], Infinity);
+
+    const antall = (kategori: string) => rows.filter((r) => r.category === kategori).length;
+    assert.equal(antall('Klatring'), 2);
+    assert.equal(antall('Idrettshall'), 3, 'idrettshall skal ikke sultes av klatring foran seg');
+    assert.equal(rows.length, klatring.length + haller.length, 'ingen elementer skal falle ut');
+});
+
+test('klatring plukker KUN sine egne ut av en blandet union', async () => {
+    const { buildRows } = await load();
+    // Hallen med climbing;multi er den kritiske: den har klatretagg, men er en
+    // flerbrukshall. Den skal bli liggende igjen som Idrettshall.
+    const els = [
+        { type: 'way' as const, id: 1, lat: 59.9, lon: 10.7,
+          tags: { leisure: 'sports_centre', sport: 'climbing_adventure', name: 'Høyt og Lavt Bjerke' } },
+        { type: 'way' as const, id: 2, lat: 59.9, lon: 10.7,
+          tags: { leisure: 'sports_centre', sport: 'climbing;multi', name: 'Storhallen Nord' } },
+        { type: 'way' as const, id: 3, lat: 59.9, lon: 10.7,
+          tags: { leisure: 'sports_centre', sport: 'handball', name: 'Vestre idrettspark' } },
+    ];
+    const rows = await buildRows('Oslo', els, Infinity);
+    assert.deepEqual(
+        rows.map((r) => r.category),
+        ['Klatring', 'Idrettshall', 'Idrettshall']
+    );
+});

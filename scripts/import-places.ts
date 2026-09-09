@@ -337,9 +337,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /// Kjør ÉN Overpass-spørring med retry: [OVERPASS_ROUNDS] runder over speilene
 /// med ekte eksponentiell backoff (5s→15s→45s) mellom forsøkene.
-/// [OVERPASS_RETRY_STATUS] og nettverks-/parse-feil er retrybare; annen
-/// HTTP-status (typisk 4xx) kastes umiddelbart — det er en spørringsfeil retry
-/// ikke løser.
+/// [OVERPASS_RETRY_STATUS], et HTTP 200 med `remark` (stille kjøretidsfeil)
+/// og nettverks-/parse-feil er retrybare; annen HTTP-status (typisk 4xx)
+/// kastes umiddelbart — det er en spørringsfeil retry ikke løser.
 export async function fetchOverpass(query: string, label: string): Promise<OsmElement[]> {
     const attempts = Array.from(
         { length: OVERPASS_ENDPOINTS.length * OVERPASS_ROUNDS },
@@ -356,13 +356,33 @@ export async function fetchOverpass(query: string, label: string): Promise<OsmEl
             });
             if (res.ok) {
                 const json = await res.json();
-                return (json.elements ?? []) as OsmElement[];
-            }
-            // Kun forbigående statuser er verdt å prøve på nytt; andre er faste feil.
-            if (!OVERPASS_RETRY_STATUS.has(res.status)) {
+                // Overpass svarer på KJØRETIDSFEIL — timeout, minnetak, slot- og
+                // rategrense — med HTTP 200, tom `elements` OG en `remark`. Uten
+                // denne sjekken er et slikt svar ikke til å skille fra et genuint
+                // tomt område: hele kategorien forsvant i stillhet, og
+                // «0 treff»-advarselen i importCity pekte på en OSM-tag-endring
+                // som ikke fantes. Verifisert 9. sep. 2026 over tre dry-run av
+                // Oslo UTEN kodeendring mellom dem: advarselen flyttet seg fra
+                // Idrettshall til Ballbane mens totalen svingte 2956 → 2188 rader.
+                //
+                // ALLE remarks behandles som feil, ikke bare de som begynner med
+                // «runtime error»: Overpass sender også rene advarsler, men prisen
+                // for å ta feil er noen bortkastede forsøk — mot at et helt
+                // datasett går tapt ubemerket. Retryes på lik linje med 504/429;
+                // er siste forsøk brukt, kaster løkka under som ved enhver annen
+                // feil, og importCity isolerer den til én by.
+                const remark = typeof json.remark === 'string' ? json.remark.trim() : '';
+                if (!remark) return (json.elements ?? []) as OsmElement[];
+                console.log(
+                    `    ${label}: ${endpoint} svarte 200 med remark «${remark}» ` +
+                        `(forsøk ${i + 1}/${attempts.length})`
+                );
+            } else if (!OVERPASS_RETRY_STATUS.has(res.status)) {
+                // Kun forbigående statuser er verdt å prøve på nytt; andre er faste feil.
                 throw new Error(`Overpass HTTP ${res.status} (${label})`);
+            } else {
+                console.log(`    ${label}: ${endpoint} svarte ${res.status} (forsøk ${i + 1}/${attempts.length})`);
             }
-            console.log(`    ${label}: ${endpoint} svarte ${res.status} (forsøk ${i + 1}/${attempts.length})`);
         } catch (err) {
             // Ikke-retrybar HTTP-feil kastes videre; nettverks-/parse-feil retryes.
             if (err instanceof Error && err.message.startsWith('Overpass HTTP')) throw err;
@@ -534,7 +554,28 @@ async function importCity(
                 `${bySource('kun-kategori')} kun kategori` +
                 (failed ? ` (HERAV ${failed} GEOKODINGSFEIL)` : '')
         );
-        if (catRows.length === 0) console.log(`    ADVARSEL: 0 treff for ${cat.category} i ${city} — sjekk tag-endring i OSM.`);
+        // Advarselen teller ELEMENTER, ikke rader. «0 rader» dekket tidligere to
+        // helt ulike tilstander med hver sin handling: enten leverte Overpass
+        // ingenting for kategorien (selektoren treffer ikke lenger, eller — før
+        // remark-sjekken i fetchOverpass — en stille kjøretidsfeil), eller den
+        // leverte, men ingenting overlevde koordinatkravet eller --limit. Det
+        // siste er forventet oppførsel, ikke en datafeil, og skal ikke se ut som
+        // en tag-endring i OSM. `=== cat` er samme identitetsregel som
+        // buildRows bruker, så tallet er nøyaktig det kategorien fikk tildelt.
+        const catElements = elements.filter(
+            (el) => cats.find((c) => c.matches(el.tags ?? {})) === cat
+        ).length;
+        if (catElements === 0) {
+            console.log(
+                `    ADVARSEL: Overpass ga 0 elementer for ${cat.category} i ${city}` +
+                    ` — sjekk selektoren og tag-endring i OSM.`
+            );
+        } else if (catRows.length === 0) {
+            console.log(
+                `    ADVARSEL: ${catElements} elementer for ${cat.category} i ${city}, men 0 rader` +
+                    ` — alle manglet koordinater eller ble silt bort av --limit.`
+            );
+        }
         // Konkrete eksempler der name-taggen manglet/ble silt:
         for (const r of catRows.filter((x) => x.titleSource !== 'osm-navn').slice(0, 3)) {
             console.log(`    ${r.external_id}: name=${JSON.stringify(r.osmName)} -> "${r.title}" [${r.titleSource}]`);
