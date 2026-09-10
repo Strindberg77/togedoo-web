@@ -598,3 +598,85 @@ test('unionen: skateanlegg og ballbaner skilles gjennom buildRows', async () => 
     );
     assert.equal(rows.length, els.length, 'ingen elementer skal falle ut av unionen');
 });
+
+// ---------------------------------------------------------------------------
+// Prisantakelsen per kategori (sep. 2026)
+// ---------------------------------------------------------------------------
+// Museum sto med isFree=false fram til nå. De ~38 % av museene uten fee-tagg
+// (tag-proben jul. 2026: fee-dekning 62,1 %) falt dermed tilbake på «Betalt
+// inngang» — en påstand importen ikke har grunnlag for, og som for
+// barnefamilier ofte er feil, siden barn stort sett kommer gratis inn.
+//
+// Regelen som låses her: en KATEGORI kan påstå at noe er gratis, aldri at det
+// koster. `false` kan bare komme fra en eksplisitt fee=yes på stedet selv.
+
+test('ingen kategori påstår at noe koster — false finnes ikke som default', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    // Typen `true | null` avviser allerede `isFree: false` ved kompilering —
+    // verifisert ved å sette den tilbake: «Type 'false' is not assignable to
+    // type 'true'». Denne testen fanger det som slipper forbi typen, altså en
+    // verdi som kommer inn via en cast eller `any`. Sammenligningen må gå via
+    // unknown, ellers avviser tsc den som meningsløs — hvilket i seg selv er
+    // beviset på at typen holder.
+    const verdier = PLACE_CATEGORIES.map((c) => c.isFree as unknown);
+    assert.ok(
+        !verdier.includes(false),
+        'en kategori-default på false er en gjetning — bruk null'
+    );
+    assert.ok(
+        verdier.every((v) => v === true || v === null),
+        'isFree skal kun være true (kjent gratis) eller null (ukjent)'
+    );
+});
+
+test('museum gjetter ikke lenger — ukjent er ærligere enn «Betalt inngang»', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const museum = PLACE_CATEGORIES.find((c) => c.key === 'museum')!;
+    assert.equal(museum.isFree, null);
+    // Uten fee-tagg skal raden bli ukjent, ikke betalt.
+    const { resolveIsFree } = await load();
+    assert.equal(resolveIsFree({}, museum.isFree), null);
+});
+
+test('kategoriene som PÅSTÅR gratis er de som har grunnlag for det', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const gratis = PLACE_CATEGORIES.filter((c) => c.isFree === true).map((c) => c.key);
+    // Offentlige uteanlegg (kommunen eier og drifter, ingen billett) pluss
+    // folkebibliotek, som er gratis ved lov. Eksplisitt liste, så en ny
+    // kategori ikke kan arve «gratis» ubemerket.
+    assert.deepEqual(gratis.sort(), [
+        'ballbane',
+        'badeplass',
+        'bibliotek',
+        'lekeplass',
+        'park',
+        'rullesport',
+    ].sort());
+});
+
+test('fee-taggen vinner over kategorien i BEGGE retninger', async () => {
+    // Kaller den EKTE utledningen buildRows bruker, ikke en kopi av den.
+    const { PLACE_CATEGORIES, resolveIsFree } = await load();
+    const museum = PLACE_CATEGORIES.find((c) => c.key === 'museum')!;
+    const park = PLACE_CATEGORIES.find((c) => c.key === 'park')!;
+
+    // fee=yes gjør en gratis-kategori betalt: den eneste veien til false.
+    assert.equal(resolveIsFree({ fee: 'yes' }, park.isFree), false);
+    // fee=no gjør en ukjent-kategori gratis.
+    assert.equal(resolveIsFree({ fee: 'no' }, museum.isFree), true);
+    // ...og bekrefter en kategori som allerede antar gratis.
+    assert.equal(resolveIsFree({ fee: 'no' }, park.isFree), true);
+    // fee=yes på en ukjent-kategori er den ene påstanden vi stoler på.
+    assert.equal(resolveIsFree({ fee: 'yes' }, museum.isFree), false);
+
+    // Ukjente fee-verdier er ikke en påstand — da gjelder kategorien.
+    for (const fee of ['unknown', 'donation', 'some', '']) {
+        assert.equal(resolveIsFree({ fee }, museum.isFree), null, `fee=${fee} skal ikke tolkes`);
+        assert.equal(resolveIsFree({ fee }, park.isFree), true, `fee=${fee} skal ikke tolkes`);
+    }
+
+    // Hver kategori-default skal komme uendret gjennom når fee mangler.
+    for (const cat of PLACE_CATEGORIES) {
+        assert.equal(resolveIsFree({}, cat.isFree), cat.isFree, cat.key);
+    }
+});

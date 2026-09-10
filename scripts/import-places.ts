@@ -238,6 +238,26 @@ export function rollerTitleLabel(sportRaw: string | undefined): string {
     return 'Rullesport'; // ukjent/manglende sport — kategorinavnet er tryggest
 }
 
+/**
+ * Prisstatusen for ETT sted: stedets egen `fee`-tagg vinner alltid over
+ * kategoriens antakelse, i begge retninger. Taggen er en observasjon om
+ * nettopp dette stedet; kategorien er en generalisering.
+ *
+ * Merk asymmetrien i returtypen mot [PlaceCategoryDef.isFree]: `false` kan
+ * KUN oppstå her, fra en eksplisitt `fee=yes`. Ingen kategori har lov til å
+ * påstå at noe koster. Ukjente fee-verdier («donation», «unknown», tom
+ * streng) er ingen påstand — da gjelder kategorien.
+ *
+ * Eksportert for å kunne testes direkte. Var tidligere en inline-uttrykk i
+ * [buildRows], og testen speilet det — to kopier som kunne drive fra
+ * hverandre, nettopp mens regelen fikk en typegaranti å bære.
+ */
+export function resolveIsFree(tags: OsmTags, categoryDefault: true | null): boolean | null {
+    if (tags.fee === 'yes') return false;
+    if (tags.fee === 'no') return true;
+    return categoryDefault;
+}
+
 interface PlaceCategoryDef {
     key: string;
     /** Kategoriens navn OG standard tittel-prefiks. */
@@ -247,7 +267,23 @@ interface PlaceCategoryDef {
     audience: string;
     selector: string;
     matches: (t: OsmTags) => boolean;
-    isFree: boolean | null;
+    /**
+     * Kategoriens prisantakelse når OSM ikke sier noe. Typen er `true | null`,
+     * IKKE boolean: en kategori kan påstå at noe er gratis, aldri at det
+     * koster. `false` kan bare komme fra en eksplisitt `fee=yes` på det
+     * enkelte stedet.
+     *
+     * Asymmetrien er tilsiktet og er svaret på «bør feltet skille mellom at
+     * kategorien VET og at den GJETTER». Et eget felt for det ville vært
+     * overflødig: en `true` her er alltid kunnskap (offentlige uteanlegg er
+     * gratis; folkebibliotek er gratis ved lov), og alt som ville vært en
+     * gjetning hører hjemme som `null`. Typen håndhever det, så en ny
+     * kategori ikke kan gjenta museums-feilen ved et uhell.
+     *
+     * `null` betyr «ukjent», ikke «betalt». Appen viser det som et nøytralt
+     * merke etter togedoo-modern 3c70f07 — ingen påstand i noen retning.
+     */
+    isFree: true | null;
     /**
      * Overstyrer [label] som tittel-prefiks, per element. Satt kun for
      * ballbane, der én kategori dekker seks sporter.
@@ -262,13 +298,26 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         // leisure-tagger på samme objekt. Tag-proben (jul. 2026, Oslo/
         // Bergen/Stavanger): 132 steder, 97 % navn, fee 62,1 %,
         // opening_hours 51,5 %, charge med kronebeløp 12,9 %.
+        //
+        // isFree var `false` fram til sep. 2026. Det gjorde at de ~38 % uten
+        // fee-tagg havnet på «Betalt inngang» i appen — en påstand importen
+        // ikke har grunnlag for, og for målgruppen ofte direkte feil: ved
+        // norske museer kommer barn stort sett gratis inn (Nasjonalmuseet og
+        // MUNCH under 18, Rockheim 0–15, Oslo Museum til og med 25).
+        //
+        // `null` er ikke en dårligere gjetning enn `false` — det er fravær av
+        // gjetning. Merk at det først BLE trygt med togedoo-modern 3c70f07:
+        // før den viste appen ingenting for null, mens den nå viser et
+        // nøytralt merke. Prisen som faktisk gjelder for et museum er en
+        // betinget størrelse (barn/voksen, gratisdager) som hverken en
+        // boolean eller OSM kan bære — se vurderingen av price_text.
         key: 'museum',
         label: 'Museum',
         category: 'Museum',
         audience: 'For alle',
         selector: 'nwr["tourism"="museum"](area.a);',
         matches: (t: OsmTags) => t.tourism === 'museum',
-        isFree: false as boolean | null,
+        isFree: null,
     },
     {
         // Rik OSM-dekning i de fire byene (Deichman, Bergen off. bibliotek,
@@ -411,7 +460,7 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
             !sportTokens(t.sport).some((s) => GENERIC_CENTRE_SPORTS.has(s)),
         // Klatresentre tar som regel betaling, men ikke alle — ukjent er
         // ærligere enn en gjetning.
-        isFree: null as boolean | null,
+        isFree: null,
         titleLabelFor: (t: OsmTags) => climbTitleLabel(t.sport),
     },
     {
@@ -421,7 +470,7 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         audience: 'For alle',
         selector: 'nwr["leisure"="sports_centre"](area.a);',
         matches: (t: OsmTags) => t.leisure === 'sports_centre',
-        isFree: null as boolean | null,
+        isFree: null,
     },
     {
         key: 'badeplass',
@@ -647,7 +696,7 @@ export async function buildRows(
             lat: pos.lat,
             lng: pos.lng,
             opening_hours: tags.opening_hours ?? null,
-            is_free: tags.fee === 'yes' ? false : tags.fee === 'no' ? true : cat.isFree,
+            is_free: resolveIsFree(tags, cat.isFree),
             price_text: tags.charge
                 ? tags.charge.replace(/\bNOK\b/g, 'kr').trim().slice(0, 100) || null
                 : null,
