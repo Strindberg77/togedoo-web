@@ -10,6 +10,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isDatahubConfigured, supabaseAdmin } from '../../../lib/supabase';
 import { scrapeDeichman } from '../../../lib/deichman';
 import { scrapeBergen } from '../../../lib/bergen';
+import {
+    cityCentre,
+    distanceFromCityKm,
+    sortByDistanceFromCity,
+    type LatLng,
+} from '../../../lib/cities';
 
 interface ActivityRow {
     id: string;
@@ -67,7 +73,13 @@ function splitSports(raw: string | null | undefined): string[] {
         .filter(Boolean);
 }
 
-function toApiShape(row: ActivityRow) {
+/**
+ * [distanceFromCityKm] settes KUN i by-modus, der brukerens egen posisjon er
+ * ukjent. I radius-modus har klienten posisjonen og regner sin egen avstand,
+ * så feltet er null der — to ulike avstander med samme navn ville vært en
+ * felle. Klienten viser tallet på «nær <by>»-merket for kuraterte utflukter.
+ */
+function toApiShape(row: ActivityRow, distanceFromCityKm: number | null = null) {
     return {
         id: row.id,
         kind: row.kind,
@@ -81,6 +93,7 @@ function toApiShape(row: ActivityRow) {
         // «Hjemby» for nærliggende utflukter (utenfor kommunegrensen). Lar
         // klienten merke kortet med at stedet ligger i en annen kommune.
         nearCity: row.near_city,
+        distanceFromCityKm,
         // Bydel/strøk (kort-redesign): finere enn kommune, skiller steder
         // innad i store byer. OSM legger dette i addr:suburb / addr:district
         // (city_district/neighbourhood som fallback). Egen kontekst-linje på
@@ -155,6 +168,8 @@ async function fromDatabase(searchParams: URLSearchParams) {
         .slice(0, 50);
 
     let rows: ActivityRow[];
+    // Settes kun i by-modus (se sorteringen under).
+    let centre: LatLng | null = null;
 
     if (lat !== null && lng !== null && Number.isFinite(lat) && Number.isFinite(lng)) {
         // Radius-søk i PostGIS, nærmest først.
@@ -205,12 +220,23 @@ async function fromDatabase(searchParams: URLSearchParams) {
         const { data, error } = await query;
         if (error) throw new Error(error.message);
         rows = (data ?? []) as unknown as ActivityRow[];
+        // By-modus hadde ingen avstandsdimensjon: radene kom i databasens
+        // rekkefølge, og appen sorterte dem alfabetisk. «Oppdal Skisenter»
+        // (120 km fra Trondheim) havnet dermed foran «Vassfjellet Skisenter»
+        // (20 km). Radius-modus over er allerede riktig via PostGIS.
+        //
+        // Sorteringen skjer her og ikke i databasen fordi radene alt er hentet
+        // inn (maks 500) og en RPC-endring ville krevd migrasjon. MERK at det
+        // sorterer UTVALGET, ikke hva som velges ut — se «Kjent gjeld» i
+        // docs/seed-backlog.md for grensen det setter.
+        centre = cityCentre(municipality);
+        rows = sortByDistanceFromCity(rows, centre);
     }
 
     return NextResponse.json({
         success: true,
         mode: 'datahub',
-        data: rows.map(toApiShape),
+        data: rows.map((row) => toApiShape(row, distanceFromCityKm(centre, row.lat, row.lng))),
         count: rows.length,
         // ODbL-krav: steder (kind='place') kommer fra OpenStreetMap.
         attribution: 'Stedsdata © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',

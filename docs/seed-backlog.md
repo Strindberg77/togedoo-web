@@ -132,3 +132,43 @@ Ingen beslutning tatt.
   Fordelt på `leisure=pitch` (4), `leisure=fitness_station` (2), ingen
   leisure (1). Parkour er ikke en anleggstype i norsk OSM — det er en tagg
   på en ballbane eller treningsstasjon.
+
+---
+
+## Kjent gjeld: by-modus velger vilkårlig, ikke nærmest
+
+**Funnet sep. 2026, under arbeidet med avstandssortering. Ikke løst.**
+
+`/api/activities` har to moduser. Radius-modus (`lat`/`lng` sendt) går gjennom
+PostGIS-RPC-en `activities_nearby`, som filtrerer på radius og sorterer
+nærmest først. By-modus (`municipality` sendt) gjør noe helt annet:
+
+```ts
+.eq('status', 'published')
+.order('starts_at', { ascending: true, nullsFirst: false })
+.limit(limit)          // appen sender 100
+```
+
+For steder (`kind='place'`) er `starts_at` **null i alle rader**. Sorteringen
+er derfor uten effekt, og hvilke 100 rader man får er i praksis bestemt av
+databasens radrekkefølge.
+
+Oslo har 3996 lekeplasser. En forelder i by-modus får altså 100 vilkårlige av
+dem — ikke de nærmeste, og ikke de samme fra gang til gang hvis
+radrekkefølgen endres av en reimport.
+
+**Avstandssorteringen som ble lagt inn løser ikke dette.** Den sorterer
+utvalget etter at det er hentet, altså de 100 vilkårlige radene i pen
+rekkefølge. For kategorier under grensen på 100 — Skianlegg med 6 i dag og
+~30 etter alpinseeden, Klatring med 23, Rullesport med 81 — er den fullt ut
+riktig, fordi utvalget da er hele kategorien. Over grensen er den kosmetikk.
+
+**Hva som skal til:** sortere i databasen FØR `limit`, altså med bysentrum
+tilgjengelig i SQL. Det betyr enten en ny RPC eller en utvidelse av
+`activities_nearby` med et by-filter og valgfri radius. Det krever migrasjon,
+og ble bevisst utsatt.
+
+**Konsekvens for seeding:** å seede flere rader inn i en kategori som allerede
+er over 100 i én by hjelper ikke brukeren i by-modus før dette er fikset.
+Kategoriene i denne backloggen ligger alle godt under grensen, så de er ikke
+berørt.
