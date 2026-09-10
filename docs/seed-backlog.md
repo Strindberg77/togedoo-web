@@ -172,3 +172,70 @@ og ble bevisst utsatt.
 er over 100 i én by hjelper ikke brukeren i by-modus før dette er fikset.
 Kategoriene i denne backloggen ligger alle godt under grensen, så de er ikke
 berørt.
+## Rullesport — fasetter uten treff (10. september 2026)
+
+Fasettene Pumptrack og Rulleski gir null treff i Oslo. Anleggene
+finnes; OSM-taggene gjør ikke.
+
+### Pumptrack — Oslo
+
+Kilde: manuell research, verifisert mot beskrivelser med adresse.
+
+| Sted | Adresse | Merknad |
+|---|---|---|
+| Ammerud pumptrack | Ammerudgrenda 4, 0959 Oslo | Oslos første pumptrack, bygget 2020 av LilloVelo + kommunen. Gratis, åpen hele året |
+| Bjørndal pumptrack | Seterbråtveien 4, 1271 Oslo | Oslos første asfalterte pumptrack, i Bjørndal idrettspark |
+| Manglerud sykkelpark | Plogveien 22, 0681 Oslo | Baner med ulik vanskelighetsgrad. Skøyteløype om vinteren |
+| Sykkelbanen i Trolldalen | Stordamveien 47, 0671 Oslo | Nybegynnerløype i skogsterreng, fast dekke av flis |
+| Voldsløkka pumptrack | Voldsløkka, Oslo | Ikke verifisert mot adresse |
+
+I basen i dag: 3 pumptracks, alle i Stavanger.
+
+### Rulleski — Oslo
+
+Holmenkollen, Fossum (kortere runde), Linderudkollen.
+
+Ingen har `sport=roller_skiing` i OSM — ellers ville importen
+fanget dem. Nasjonalt finnes 39 treff, men ingen i de fire byene.
+
+Fasetten er bevisst beholdt selv om den er tom: tokenet er ekte,
+importselektoren henter det allerede, og uten fasetten ville de
+første løypene vært usynlige til neste app-release.
+
+---
+
+## Undertaggede anlegg — en egen kategori problem
+
+**Bøler Betongpark** (way i basen, kategori Rullesport) har
+`sport=skateboard` og ingenting mer. Beskrivelsen fra kommunen
+sier at anlegget har «kuler, trapper, rails og kanter, og en lang
+rampe for de minste til å øve seg på sparkesykkel og BMX».
+
+Stedet er altså riktig i basen, men usynlig under BMX-fasetten.
+
+Dette er ikke seed-materiale i vanlig forstand — stedet finnes
+allerede. Det som mangler er en tagg. Det er nøyaktig det
+bidragsmekanismen skal fange: en forelder som vet at Bøler har
+BMX-rampe kan bekrefte det, uten at noen må redigere OSM.
+
+Verdt å ha som konkret eksempel når bidragsmekanismen skal
+utformes: den skal ikke bare legge til steder, men berike steder
+som allerede er der.
+
+---
+
+## Mønsteret, oppsummert
+
+Fem uavhengige funn samme dag, alle med samme form:
+
+| Aktivitet | Hva OSM sier | Hva som finnes |
+|---|---|---|
+| Skateanlegg | `leisure=skatepark` = 0 nasjonalt | 13 kjente anlegg i fire byer |
+| Klatring | 1253 `sport=climbing` | 75 faktiske anlegg, resten er klippevegger |
+| Parkour | 7 navnløse polygoner nasjonalt | 3 anlegg i Oslo alene |
+| Pumptrack | 3, alle i Stavanger | Minst 5 i Oslo |
+| Rulleski | 39 nasjonalt, 0 i de fire byene | 3 kjente løyper i Oslo |
+
+**OSM sier hva noen har tagget, ikke hva som finnes.** Det gjelder
+både manglende steder og manglende egenskaper på steder som er
+der.
