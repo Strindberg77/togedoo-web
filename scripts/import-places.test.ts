@@ -104,7 +104,7 @@ test('etiketten er per element — kun kategorier med flere undertyper', async (
     // sporter; fase C ga klatring to (klatresenter/klatrepark). Lista låses
     // eksplisitt, så en ny overstyring aldri kan snike seg inn ubemerket.
     const medOverstyring = PLACE_CATEGORIES.filter((c) => c.titleLabelFor).map((c) => c.key);
-    assert.deepEqual(medOverstyring.sort(), ['ballbane', 'klatring']);
+    assert.deepEqual(medOverstyring.sort(), ['ballbane', 'klatring', 'rullesport']);
 
     const ballbane = PLACE_CATEGORIES.find((c) => c.key === 'ballbane')!;
     assert.equal(ballbane.titleLabelFor?.({ sport: 'tennis' }), 'Tennisbane');
@@ -443,4 +443,158 @@ test('klatring plukker KUN sine egne ut av en blandet union', async () => {
         rows.map((r) => r.category),
         ['Klatring', 'Idrettshall', 'Idrettshall']
     );
+});
+
+// ---------------------------------------------------------------------------
+// Rullesport (sep. 2026, fase C andre halvdel)
+// ---------------------------------------------------------------------------
+// leisure=skatepark og leisure=pump_track finnes ikke i norsk OSM (0 treff
+// nasjonalt), så kategorien er den eneste som spenner TO leisure-verdier.
+// Nasjonalt: skateboard 376 (356 pitch), bmx-varianter 167, pumptrack 15,
+// roller_skiing 39 — de tre siste ligger overveiende på leisure=track.
+
+test('selektoren dekker BÅDE pitch og track', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const rulle = PLACE_CATEGORIES.find((c) => c.key === 'rullesport')!;
+    assert.match(rulle.selector, /\["leisure"="pitch"\]/);
+    assert.match(rulle.selector, /\["leisure"="track"\]/);
+    // Én leisure-verdi ville tapt 86 % av BMX/pumptrack/rulleski (track) eller
+    // 95 % av skateboard (pitch).
+    for (const sport of ['skateboard', 'bmx', 'pumptrack', 'roller_skiing']) {
+        assert.ok(rulle.selector.includes(sport), `${sport} mangler i selektoren`);
+    }
+    assert.ok(rulle.selector.includes('access'), 'privat flate skal siles, som for ballbane');
+});
+
+test('rullesport står FØR ballbane — ballbanes matches() er ufiltrert pitch', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const nøkler = PLACE_CATEGORIES.map((c) => c.key);
+    assert.ok(
+        nøkler.indexOf('rullesport') < nøkler.indexOf('ballbane'),
+        'ballbane matcher ENHVER pitch og ville svelget alle 356 skateboard-pitchene'
+    );
+    // Regresjonsvakten: dette er den ene testen som ville fanget feilen.
+    const traff = PLACE_CATEGORIES.find((c) => c.matches({ leisure: 'pitch', sport: 'skateboard' }));
+    assert.equal(traff?.key, 'rullesport');
+});
+
+test('sammensatt BMX matcher i BEGGE rekkefølger', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const rulle = PLACE_CATEGORIES.find((c) => c.key === 'rullesport')!;
+    // To tredjedeler av BMX ligger her: bmx;cycling 50 + cycling;bmx 63 mot
+    // bmx alene 54. Likhetssjekk ville tapt dem.
+    for (const sport of ['bmx', 'bmx;cycling', 'cycling;bmx', 'bmx, cycling']) {
+        assert.ok(rulle.matches({ leisure: 'track', sport }), `«${sport}» matchet ikke`);
+    }
+    for (const sport of ['pumptrack', 'cycling;pumptrack', 'roller_skiing', 'roller_skiing;cycling']) {
+        assert.ok(rulle.matches({ leisure: 'track', sport }), `«${sport}» matchet ikke`);
+    }
+});
+
+test('umerket pitch og track matcher IKKE rullesport', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const rulle = PLACE_CATEGORIES.find((c) => c.key === 'rullesport')!;
+    assert.equal(rulle.matches({ leisure: 'pitch' }), false);
+    assert.equal(rulle.matches({ leisure: 'track' }), false);
+    // Løpebane er den vanligste bruken av leisure=track og skal aldri inn.
+    assert.equal(rulle.matches({ leisure: 'track', sport: 'running' }), false);
+    assert.equal(rulle.matches({ leisure: 'track', sport: 'athletics' }), false);
+    // Uten sport-vakten ville hele leisure=track blitt Rullesport.
+    assert.equal(rulle.matches({ leisure: 'sports_centre', sport: 'skateboard' }), false);
+});
+
+test('ballbane beholder sine treff', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    for (const sport of ['soccer', 'basketball', 'tennis', 'volleyball', 'handball', 'table_tennis']) {
+        const traff = PLACE_CATEGORIES.find((c) => c.matches({ leisure: 'pitch', sport }));
+        assert.equal(traff?.key, 'ballbane', `pitch/${sport} skal fortsatt bli ballbane`);
+    }
+    // Ballbanes seks selektor-ledd og rullesports fem kan ikke treffe hverandre
+    // som understreng — den fella som gjorde `tennis` til `table_tennis`.
+    const ballbane = PLACE_CATEGORIES.find((c) => c.key === 'ballbane')!;
+    for (const sport of ['skateboard', 'bmx', 'pumptrack', 'roller_skiing']) {
+        assert.ok(
+            !ballbane.selector.includes(sport),
+            `${sport} skal ikke hentes av ballbane-spørringen`
+        );
+    }
+});
+
+test('generisk ballflate vinner på pitch — men sletter ikke et track', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    // «skateboard;multi» er en flerbruksflate med skatemulighet. Ballbane
+    // ligger rett bak som ærlig fallback.
+    const pitch = PLACE_CATEGORIES.find((c) => c.matches({ leisure: 'pitch', sport: 'skateboard;multi' }));
+    assert.equal(pitch?.key, 'ballbane');
+    const pitch2 = PLACE_CATEGORIES.find((c) => c.matches({ leisure: 'pitch', sport: 'basketball;skateboard' }));
+    assert.equal(pitch2?.key, 'ballbane');
+    // For track finnes INGEN kategori bak. Samme vakt der ville sluppet
+    // elementet ut av importen i stillhet i stedet for å flytte det.
+    const track = PLACE_CATEGORIES.find((c) => c.matches({ leisure: 'track', sport: 'bmx;multi' }));
+    assert.equal(track?.key, 'rullesport');
+});
+
+test('tittel-etiketten skiller de fire byggformene', async () => {
+    const { rollerTitleLabel } = await load();
+    assert.equal(rollerTitleLabel('skateboard'), 'Skatepark');
+    assert.equal(rollerTitleLabel('bmx'), 'BMX-bane');
+    assert.equal(rollerTitleLabel('pumptrack'), 'Pumptrack');
+    assert.equal(rollerTitleLabel('pump_track'), 'Pumptrack');
+    assert.equal(rollerTitleLabel('roller_skiing'), 'Rulleskiløype');
+    // cycling er ikke en etikett — den sammensatte verdien navngis av den andre.
+    assert.equal(rollerTitleLabel('cycling;bmx'), 'BMX-bane');
+    assert.equal(rollerTitleLabel('roller_skiing;cycling'), 'Rulleskiløype');
+    assert.equal(rollerTitleLabel(undefined), 'Rullesport');
+    assert.equal(rollerTitleLabel('parkour'), 'Rullesport');
+});
+
+test('«Skatepark» taper mot enhver mer spesifikk byggform', async () => {
+    const { rollerTitleLabel } = await load();
+    // Motsatt regel av SPORT_TITLE_LABELS, samme som klatring: tittelen bærer
+    // det som ikke allerede følger av kategorien, og skate ER forventningen.
+    assert.equal(rollerTitleLabel('skateboard;bmx'), 'BMX-bane');
+    assert.equal(rollerTitleLabel('skateboard;pumptrack'), 'Pumptrack');
+    assert.equal(rollerTitleLabel('bmx;skateboard'), 'BMX-bane');
+});
+
+test('roller_skating (inlines) er BEVISST utelatt', async () => {
+    const { PLACE_CATEGORIES, hasRollerSport, rollerTitleLabel } = await load();
+    // Ankringen lukker understreng-fella: /^roller[_-]?skiing$/ treffer aldri
+    // roller_skating. Skal den med senere, må den måles og legges til
+    // eksplisitt — ikke snike seg inn via et løsere mønster.
+    assert.equal(hasRollerSport('roller_skating'), false);
+    assert.equal(rollerTitleLabel('roller_skating'), 'Rullesport');
+    const rulle = PLACE_CATEGORIES.find((c) => c.key === 'rullesport')!;
+    assert.equal(rulle.matches({ leisure: 'track', sport: 'roller_skating' }), false);
+});
+
+test('kategoriverdien er «Rullesport» — databasenøkkelen', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const rulle = PLACE_CATEGORIES.find((c) => c.key === 'rullesport')!;
+    assert.equal(rulle.category, 'Rullesport');
+    assert.equal(rulle.label, 'Rullesport');
+    assert.equal(rulle.audience, 'For alle');
+    assert.equal(rulle.isFree, true, 'pitch/track er utendørs betong og asfalt');
+});
+
+test('unionen: skateanlegg og ballbaner skilles gjennom buildRows', async () => {
+    const { buildRows } = await load();
+    // Samme grep som klatring-testen: rullesport-spørringens treff først, slik
+    // overpassCity bygger unionen, og ballbane-spørringens etterpå.
+    const els = [
+        { type: 'way' as const, id: 1, lat: 59.9, lon: 10.7,
+          tags: { leisure: 'pitch', sport: 'skateboard', name: 'Gamlebyen skatepark' } },
+        { type: 'way' as const, id: 2, lat: 59.9, lon: 10.7,
+          tags: { leisure: 'track', sport: 'cycling;bmx', name: 'Ekeberg sykkelanlegg' } },
+        { type: 'way' as const, id: 3, lat: 59.9, lon: 10.7,
+          tags: { leisure: 'pitch', sport: 'soccer', name: 'Voldslokka kunstgress' } },
+        { type: 'way' as const, id: 4, lat: 59.9, lon: 10.7,
+          tags: { leisure: 'pitch', sport: 'skateboard;multi', name: 'Torshov flerbruksflate' } },
+    ];
+    const rows = await buildRows('Oslo', els, Infinity);
+    assert.deepEqual(
+        rows.map((r) => r.category),
+        ['Rullesport', 'Rullesport', 'Ballbane', 'Ballbane']
+    );
+    assert.equal(rows.length, els.length, 'ingen elementer skal falle ut av unionen');
 });

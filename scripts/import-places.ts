@@ -69,6 +69,10 @@ interface OsmElement {
  * Sport-tokens som gjør en pitch til en GENERISK ballbane. Vinner over de
  * sport-spesifikke etikettene under: en bane tagget «tennis;soccer» er i
  * praksis en flerbruksflate, og «Ballbane» er da den ærlige tittelen.
+ *
+ * Brukes også som KATEGORI-vakt av rullesport (sep. 2026): en pitch tagget
+ * «skateboard;multi» er en flerbruksflate med skatemulighet, ikke en
+ * skatepark, og skal falle igjennom til Ballbane rett bak i lista.
  */
 const GENERIC_BALL_SPORTS = new Set(['soccer', 'basketball', 'multi']);
 
@@ -170,6 +174,70 @@ export function climbTitleLabel(sportRaw: string | undefined): string {
     return 'Klatring'; // ukjent/manglende sport — kategorinavnet er tryggest
 }
 
+/**
+ * Sport-verdier som gjør en flate til et rullesportanlegg, som Overpass-regex.
+ * Ett sted, brukt av selektoren for BEGGE leisure-verdiene, så de to aldri kan
+ * komme i utakt.
+ *
+ * `pump_track` er IKKE målt i norsk OSM (osmium sep. 2026 fant kun `pumptrack`,
+ * 6 alene + 9 som `cycling;pumptrack`), men understreng-matchingen dekker den
+ * ikke, og et ekstra ledd koster ingenting mot at en skrivemåte forsvinner.
+ * Her er det altså IKKE støy, i motsetning til ball-/racketselektoren, der
+ * `tennis` allerede fanger `table_tennis` som understreng.
+ */
+const ROLLER_SPORT_SELECTOR_RE = 'skateboard|bmx|pumptrack|pump_track|roller_skiing';
+
+/**
+ * Rullesport-etiketter. Ankret og gjensidig utelukkende, som
+ * [SPORT_TITLE_LABELS] og [CLIMB_TITLE_LABELS].
+ *
+ * Rekkefølgen er PRIORITET ved sammensatt tagging, og følger klatre-regelen,
+ * ikke ballbane-regelen: tittelen skal bære det som IKKE allerede følger av
+ * kategorien. «Skatepark» er standardforventningen til et sted i Rullesport
+ * — 376 av de 597 nasjonale treffene er skateboard, og illustrasjonen i appen
+ * er skate — så den står SIST og taper mot enhver mer spesifikk byggform.
+ *
+ * Innbyrdes rekkefølge på de tre øverste er derimot IKKE observerbar: i de
+ * målte dataene opptrer rulleski, pumptrack og BMX aldri sammen. De
+ * sammensatte verdiene er utelukkende med `cycling`, som ikke er en etikett
+ * her. Rekkefølgen dem imellom er altså en antakelse om spesifisitet, ikke
+ * et funn — det er «Skatepark sist» som er den reelle beslutningen.
+ *
+ * `roller_skating` (inlines/rulleskøyter) er BEVISST utelatt: den er ikke
+ * blant de fire målte tokenene. Ankringen gjør at /^roller[_-]?skiing$/ aldri
+ * treffer den ved uhell. Se «Åpent» i rapporten — docs/seed-backlog.md
+ * beskriver inlines som en del av det appen viser, så dette kan være en
+ * bevisst utvidelse senere, men den skal i så fall måles først.
+ */
+const ROLLER_TITLE_LABELS: ReadonlyArray<readonly [RegExp, string]> = [
+    [/^roller[_-]?skiing$/, 'Rulleskiløype'],
+    [/^pump[_-]?track$/, 'Pumptrack'],
+    [/^bmx$/, 'BMX-bane'],
+    [/^skateboard$/, 'Skatepark'],
+];
+
+/** Har taggen minst ett rullesport-token? Delt av kategori-matchingen og
+ *  tittel-etiketten, samme grep som [hasClimbingSport]. */
+export function hasRollerSport(sportRaw: string | undefined): boolean {
+    return sportTokens(sportRaw).some((t) =>
+        ROLLER_TITLE_LABELS.some(([pattern]) => pattern.test(t))
+    );
+}
+
+/**
+ * Tittel-etiketten for ett rullesportanlegg. Skatepark, BMX-bane, pumptrack og
+ * rulleskiløype er fire ulike byggformer og fortjener ulik tittel når stedet
+ * mangler OSM-navn. Kategoriverdien er «Rullesport» for alle fire — det er
+ * databasenøkkelen.
+ */
+export function rollerTitleLabel(sportRaw: string | undefined): string {
+    const tokens = sportTokens(sportRaw);
+    for (const [pattern, label] of ROLLER_TITLE_LABELS) {
+        if (tokens.some((t) => pattern.test(t))) return label;
+    }
+    return 'Rullesport'; // ukjent/manglende sport — kategorinavnet er tryggest
+}
+
 interface PlaceCategoryDef {
     key: string;
     /** Kategoriens navn OG standard tittel-prefiks. */
@@ -223,6 +291,70 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         selector: 'nwr["leisure"="playground"](area.a);',
         matches: (t: OsmTags) => t.leisure === 'playground',
         isFree: true,
+    },
+    {
+        // RULLESPORT (sep. 2026, fase C andre halvdel). Skatepark, BMX-bane,
+        // pumptrack og rulleskiløype i én kategori — de deler brukergruppe, og
+        // flere av anleggene deler faktisk flate i tid mellom skateboard,
+        // sparkesykkel, BMX og inlines (se docs/seed-backlog.md).
+        //
+        // MÅ STÅ FØR BALLBANE. Dette er den avgjørende plasseringen, og den er
+        // en sterkere utgave av klatring/idrettshall-forholdet under:
+        // ballbanes matches() er `t.leisure === 'pitch'` UTEN sport-sjekk, så
+        // den svelger enhver pitch som når fram til den. 356 av de 376
+        // nasjonale skateboard-treffene ER pitcher. Verifisert mot dagens kode
+        // før endringen: {leisure:'pitch', sport:'skateboard'} ga «ballbane».
+        // Bak ballbane ville kategorien altså vært tom fra dag én.
+        //
+        // FORANKRET I leisure=pitch OG leisure=track — ikke i én leisure-verdi
+        // slik de andre kategoriene er. leisure=skatepark og leisure=pump_track
+        // finnes IKKE i norsk OSM (0 treff nasjonalt), så det finnes ingen
+        // enkelt-tagg å feste seg i. Fordelingen: skateboard 356 pitch / 5
+        // sports_centre / 1 track / 1 playground; bmx+pumptrack+roller_skiing
+        // 63 track / 7 pitch / 2 sports_centre / 1 range. To leisure-verdier
+        // dekker 95 % og 86 % av hver gruppe.
+        //
+        // leisure=track er ubrukt av alle andre kategorier (verifisert: ingen
+        // matches() treffer {leisure:'track'}), så den delen kolliderer ikke.
+        // Motstykket er at et track som IKKE matcher her ikke har noen kategori
+        // å falle til — det forklarer multi-vakten under.
+        //
+        // sports_centre er BEVISST utelatt, selv om 7 anlegg ligger der.
+        // matches() må speile selektoren: aksepterte den sports_centre, ville
+        // idrettshall-spørringen matet rullesport med elementer denne
+        // kategorien aldri ba om — nøyaktig den selektor/matches-asymmetrien
+        // som gjorde ballbane farlig over. De 7 blir liggende som Idrettshall.
+        // De seks store innendørshallene (Oslo Skatehall, Skur 13, tre Fysak,
+        // Trikkestallen, Paradis) er uansett ikke i OSM som skateanlegg og
+        // kommer via seed, ikke import — se docs/seed-backlog.md.
+        //
+        // Regex, ikke likhet: to tredjedeler av BMX ligger i sammensatte
+        // verdier med varierende rekkefølge (bmx 54, bmx;cycling 50,
+        // cycling;bmx 63). sportTokens() splitter, så rekkefølgen er likegyldig.
+        key: 'rullesport',
+        label: 'Rullesport',
+        category: 'Rullesport',
+        audience: 'For alle',
+        selector:
+            `nwr["leisure"="pitch"]["sport"~"${ROLLER_SPORT_SELECTOR_RE}",i]["access"!="private"](area.a);\n  ` +
+            `nwr["leisure"="track"]["sport"~"${ROLLER_SPORT_SELECTOR_RE}",i]["access"!="private"](area.a);`,
+        // Multi-vakten gjelder KUN pitch, og det er ikke en forglemmelse: der
+        // finnes Ballbane rett bak som ærlig fallback for en flerbruksflate
+        // tagget «skateboard;multi». For track finnes ingen kategori bak, så
+        // samme vakt ville slettet elementet i stillhet i stedet for å flytte
+        // det. Presedensen er GENERIC_BALL_SPORTS' egen: den beskriver når en
+        // flate er en generisk ballflate, og det er nettopp da Ballbane vinner.
+        matches: (t: OsmTags) =>
+            hasRollerSport(t.sport) &&
+            (t.leisure === 'track' ||
+                (t.leisure === 'pitch' &&
+                    !sportTokens(t.sport).some((s) => GENERIC_BALL_SPORTS.has(s)))),
+        // Gratis, som ballbane. Selektoren er begrenset til pitch og track —
+        // utendørs betong og asfalt — og det er nettopp sports_centre-anleggene
+        // og de seed-ede hallene som tar betaling. tags.fee overstyrer uansett
+        // per sted.
+        isFree: true,
+        titleLabelFor: (t: OsmTags) => rollerTitleLabel(t.sport),
     },
     {
         // Ball- OG RACKETSPORT (des. 2026, fase B). Selektoren hentet tidligere
