@@ -15,8 +15,10 @@ Arkitekturen er allerede geografisk. Radius-modus går gjennom PostGIS med
 brukerens posisjon og sorterer nærmest først — den skalerer i prinsippet til
 hele landet. Det er **parameterne** som er firebymodellen, ikke strukturen.
 
-Men den bindende skranken er ikke geografi. Det er **grensen på 100 rader**,
-og den er brutt i dag, uavhengig av radius.
+Den bindende skranken er ikke geografi, men **grensen på 100 rader** — og den
+er mindre alvorlig enn førsteutkastet av dette dokumentet hevdet. Se
+avveiningen under funn 1: i Utforsk er skjevheten en konsekvens brukeren selv
+har valgt, og per-kategori-grensen hører til forsiden, ikke hit.
 
 ---
 
@@ -30,17 +32,58 @@ og kapper.
 
 Oslo har 3996 lekeplasser. Velger en forelder i Oslo både Lekeplass og
 Museum, er de 100 nærmeste stedene nesten utelukkende lekeplasser. Museene
-faller ut av resultatet — ikke fordi de er langt unna, men fordi de taper
+havner nederst — og er borte helt hvis det finnes hundre lekeplasser nærmere
+enn det nærmeste museet. Ikke fordi de ligger langt unna, men fordi de taper
 kappløpet mot en tettere kategori.
 
-Dette er ikke en fremtidig skaleringsfeil. **Det skjer i dag**, og radius er
-ikke involvert.
+Ved 200 km blir det ikke verre og ikke bedre: du får fortsatt de 100
+nærmeste, som alle ligger innen få kilometer av brukeren. Hverken paginering
+eller klynging løser det — **«N nærmeste per kategori» gjør det.**
 
-Ved 200 km blir det bare mer synlig: du får fortsatt de 100 nærmeste, som
-alle ligger innen få kilometer av brukeren. Hverken paginering eller klynging
-løser det — **«N nærmeste per kategori» gjør det.**
+### Men hvor alvorlig er det egentlig?
 
-Dette bør fikses før nasjonal dekning i det hele tatt gir mening.
+Førsteutkastet av dette dokumentet skrev at museene «faller ut», og at dette
+«bør fikses før nasjonal dekning i det hele tatt gir mening». **Begge deler
+var for sterkt, og er rettet her.**
+
+Motargumentet, fra eier: *når brukeren selv har valgt kategoriene, er det ikke
+urimelig at den største dominerer. Skjevheten er synlig og selvforklarende,
+ikke skjult. De som velger Lekeplass vil ha lekeplass.*
+
+Det holder. Presiseringen er at «faller ut» bare er sant i én av de tre
+tilstandene:
+
+| Modus | Hva som skjer med en liten kategori |
+|---|---|
+| **Radius** | Ligger **nederst** — med mindre den har ≥ 100 nærmere naboer, da er den **borte** |
+| **By** | **Tilfeldig** om den er med i det hele tatt: de 100 radene er vilkårlige (`order by starts_at`, null for alle steder) |
+
+Nederst er en preferanse. Borte er en feil. Tilfeldig er verken — det er
+funn 3, og løses av arbeidet med by-modus, ikke av en per-kategori-grense.
+
+**Terskelen for når skjevhet blir en ekte feil** er ikke et antall kategorier
+eller et størrelsesforhold. Den er: *kan brukeren komme til det som mangler,
+med en handling som finnes i appen?* Velger man alle femten og ser hundre
+lekeplasser, kan man fravelge Lekeplass og finne museet. Skjevheten er
+gjenopprettelig.
+
+Den blir en feil i det øyeblikket **appen selv** setter sammen utvalget — en
+forside som blander kategorier uten at brukeren har valgt noe. Den finnes
+ikke i dag (`home_screen.dart` henter ingen datahub-steder).
+
+**Konklusjon:** per-kategori-grensen er et krav til forsiden, ikke til
+Utforsk. Den venter til forsiden bygges.
+
+### Det som likevel var galt, og er rettet
+
+Knappen skrev `Vis $n steder` med `n` = antall hentede rader. Med 3996
+lekeplasser i Oslo sto det «Vis 100 steder» — et tak presentert som en total,
+og den eneste måten brukeren kunne fått vite at lista var kappet.
+
+Rettet i togedoo-modern: ordlyden er «Vis de N første» når hentingen traff
+taket, og resultatlista har fått en linje som sier hva den faktisk inneholder
+(«Lekeplass 94 · Museum 3 · Skianlegg 3 · flere finnes — snevre inn»).
+Hentingen er uendret.
 
 ---
 
@@ -85,7 +128,7 @@ det er hentet, og løser derfor presentasjonen, ikke utvalget.
 | Appen — by-chips | Fire faste byer | **Ja, til slutt** |
 | Appen — `_serverCategories` | Kategoriliste | **Nei** — ingen bygeografi |
 | Radiustakene | Se funn 2 | **Ja** |
-| `limit: 100` | Se funn 1 | **Ja, og først** |
+| `limit: 100` | Se funn 1 | **Ja — men når forsiden bygges** |
 
 ---
 
@@ -93,12 +136,12 @@ det er hentet, og løser derfor presentasjonen, ikke utvalget.
 
 Tre ting, i rekkefølge. Alle additive, alle små nok for kvelder.
 
-1. **Per-kategori-grense i stedet for global.** Løser en feil som finnes i
-   dag, og er en forutsetning for alt annet.
-2. **Hev begge radiustakene.** To linjer. Da blir Oppdal synlig for en
+1. **Hev begge radiustakene.** To linjer. Da blir Oppdal synlig for en
    Trondheims-familie, uten noen ny arkitektur.
-3. **Importer per fylke i stedet for per by.** Bytter `DEFAULT_CITIES` mot en
+2. **Importer per fylke i stedet for per by.** Bytter `DEFAULT_CITIES` mot en
    fylkesliste og `admin_level=7` mot `4`. Samme kode, annen inndata.
+3. **Per-kategori-grense** — men først når forsiden bygges, ikke som
+   forutsetning for nasjonal dekning. Se avveiningen under funn 1.
 
 Ingen av dem bygger noe som må rives.
 
