@@ -16,6 +16,11 @@ import {
     sortByDistanceFromCity,
     type LatLng,
 } from '../../../lib/cities';
+import {
+    cityModeEventWindowFilter,
+    cityModeSortIsLoadBearing,
+    listingCutoff,
+} from '../../../lib/event-window';
 
 interface ActivityRow {
     id: string;
@@ -190,10 +195,33 @@ async function fromDatabase(searchParams: URLSearchParams) {
             );
         }
     } else {
+        // MERK (defekt 3, docs/arrangementer-og-betalende-aktorer.md):
+        // sorteringen under er virkningsløs så lenge utvalget bare er steder —
+        // de har starts_at = null, og nullsFirst:false legger dem sist, altså
+        // alle sammen. Slipper arrangementsrader inn i SAMME utvalg, blir den
+        // styrende: de legger seg øverst med eldste først og kan fylle hele
+        // `limit`, og stedene forsvinner helt ut av svaret. Rettes ikke her —
+        // arrangementer skal ha sitt eget kall og sitt eget tak (steg 2) —
+        // men overgangen skal ikke skje ubemerket.
+        if (cityModeSortIsLoadBearing(kind)) {
+            console.warn(
+                `[activities] By-modus uten kind=place (kind=${kind ?? 'null'}): sorteringen på ` +
+                    'starts_at er nå styrende, og arrangementer kan fortrenge steder innenfor ' +
+                    'limit. Se defekt 3 i docs/arrangementer-og-betalende-aktorer.md.'
+            );
+        }
         let query = db
             .from('activities')
             .select(ROW_COLUMNS)
             .eq('status', 'published')
+            // Samme tidsvindu som RPC-en har (migrasjon 0015). Uten det var
+            // status='published' eneste vern i by-modus, og et arrangement som
+            // gikk i går kl. 10 ble liggende i inntil ~21 timer til cron kjørte
+            // 05:00 UTC. Uttrykket gjelder også når kind=place sendes: da er
+            // første gren alltid sann, så filteret koster ingenting — men det
+            // er i drift, ikke sovende kode som først prøves den dagen
+            // arrangementsaksen åpnes.
+            .or(cityModeEventWindowFilter(listingCutoff()))
             .order('starts_at', { ascending: true, nullsFirst: false })
             .limit(limit);
         if (kind) query = query.eq('kind', kind);

@@ -4,6 +4,7 @@
 // i samme normaliserte form og samme activities-tabell.
 import { supabaseAdmin } from './supabase';
 import { geocode } from './geocode';
+import { expiryCutoff } from './event-window';
 import { scrapeDeichman } from './deichman';
 import { scrapeBergen } from './bergen';
 
@@ -28,6 +29,8 @@ export interface NormalizedActivity {
 export interface IngestResult {
     slug: string;
     fetched: number;
+    /** Rader hoppet over fordi de er låst av moderasjon (locked=true). */
+    skippedLocked: number;
     upserted: number;
     geocoded: number;
     withoutCoordinates: number;
@@ -95,7 +98,7 @@ export async function ingestSource(slug: string): Promise<IngestResult> {
     const db = supabaseAdmin();
     const adapter = ADAPTERS[slug];
     if (!adapter) {
-        return { slug, fetched: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Ukjent kilde: ${slug}` };
+        return { slug, fetched: 0, skippedLocked: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Ukjent kilde: ${slug}` };
     }
 
     const { data: source, error: sourceError } = await db
@@ -104,15 +107,15 @@ export async function ingestSource(slug: string): Promise<IngestResult> {
         .eq('slug', slug)
         .maybeSingle();
     if (sourceError) {
-        return { slug, fetched: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Oppslag mot sources feilet: ${sourceError.message}` };
+        return { slug, fetched: 0, skippedLocked: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Oppslag mot sources feilet: ${sourceError.message}` };
     }
     if (!source) {
         // 0 rader synlige. sources har RLS uten policies, så dette betyr enten
         // at raden mangler, eller at nøkkelen ikke har service-nivå-tilgang.
-        return { slug, fetched: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Kilden ${slug} er ikke synlig i sources-tabellen (mangler raden, eller har nøkkelen ikke service-tilgang forbi RLS?)` };
+        return { slug, fetched: 0, skippedLocked: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Kilden ${slug} er ikke synlig i sources-tabellen (mangler raden, eller har nøkkelen ikke service-tilgang forbi RLS?)` };
     }
     if (!source.active) {
-        return { slug, fetched: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: 'Kilden er deaktivert' };
+        return { slug, fetched: 0, skippedLocked: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: 'Kilden er deaktivert' };
     }
 
     try {
@@ -121,7 +124,22 @@ export async function ingestSource(slug: string): Promise<IngestResult> {
         let geocoded = 0;
         let withoutCoordinates = 0;
 
-        for (const item of items) {
+        // Rader låst av moderasjon skal aldri røres — samme vakt som
+        // scripts/import-places.ts har hatt hele tiden, og som manglet her.
+        // Uten den var en manuelt nedtatt rad publisert igjen neste morgen kl.
+        // 07, fordi upserten under setter status:'published' ubetinget.
+        // Filtreres FØR løkka, så vi heller ikke geokoder rader vi skal la være.
+        const { data: lockedRows, error: lockedError } = await db
+            .from('activities')
+            .select('external_id')
+            .eq('source_id', source.id)
+            .eq('locked', true);
+        if (lockedError) throw new Error(`Oppslag av låste rader feilet: ${lockedError.message}`);
+        const locked = new Set((lockedRows ?? []).map((r) => r.external_id));
+        const writable = items.filter((item) => !locked.has(item.externalId));
+        const skippedLocked = items.length - writable.length;
+
+        for (const item of writable) {
             // Adressen er mest presis; stedsnavn (f.eks. bibliotekfilial) er fallback.
             const geoQuery = item.address || item.venueName || null;
             const geo = geoQuery ? await geocode(geoQuery, item.municipality ?? undefined) : null;
@@ -160,28 +178,60 @@ export async function ingestSource(slug: string): Promise<IngestResult> {
             .update({ last_synced_at: new Date().toISOString(), last_sync_status: 'ok' })
             .eq('id', source.id);
 
-        return { slug, fetched: items.length, upserted, geocoded, withoutCoordinates };
+        return { slug, fetched: items.length, skippedLocked, upserted, geocoded, withoutCoordinates };
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await db
             .from('sources')
             .update({ last_synced_at: new Date().toISOString(), last_sync_status: `feilet: ${message}` })
             .eq('id', source.id);
-        return { slug, fetched: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: message };
+        return { slug, fetched: 0, skippedLocked: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: message };
     }
 }
 
-/** Merker gamle events som utløpt så de forsvinner fra kart og feed. */
+/**
+ * Merker gamle events som utløpt så de forsvinner fra kart og feed.
+ *
+ * Grensen er greatest(starts_at, ends_at), ikke starts_at alene: en utstilling
+ * over tre uker eller en teateroppsetning med spilleperiode skal leve ut
+ * perioden. Med starts_at alene forsvant den ett døgn etter åpningsdagen,
+ * midt i perioden — den eneste defekten i steg 0 som gjør noe usant overfor en
+ * arrangør som allerede har betalt. Se lib/event-window.ts for hvorfor det ble
+ * greatest og ikke coalesce, som dokumentet spesifiserer.
+ *
+ * PostgREST kan ikke uttrykke greatest() i et filter. I stedet for å bygge et
+ * .or()-uttrykk med tidsstempler inne i en streng, deles jobben i tre
+ * spørringer etter hvilke av de to kolonnene som er satt. Mengdene er
+ * gjensidig utelukkende, så ingen rad telles to ganger, og alle tre bruker kun
+ * typede filtre — ingen strengtolkning å ta feil av.
+ *
+ * Rader der BEGGE er tomme utløper aldri, som før: `.lt()` treffer ikke en
+ * NULL-kolonne, så de faller ut av alle tre av seg selv.
+ */
 export async function expireOldEvents(): Promise<number> {
-    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const { data } = await supabaseAdmin()
-        .from('activities')
-        .update({ status: 'expired' })
-        .eq('kind', 'event')
-        .eq('status', 'published')
-        .lt('starts_at', cutoff)
-        .select('id');
-    return data?.length ?? 0;
+    const cutoff = expiryCutoff();
+    const db = supabaseAdmin();
+    const expire = () =>
+        db.from('activities').update({ status: 'expired' }).eq('kind', 'event').eq('status', 'published');
+
+    // Begge satt: den seneste av dem må være passert. Uten kravet til
+    // starts_at ville et arrangement med feilført sluttid (ends_at før
+    // starts_at) blitt utløpt før det har begynt — vakten dette handler om.
+    const begge = await expire().lt('ends_at', cutoff).lt('starts_at', cutoff).select('id');
+    // Kun sluttid: den avgjør alene.
+    const kunSlutt = await expire().is('starts_at', null).lt('ends_at', cutoff).select('id');
+    // Kun starttid: som før endringen.
+    const kunStart = await expire().is('ends_at', null).lt('starts_at', cutoff).select('id');
+
+    // Feil ble slukt før også, men med tre spørringer kan deler av sveipet nå
+    // feile uten at tallet avslører det. Jobben er ubemannet, så den må i det
+    // minste si fra i loggen.
+    const deler = [begge, kunSlutt, kunStart];
+    for (const { error } of deler) {
+        if (error) console.error(`[expireOldEvents] Utløpssveipet feilet delvis: ${error.message}`);
+    }
+
+    return deler.reduce((sum, d) => sum + (d.data?.length ?? 0), 0);
 }
 
 export async function runFullSync(): Promise<{ results: IngestResult[]; expired: number }> {
