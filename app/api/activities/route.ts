@@ -44,6 +44,10 @@ interface ActivityRow {
     opening_hours: string | null;
     osm_tags: Record<string, string> | null;
     is_indoor: boolean | null;
+    // Migrasjon 0016. Kolonnen er `not null default '{}'`, men typen er
+    // nullbar her fordi raden kan komme fra en spørring gjort før
+    // migrasjonen er kjørt — da mangler feltet, og `?? []` fanger det.
+    facets: string[] | null;
 }
 
 /** Kun http/https-URL-er slipper gjennom til appens webview — OSM-tagger
@@ -129,6 +133,13 @@ function toApiShape(row: ActivityRow, distanceFromCityKm: number | null = null) 
         // Ballsport-fasett (kun Ballbane har sport-tag). Normalisert token-liste;
         // klienten mapper soccer/basketball/multi → fotball/basket.
         sports: splitSports(row.osm_tags?.sport),
+        // Fasett-tokens fra egen kolonne (migrasjon 0016). ADDITIVT til
+        // [sports], ikke en erstatning: klienten tar unionen av de to, så
+        // Ballbane og Rullesport virker uendret mens seed-rader — som har
+        // osm_tags = null og dermed sports = [] — endelig kan bære fasetter.
+        // De to mengdene er disjunkte i praksis: sports kommer fra
+        // osm_tags.sport, facets fra piste:type/mtb:type/route og fra seed.
+        facets: row.facets ?? [],
         website: sanitizeWebsite(
             row.osm_tags?.website ?? row.osm_tags?.['contact:website'] ?? null
         ),
@@ -136,7 +147,7 @@ function toApiShape(row: ActivityRow, distanceFromCityKm: number | null = null) 
 }
 
 const ROW_COLUMNS =
-    'id, kind, title, description, category, target_audience, venue_name, address, municipality, near_city, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, opening_hours, osm_tags, is_indoor';
+    'id, kind, title, description, category, target_audience, venue_name, address, municipality, near_city, lat, lng, starts_at, ends_at, is_free, price_text, url, image_url, opening_hours, osm_tags, is_indoor, facets';
 
 async function fromDatabase(searchParams: URLSearchParams) {
     const db = supabaseAdmin();
