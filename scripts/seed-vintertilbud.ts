@@ -25,18 +25,33 @@
 // bare 'published'), med advarsel i rapporten. manualCoord hopper over
 // geokoding (for steder uten gateadresse, som en akebakke).
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
+import type { FacetToken } from '../lib/facets';
 
 // Vinter-splitt (steg 5): «Vinter & innendørs» er avviklet og fordelt på fem
 // nye kategorier + inne/ute-flagg (is_indoor). Nøkkel = seed.externalId. Alle
 // 25 MÅ finnes her — toRow feiler hardt hvis en mangler (fanges i --dry-run).
-const SPLIT: Record<string, { category: string; isIndoor: boolean }> = {
+//
+// FASETTER (migrasjon 0016) settes samme sted, av samme grunn som is_indoor:
+// seed-rader har osm_tags = null, så API-et utleder sports = [] for dem. Uten
+// en eksplisitt verdi her forsvinner raden i det øyeblikket brukeren huker av
+// én fasett. Tom liste er normalen — kun vinterradene har fasetter i dag.
+//
+// Tokenene er ASCII og oversettes aldri; etiketten er klientens.
+const SPLIT: Record<
+    string,
+    { category: string; isIndoor: boolean; facets?: FacetToken[] }
+> = {
     // Skianlegg (6): SNØ er innendørs, resten (alpint/akebakke) ute.
-    'sno-lorenskog': { category: 'Skianlegg', isIndoor: true },
-    'varingskollen-alpinsenter': { category: 'Skianlegg', isIndoor: false },
-    'kirkerudbakken-skisenter': { category: 'Skianlegg', isIndoor: false },
-    'eikedalen-skisenter': { category: 'Skianlegg', isIndoor: false },
-    'vassfjellet-skisenter': { category: 'Skianlegg', isIndoor: false },
-    'korketrekkeren-aking': { category: 'Skianlegg', isIndoor: false },
+    // SNØ Lørenskog er alpint selv om det er innendørs — fasetten sier hva du
+    // GJØR der, is_indoor sier hvor. De to aksene er uavhengige.
+    'sno-lorenskog': { category: 'Skianlegg', isIndoor: true, facets: ['alpint'] },
+    'varingskollen-alpinsenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'kirkerudbakken-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'eikedalen-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'vassfjellet-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    // Korketrekkeren er en akebakke, ikke et alpinanlegg. Eneste rad med
+    // 'aking' i dag.
+    'korketrekkeren-aking': { category: 'Skianlegg', isIndoor: false, facets: ['aking'] },
     // Badeland (8): alle inne.
     'risenga-svommehall': { category: 'Badeland', isIndoor: true },
     'bolgen-bad-drobak': { category: 'Badeland', isIndoor: true },
@@ -58,14 +73,18 @@ const SPLIT: Record<string, { category: string; isIndoor: boolean }> = {
     'leos-lekeland-bergen': { category: 'Innendørs lekeland', isIndoor: true },
     'leos-lekeland-trondheim': { category: 'Innendørs lekeland', isIndoor: true },
     'playground-forus': { category: 'Innendørs lekeland', isIndoor: true },
-    // Skøyter (1): innendørs ishall.
+    // Skøyter (1): innendørs ishall. INGEN fasett: Skøyter er en kategori, og
+    // det finnes ingen skøytefasett å peke på. Et token ingen fasett leser
+    // ville vært en påstand uten mottaker.
     'sormarka-arena-stavanger': { category: 'Skøyter', isIndoor: true },
 };
 
-function splitFor(externalId: string): { category: string; isIndoor: boolean } {
+function splitFor(
+    externalId: string
+): { category: string; isIndoor: boolean; facets: FacetToken[] } {
     const s = SPLIT[externalId];
     if (!s) throw new Error(`Mangler vinter-splitt-mapping for externalId="${externalId}"`);
-    return s;
+    return { ...s, facets: s.facets ?? [] };
 }
 
 const SOURCE = {
@@ -426,6 +445,7 @@ function toRow(seed: VinterSeed, sourceId: string, lat: number, lng: number, ver
         description: seed.description,
         category: splitFor(seed.externalId).category,
         is_indoor: splitFor(seed.externalId).isIndoor,
+        facets: splitFor(seed.externalId).facets,
         target_audience: seed.targetAudience ?? 'For alle',
         address: seed.address,
         municipality: seed.municipality,

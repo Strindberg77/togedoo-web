@@ -18,6 +18,7 @@
 // ODbL-KRAV: der disse dataene vises, skal "© OpenStreetMap contributors"
 // være synlig med lenke til openstreetmap.org/copyright.
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
+import type { FacetToken } from '../lib/facets';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
 
 // Speilene kan overstyres via env (komma-separert) — nyttig for selvhostet
@@ -125,6 +126,46 @@ export function sportTokens(sportRaw: string | undefined): string[] {
         .split(/[;,]/)
         .map((t) => t.trim())
         .filter(Boolean);
+}
+
+/**
+ * FASETT-TOKENS utledet fra OSM-tagger (migrasjon 0016).
+ *
+ * Regelen dekker de dimensjonene `sport`-taggen IKKE bærer, og bare dem:
+ *
+ *   piste:type=downhill   -> alpint
+ *   piste:type=sled       -> aking
+ *   piste:type=playground -> skileik
+ *   mtb:type=downhill     -> downhill
+ *   route=mtb             -> terrengsykling
+ *
+ * DISJUNKT FRA `sports` MED VILJE. API-et utleder `sports` fra osm_tags.sport,
+ * og klienten tar unionen av de to. Ville denne funksjonen også emittert
+ * sport-tokens, ville det samme tokenet kommet fra to kanaler — harmløst for
+ * resultatet, men umulig å feilsøke når de en dag er uenige. Sport blir i
+ * `sports`; alt annet kommer hit.
+ *
+ * DETERMINISTISK og utledet PÅ NYTT hver kjøring: ingen tilstand, ingen
+ * oppslag mot basen, kun taggene på elementet. En rad som mister
+ * piste:type i OSM mister fasetten ved neste import — som den skal.
+ *
+ * `piste:type` er semikolon-/kommaseparert på samme måte som `sport`
+ * («downhill;nordic»), så [sportTokens] gjenbrukes til delingen. Navnet er
+ * historisk; funksjonen er en ren tokenizer.
+ *
+ * ice_skate er BEVISST utelatt. Skøyter er en kategori, ikke en fasett, og
+ * Sørmarka Arena skal ikke bære et token som ingen fasett leser. Legges inn
+ * den dagen en skøytefasett faktisk finnes.
+ */
+export function osmFacetTokens(t: OsmTags): FacetToken[] {
+    const facets: FacetToken[] = [];
+    const piste = sportTokens(t['piste:type']);
+    if (piste.includes('downhill')) facets.push('alpint');
+    if (piste.includes('sled')) facets.push('aking');
+    if (piste.includes('playground')) facets.push('skileik');
+    if (sportTokens(t['mtb:type']).includes('downhill')) facets.push('downhill');
+    if (t.route === 'mtb') facets.push('terrengsykling');
+    return facets;
 }
 
 /**
@@ -289,6 +330,14 @@ interface PlaceCategoryDef {
      * ballbane, der én kategori dekker seks sporter.
      */
     titleLabelFor?: (t: OsmTags) => string;
+    /**
+     * Overstyrer [osmFacetTokens] for denne kategorien. Ingen kategori
+     * trenger det i dag — standardregelen dekker piste:type, mtb:type og
+     * route=mtb, og de er kategoriuavhengige. Kroken finnes for den dagen en
+     * kategori har en fasett som bare gir mening der (f.eks. et anlegg der
+     * en tagg betyr noe annet enn ellers).
+     */
+    facetsFor?: (t: OsmTags) => FacetToken[];
 }
 
 // Rekkefølgen er match-prioritet (et element kategoriseres av første treff).
@@ -636,6 +685,13 @@ export interface ImportRow {
     // herfra (surface/lit i første omgang, jf. tag-proben jul. 2026) —
     // nye visningsfelter senere krever da ingen ny import-runde.
     osm_tags: OsmTags;
+    /**
+     * Fasett-tokens (migrasjon 0016), utledet av [osmFacetTokens] eller av
+     * kategoriens egen [PlaceCategoryDef.facetsFor]. Tom liste er den
+     * normale verdien — kolonnen er `not null default '{}'`, så en tom
+     * liste og «ingen fasetter» er samme ting hele veien.
+     */
+    facets: FacetToken[];
     status: 'published';
     // Kun rapportering, fjernes før upsert:
     titleSource: TitleSource;
@@ -702,6 +758,8 @@ export async function buildRows(
                 : null,
             url: `https://www.openstreetmap.org/${el.type}/${el.id}`,
             osm_tags: tags,
+            // Utledes på nytt hver kjøring, fra taggene alene.
+            facets: cat.facetsFor?.(tags) ?? osmFacetTokens(tags),
             status: 'published',
             titleSource: titled.source,
             geocodeError: titled.geocodeError,
