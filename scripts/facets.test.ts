@@ -63,13 +63,93 @@ test('ice_skate gir INGEN fasett — bevisst', async () => {
     assert.deepEqual(osmFacetTokens({ 'piste:type': 'ice_skate' }), []);
 });
 
-test('sport-taggen gir ingen fasett — den kanalen er sports', async () => {
-    // Disjunkte mengder med vilje: API-et utleder `sports` fra osm_tags.sport,
-    // klienten tar unionen. Kom det samme tokenet fra to kanaler, ville det
-    // vært umulig å feilsøke den dagen de er uenige.
+test('sport-tokens utenfor rullesport gir ingen fasett', async () => {
+    // Denne testen hevdet tidligere at INGEN sport-tagg ga fasett — «disjunkte
+    // mengder med vilje». Det ble endret sep. 2026: skateboard og bmx skrives
+    // nå inn i facets også, så kolonnen kan beskrive raden alene den dagen
+    // sports avvikles. Overlappet er ufarlig (klienten slår opp i unionen).
+    //
+    // Det som fortsatt gjelder, og som testes her: utledningen plukker BARE
+    // rullesport-tokens fra sport-taggen. Ballbanenes sporter hører hjemme i
+    // `sports` og skal ikke lekke inn.
     const { osmFacetTokens } = await load();
-    assert.deepEqual(osmFacetTokens({ sport: 'skateboard' }), []);
     assert.deepEqual(osmFacetTokens({ sport: 'soccer;basketball' }), []);
+    assert.deepEqual(osmFacetTokens({ sport: 'tennis' }), []);
+    assert.deepEqual(osmFacetTokens({ sport: 'climbing' }), []);
+});
+
+test('skateboard gir tre tokens — antakelsen, ikke en avlesning', async () => {
+    // Kjernen i endringen. OSM kan ikke fylle sparkesykkel og rulleskøyter:
+    // kick_scooter finnes 3 ganger i hele Norge, roller_skating i 5
+    // sammensetninger. Antakelsen står på SKATEBOARD_IMPLIES i lib/facets.ts.
+    const { osmFacetTokens } = await load();
+    assert.deepEqual(osmFacetTokens({ sport: 'skateboard' }).sort(), [
+        'rulleskoyter',
+        'skateboard',
+        'sparkesykkel',
+    ]);
+    // 68 av 81 Rullesport-rader i prod har skateboard, så dette er raden
+    // regelen faktisk treffer.
+    assert.deepEqual(osmFacetTokens({ sport: 'skateboard;cycling' }).sort(), [
+        'rulleskoyter',
+        'skateboard',
+        'sparkesykkel',
+    ]);
+});
+
+test('bmx alene gir BARE bmx — retningen er enveis', async () => {
+    // En BMX-bane i skogen er ikke et sted for rulleskøyter. Snus retningen,
+    // blir fasetten usann for jordbane og hoppkuler. 10 av 81 rader i prod.
+    const { osmFacetTokens } = await load();
+    assert.deepEqual(osmFacetTokens({ sport: 'bmx' }), ['bmx']);
+    assert.deepEqual(osmFacetTokens({ sport: 'bmx;cycling' }), ['bmx']);
+    assert.deepEqual(osmFacetTokens({ sport: 'cycling;bmx' }), ['bmx']);
+    for (const token of ['sparkesykkel', 'rulleskoyter', 'skateboard']) {
+        assert.ok(
+            !osmFacetTokens({ sport: 'bmx' }).includes(token),
+            `bmx skal ikke gi ${token}`
+        );
+    }
+});
+
+test('skateboard OG bmx gir alle fire — reglene er additive', async () => {
+    // 0 rader i prod har begge i dag, men regelen må holde uansett.
+    const { osmFacetTokens } = await load();
+    assert.deepEqual(osmFacetTokens({ sport: 'skateboard;bmx' }).sort(), [
+        'bmx',
+        'rulleskoyter',
+        'skateboard',
+        'sparkesykkel',
+    ]);
+    assert.deepEqual(
+        osmFacetTokens({ sport: 'bmx;skateboard' }).sort(),
+        osmFacetTokens({ sport: 'skateboard;bmx' }).sort(),
+        'rekkefølgen i taggen skal ikke bety noe'
+    );
+});
+
+test('kick_scooter og roller_skating leses direkte når de finnes', async () => {
+    const { osmFacetTokens } = await load();
+    assert.deepEqual(osmFacetTokens({ sport: 'kick_scooter' }), ['sparkesykkel']);
+    assert.deepEqual(osmFacetTokens({ sport: 'roller_skating' }), ['rulleskoyter']);
+});
+
+test('roller_skiing forveksles ALDRI med roller_skating', async () => {
+    // Rulleski og rulleskøyter er to ulike sporter med nesten like tagger.
+    // sportTokens splitter på «;» og «,», så treffet er på hele tokenet —
+    // men fella er nær nok til å fortjene en egen vakt.
+    const { osmFacetTokens } = await load();
+    assert.deepEqual(osmFacetTokens({ sport: 'roller_skiing' }), [],
+        'rulleski har fasett via sports, ikke via facets');
+    assert.deepEqual(osmFacetTokens({ sport: 'roller_skating' }), ['rulleskoyter']);
+});
+
+test('overlappende regler gir hvert token én gang', async () => {
+    // «skateboard;kick_scooter» treffer to regler som begge gir sparkesykkel.
+    const { osmFacetTokens } = await load();
+    const treff = osmFacetTokens({ sport: 'skateboard;kick_scooter;roller_skating' });
+    assert.deepEqual(treff.sort(), ['rulleskoyter', 'skateboard', 'sparkesykkel']);
+    assert.equal(new Set(treff).size, treff.length, 'ingen duplikater');
 });
 
 test('lekeplass-taggen playground forveksles ikke med piste:type=playground', async () => {
@@ -97,7 +177,8 @@ test('utledningen emitterer bare tokens fra vokabularet', async () => {
     const alle = [
         { 'piste:type': 'downhill;sled;playground', 'mtb:type': 'downhill', route: 'mtb' },
         { 'piste:type': 'nordic;ice_skate' },
-        { sport: 'skateboard' },
+        { sport: 'skateboard;bmx' },
+        { sport: 'soccer' },
         {},
     ].flatMap((t) => osmFacetTokens(t));
     for (const token of alle) {
@@ -107,6 +188,7 @@ test('utledningen emitterer bare tokens fra vokabularet', async () => {
         );
     }
     // Og motsatt: hvert token i vokabularet skal kunne utledes fra EN tagg,
-    // ellers er det dødt. (Alle fem er dekket av taggene over.)
+    // ellers er det dødt. Alle ni er dekket av taggene over — sparkesykkel og
+    // rulleskoyter via SKATEBOARD_IMPLIES, ikke via en egen tagg.
     assert.deepEqual([...new Set(alle)].sort(), [...FACET_TOKENS].sort());
 });

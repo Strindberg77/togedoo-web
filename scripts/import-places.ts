@@ -18,7 +18,7 @@
 // ODbL-KRAV: der disse dataene vises, skal "© OpenStreetMap contributors"
 // være synlig med lenke til openstreetmap.org/copyright.
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
-import type { FacetToken } from '../lib/facets';
+import { SKATEBOARD_IMPLIES, type FacetToken } from '../lib/facets';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
 
 // Speilene kan overstyres via env (komma-separert) — nyttig for selvhostet
@@ -139,11 +139,26 @@ export function sportTokens(sportRaw: string | undefined): string[] {
  *   mtb:type=downhill     -> downhill
  *   route=mtb             -> terrengsykling
  *
- * DISJUNKT FRA `sports` MED VILJE. API-et utleder `sports` fra osm_tags.sport,
- * og klienten tar unionen av de to. Ville denne funksjonen også emittert
- * sport-tokens, ville det samme tokenet kommet fra to kanaler — harmløst for
- * resultatet, men umulig å feilsøke når de en dag er uenige. Sport blir i
- * `sports`; alt annet kommer hit.
+ *   sport~skateboard      -> skateboard, sparkesykkel, rulleskoyter
+ *   sport~bmx             -> bmx
+ *   sport~kick_scooter    -> sparkesykkel
+ *   sport~roller_skating  -> rulleskoyter
+ *
+ * OVERLAPPER `sports` FOR SPORT-TOKENENE — endret sep. 2026. Da denne
+ * funksjonen ble skrevet, emitterte den bevisst ALDRI sport-tokens, for at
+ * samme token ikke skulle komme fra to kanaler. Det er ikke lenger riktig:
+ * skal `facets` en dag være den eneste kanalen, må kolonnen beskrive raden
+ * ALENE, uten at noen må utlede resten fra osm_tags. Derfor skrives
+ * `skateboard` og `bmx` nå inn her også.
+ *
+ * Overlappet er ufarlig i drift: klienten slår opp i unionen av de to
+ * (DatahubPlace.facetTokens) og bruker den kun til `any(...)`, så et duplikat
+ * endrer ingenting. `sports` er fortsatt urørt og kan avvikles i ro.
+ *
+ * MERK asymmetrien: `pumptrack` og `roller_skiing` har fasetter i appen, men
+ * utledes IKKE hit — de kommer fortsatt bare via `sports`. Det er en bevisst
+ * avgrensning av denne endringen, ikke en glipp, men det betyr at `facets`
+ * ennå ikke er komplett nok til å stå alene.
  *
  * DETERMINISTISK og utledet PÅ NYTT hver kjøring: ingen tilstand, ingen
  * oppslag mot basen, kun taggene på elementet. En rad som mister
@@ -156,16 +171,35 @@ export function sportTokens(sportRaw: string | undefined): string[] {
  * ice_skate er BEVISST utelatt. Skøyter er en kategori, ikke en fasett, og
  * Sørmarka Arena skal ikke bære et token som ingen fasett leser. Legges inn
  * den dagen en skøytefasett faktisk finnes.
+ *
+ * SPARKESYKKEL OG RULLESKØYTER ER UTLEDET, IKKE LEST. Antakelsen — og
+ * målingene bak den — står i sin helhet på [SKATEBOARD_IMPLIES] i
+ * lib/facets.ts. Skal regelen endres, endres den der.
  */
 export function osmFacetTokens(t: OsmTags): FacetToken[] {
-    const facets: FacetToken[] = [];
+    const facets = new Set<FacetToken>();
     const piste = sportTokens(t['piste:type']);
-    if (piste.includes('downhill')) facets.push('alpint');
-    if (piste.includes('sled')) facets.push('aking');
-    if (piste.includes('playground')) facets.push('skileik');
-    if (sportTokens(t['mtb:type']).includes('downhill')) facets.push('downhill');
-    if (t.route === 'mtb') facets.push('terrengsykling');
-    return facets;
+    if (piste.includes('downhill')) facets.add('alpint');
+    if (piste.includes('sled')) facets.add('aking');
+    if (piste.includes('playground')) facets.add('skileik');
+    if (sportTokens(t['mtb:type']).includes('downhill')) facets.add('downhill');
+    if (t.route === 'mtb') facets.add('terrengsykling');
+
+    // Sport-taggen. sportTokens splitter på «;» og «,», så treffet er på HELE
+    // tokenet — «roller_skiing» (rulleski) blir aldri forvekslet med
+    // «roller_skating» (rulleskøyter), selv om strengene ligner.
+    const sport = sportTokens(t.sport);
+    // Enveis: skateboard gir de tre, bmx gir bare seg selv. Se
+    // [SKATEBOARD_IMPLIES] for hvorfor retningen ikke kan snus.
+    if (sport.includes('skateboard')) for (const f of SKATEBOARD_IMPLIES) facets.add(f);
+    if (sport.includes('bmx')) facets.add('bmx');
+    // De to taggene som faktisk finnes i OSM, når de finnes: lest, ikke utledet.
+    if (sport.includes('kick_scooter')) facets.add('sparkesykkel');
+    if (sport.includes('roller_skating')) facets.add('rulleskoyter');
+
+    // Set fordi reglene er additive og kan overlappe: et anlegg tagget
+    // «skateboard;kick_scooter» skal ha sparkesykkel én gang, ikke to.
+    return [...facets];
 }
 
 /**
@@ -844,6 +878,15 @@ async function importCity(
     if (sourceError || !source) throw new Error(`Kilden ${SOURCE_SLUG} mangler (kjør migrasjon 0005).`);
 
     // Rader låst av brukerrapporter/manuell korrigering skal aldri røres.
+    //
+    // Dette er også veien til å overstyre en UTLEDET fasett: viser antakelsen
+    // i [SKATEBOARD_IMPLIES] seg feil for et konkret anlegg, settes locked på
+    // raden og facets rettes for hånd. Raden filtreres bort under, så
+    // importen skriver aldri antakelsen tilbake.
+    //
+    // MERK at låsen er per RAD, ikke per felt: en låst rad slutter å få ALLE
+    // oppdateringer herfra — også et forbedret navn eller en rettet koordinat
+    // fra OSM. Det er prisen, og den er den samme som for `fjern_sted`.
     const { data: lockedRows, error: lockedError } = await db
         .from('activities')
         .select('external_id')
