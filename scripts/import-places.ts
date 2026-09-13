@@ -20,7 +20,8 @@
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
 import { SKATEBOARD_IMPLIES, type FacetToken } from '../lib/facets';
 import {
-    anyInsideOrNear,
+    anyInsideOrNearAny,
+    assembleRings,
     boundsOf,
     centerOfBounds,
     type GeoBounds,
@@ -72,8 +73,21 @@ interface OsmElement {
     center?: { lat: number; lon: number };
     tags?: OsmTags;
     // Fra `out geom` (kun Skianlegg-spørringen). Nodene i en way/relation.
+    // `out geom` legger geometri på WAYS her …
     geometry?: GeoPoint[];
     bounds?: GeoBounds;
+    // … men på RELASJONER ligger den per medlem, ikke på toppnivå. Å lese
+    // el.geometry på en relation gir undefined, og det var grunnen til at
+    // alle fire relasjonene i Oslo — Skimore Oslo med 11 heiser inkludert —
+    // falt ut før bevistesten i det hele tatt kjørte.
+    members?: {
+        type: 'node' | 'way' | 'relation';
+        ref: number;
+        role?: string;
+        geometry?: GeoPoint[];
+        lat?: number;
+        lon?: number;
+    }[];
     // Settes KUN av skianleggElements(), aldri av Overpass:
     /** Taggene til objektene som ligger i eller inntil polygonet. Driver
      *  fasettene — piste:type og mtb:type står på barneobjektene, ikke på
@@ -400,12 +414,20 @@ export const SKI_LIFT_VALUES =
 
 /** Hvor langt utenfor polygonets bounding box et bevis fortsatt teller.
  *
- *  Heiser er ofte tegnet fra parkeringsplassen utenfor polygonet og opp i
- *  bakken, så en ren containment-test ville mistet dem. 50 m er valgt lavt
- *  med vilje: tolleransen er den eneste tingen som kan la et NABOanlegg
+ *  Heiser og løyper er ofte tegnet fra parkeringsplassen utenfor polygonet og
+ *  opp i bakken, så en ren containment-test ville mistet dem. 50 m er valgt
+ *  lavt med vilje: tolleransen er den eneste tingen som kan la et NABOanlegg
  *  smitte over på et langrennsstadion, og Varingskollen har begge deler i
- *  samme dal. Hev den bare med en måling i hånda. */
-const SKI_EVIDENCE_TOLERANCE_M = 50;
+ *  samme dal.
+ *
+ *  Overstyrbar med PLACES_SKI_TOLERANCE_M. Den finnes fordi et polygon som
+ *  rapporteres med «0 bevis inne» kan ha to helt ulike årsaker — ingen
+ *  nedfart i det hele tatt, eller en nedfart som ligger like utenfor. To
+ *  tørrkjøringer med ulik tolleranse skiller dem, uten en kodeendring
+ *  imellom. */
+const SKI_EVIDENCE_TOLERANCE_M = Number(
+    process.env.PLACES_SKI_TOLERANCE_M ?? 50
+) || 50;
 
 /** Vakt mot nedlagte anlegg på en ellers aktiv nøkkel. */
 const NOT_DISUSED = '["disused"!~"."]["abandoned"!~"."]';
@@ -435,9 +457,26 @@ export const SKI_EVIDENCE_SELECTOR = [
     `nwr["route"="mtb"]${NOT_DISUSED}(area.a);`,
 ].join('\n  ');
 
-/** Punktene et element dekker: nodens eget punkt, eller way/relation-geometrien. */
-function elementPoints(el: OsmElement): GeoPoint[] {
+/**
+ * Punktene et element dekker.
+ *
+ * Rekkefølgen er ikke tilfeldig: RELASJONER må hentes fra medlemmene, fordi
+ * `out geom` ikke legger geometri på relasjonen selv. Uten medlems-grenen fikk
+ * en route=mtb-relasjon eller en løype mappet som relation null punkter, og
+ * talte dermed aldri som bevis.
+ */
+export function elementPoints(el: OsmElement): GeoPoint[] {
     if (el.geometry?.length) return el.geometry;
+    if (el.members?.length) {
+        const pts: GeoPoint[] = [];
+        for (const m of el.members) {
+            if (m.geometry?.length) pts.push(...m.geometry);
+            else if (typeof m.lat === 'number' && typeof m.lon === 'number') {
+                pts.push({ lat: m.lat, lon: m.lon });
+            }
+        }
+        if (pts.length) return pts;
+    }
     if (typeof el.lat === 'number' && typeof el.lon === 'number') {
         return [{ lat: el.lat, lon: el.lon }];
     }
@@ -445,10 +484,100 @@ function elementPoints(el: OsmElement): GeoPoint[] {
     return [];
 }
 
-/** Er dette elementet bevis for at polygonet er ALPINT (og ikke langrenn)? */
-export function isAlpineEvidence(t: OsmTags): boolean {
-    if (t.aerialway) return true;
-    return sportTokens(t['piste:type']).includes('downhill');
+/**
+ * RINGENE et polygon-element består av.
+ *
+ * Ways har én ring i `geometry`. Relasjoner (multipolygoner) har den ytre
+ * kanten delt på flere member-ways, hver med sin egen retning — de må sys
+ * sammen før de kan brukes til punkt-i-polygon.
+ *
+ * `inner`-medlemmer (hull) utelates bevisst. Et hull i et alpinanlegg er
+ * typisk en bygning eller et vann; å behandle det som «utenfor» ville bare
+ * gjort testen strengere enn nødvendig, og heisene ligger ikke i hullene.
+ *
+ * Tom liste betyr «kunne ikke bygge et polygon» — kallstedet må da falle
+ * tilbake på `bounds`, ikke forkaste elementet.
+ */
+export function polygonRings(el: OsmElement): GeoPoint[][] {
+    if (el.geometry && el.geometry.length >= 3) return [el.geometry];
+    if (!el.members?.length) return [];
+    const outer = el.members
+        .filter((m) => m.type === 'way' && (m.role ?? 'outer') !== 'inner')
+        .map((m) => m.geometry ?? [])
+        .filter((g) => g.length >= 2);
+    return assembleRings(outer);
+}
+
+/** En ring bygget av elementets bounds — siste utvei når sammensyingen
+ *  ikke lykkes (ødelagt multipolygon, eller medlemmer utenfor området).
+ *  Grovere enn den ekte kanten, men langt bedre enn å miste anlegget. */
+export function boundsRing(b: GeoBounds): GeoPoint[] {
+    return [
+        { lat: b.minlat, lon: b.minlon },
+        { lat: b.minlat, lon: b.maxlon },
+        { lat: b.maxlat, lon: b.maxlon },
+        { lat: b.maxlat, lon: b.minlon },
+        { lat: b.minlat, lon: b.minlon },
+    ];
+}
+
+/** Har noen av tagg-settene en utforløype? Det er det ENESTE som kvalifiserer
+ *  et polygon som alpinanlegg etter rettingen — se [skiVerdict]. */
+export function hasDownhillPiste(tagSets: readonly OsmTags[]): boolean {
+    return tagSets.some((t) => sportTokens(t['piste:type']).includes('downhill'));
+}
+
+/** Har noen av tagg-settene en skiheis? Kvalifiserer IKKE alene lenger, men
+ *  brukes til å rapportere polygoner som er verdt et manuelt blikk. */
+export function hasSkiLift(tagSets: readonly OsmTags[]): boolean {
+    return tagSets.some((t) => Boolean(t.aerialway));
+}
+
+/** Hoppanlegg-signal. Diskvalifiserer ikke — se [skiVerdict] — men forklarer
+ *  hvorfor et heis-treff uten utforløype trolig ikke er alpint. */
+export function hasSkiJump(tagSets: readonly OsmTags[]): boolean {
+    return tagSets.some(
+        (t) =>
+            sportTokens(t['piste:type']).includes('ski_jump') ||
+            sportTokens(t.sport).includes('ski_jumping')
+    );
+}
+
+export type SkiVerdict = 'alpint' | 'usikker-heis' | 'ikke-alpint';
+
+/**
+ * Er polygonet et ALPINANLEGG?
+ *
+ * KRAVET BLE STRAMMET ETTER TØRRKJØRINGEN MOT OSLO. Den gamle regelen var
+ * «heis ELLER utforløype», og den slapp inn tre av fem verifiserte anlegg som
+ * ikke er alpine: Holmenkollen nasjonalanlegg, Linderudkollen hoppbakke og
+ * Lia skisenter. Grunnen er enkel når man ser den: et hoppanlegg har heis opp
+ * til tilløpet. Heis er bevis på at noen fraktes oppover, ikke på at de kjører
+ * utfor.
+ *
+ * Ny regel: `piste:type=downhill` i eller inntil polygonet. Ingenting annet
+ * kvalifiserer.
+ *
+ * HVORFOR IKKE EN DISKVALIFISERING PÅ ski_jump/ski_jumping I STEDET: den ville
+ * vært en liste som kan være ufullstendig, og den ville tatt feil på et anlegg
+ * som har BÅDE hoppbakke og alpinbakke — som er vanlig. Med utforløype som
+ * krav trengs ingen slik liste: et hoppanlegg uten alpinbakke har ingen
+ * downhill-løype og faller ut av seg selv, mens et kombinert anlegg består på
+ * riktig grunnlag.
+ *
+ * PRISEN er recall: en liten kommunal bakke med heis der ingen har tagget
+ * nedfarten faller ut. Den taper vi bevisst framfor å hente inn hoppanlegg —
+ * men den forsvinner ikke i stillhet. Slike polygoner får «usikker-heis» og
+ * skrives ut i rapporten, så de kan seedes eller tagges i OSM.
+ */
+export function skiVerdict(
+    polygonTags: OsmTags,
+    memberTags: readonly OsmTags[]
+): SkiVerdict {
+    const alle = [polygonTags, ...memberTags];
+    if (hasDownhillPiste(alle)) return 'alpint';
+    if (hasSkiLift(alle)) return 'usikker-heis';
+    return 'ikke-alpint';
 }
 
 /**
@@ -480,31 +609,69 @@ out geom tags;`;
 
     const withPoints = evidence.map((el) => ({ el, points: elementPoints(el) }));
     const verified: OsmElement[] = [];
+    const rapport: string[] = [];
+
     for (const poly of polygons) {
-        const ring = poly.geometry ?? [];
-        // En node kan ikke være et anlegg med utstrekning. Overpass kan
-        // returnere en i `nwr`-settet; den har ingen ring å teste mot.
-        if (ring.length < 3) continue;
+        const id = `${poly.type}/${poly.id}`;
+        const navn = poly.tags?.name ?? '(uten navn)';
+        // Ways har ringen i `geometry`, relasjoner må sys sammen fra
+        // medlemmene. Lykkes ingen av delene, faller vi tilbake på Overpass
+        // sin egen bounds framfor å miste anlegget — det var nøyaktig den
+        // stille feilen som tok Skimore Oslo.
+        let rings = polygonRings(poly);
+        let grunnlag = poly.geometry?.length ? 'way-ring' : 'sydd ring';
+        if (rings.length === 0 && poly.bounds) {
+            rings = [boundsRing(poly.bounds)];
+            grunnlag = 'bounds (grov)';
+        }
+        if (rings.length === 0) {
+            rapport.push(`    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — ingen geometri`);
+            continue;
+        }
+
         const inside = withPoints.filter(({ points }) =>
-            anyInsideOrNear(points, ring, SKI_EVIDENCE_TOLERANCE_M)
+            anyInsideOrNearAny(points, rings, SKI_EVIDENCE_TOLERANCE_M)
         );
-        if (!inside.some(({ el }) => isAlpineEvidence(el.tags ?? {}))) continue;
-        const b = poly.bounds ?? boundsOf(ring);
-        if (!b) continue;
+        const memberTags = inside.map(({ el }) => el.tags ?? {});
+        const verdict = skiVerdict(poly.tags ?? {}, memberTags);
+
+        const b = poly.bounds ?? boundsOf(rings.flat());
+        if (!b) {
+            rapport.push(`    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — ingen bounds`);
+            continue;
+        }
+
+        // Hvert polygon får én linje med DOM og GRUNN. Begge feilene i den
+        // første tørrkjøringen var stille: den ene mistet det største
+        // anlegget, den andre la til noe som så riktig ut i en telling.
+        const hvorfor =
+            `${inside.length} bevis inne` +
+            (hasSkiJump([poly.tags ?? {}, ...memberTags]) ? ', hoppanlegg' : '') +
+            (verdict === 'usikker-heis' ? ', heis uten utforløype' : '');
+        rapport.push(
+            `    ${id.padEnd(18)} ${navn.padEnd(32)} ${verdict.padEnd(13)} ` +
+                `[${grunnlag}, ${hvorfor}]`
+        );
+
+        if (verdict !== 'alpint') continue;
         const c = centerOfBounds(b);
         verified.push({
             ...poly,
             // Se centerOfBounds: dette er bbox-senteret, altså midt i bakken
             // og ikke ved bunnstasjonen. Kjent og akseptert i v1.
             center: { lat: c.lat, lon: c.lon },
-            memberTags: inside.map(({ el }) => el.tags ?? {}),
+            memberTags,
             skiVerified: true,
         });
     }
+
+    const usikre = rapport.filter((r) => r.includes('usikker-heis')).length;
     console.log(
         `  ${city}/skianlegg   ${String(polygons.length).padStart(4)} polygoner, ` +
-            `${evidence.length} bevisobjekter → ${verified.length} verifiserte anlegg`
+            `${evidence.length} bevisobjekter → ${verified.length} alpinanlegg` +
+            (usikre ? `, ${usikre} med heis uten utforløype (se under)` : '')
     );
+    for (const linje of rapport) console.log(linje);
     return verified;
 }
 

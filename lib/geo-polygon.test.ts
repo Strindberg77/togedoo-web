@@ -10,6 +10,8 @@ import assert from 'node:assert/strict';
 
 import {
     anyInsideOrNear,
+    anyInsideOrNearAny,
+    assembleRings,
     boundsOf,
     centerOfBounds,
     insideOrNear,
@@ -138,4 +140,113 @@ test('en heis som krysser polygonkanten teller — den har punkter inne', () => 
         { lat: 60.005, lon: 10.01 }, // midt i anlegget
     ];
     assert.equal(anyInsideOrNear(heis, KVADRAT, 50), true);
+});
+
+// --- Multipolygon-sammensying (rettingen etter tørrkjøringen mot Oslo) ---
+//
+// FEIL 1 var at ALLE relasjoner falt ut, inkludert Skimore Oslo med 11 heiser.
+// Overpass legger ikke geometrien på relasjonen selv, men på hvert medlem, og
+// den ytre kanten er ofte delt på flere ways med hver sin retning.
+
+test('to halvdeler i samme retning sys til én ring', () => {
+    const a = [
+        { lat: 59.98, lon: 10.66 },
+        { lat: 59.98, lon: 10.7 },
+        { lat: 60.0, lon: 10.7 },
+    ];
+    const b = [
+        { lat: 60.0, lon: 10.7 },
+        { lat: 60.0, lon: 10.66 },
+        { lat: 59.98, lon: 10.66 },
+    ];
+    const ringer = assembleRings([a, b]);
+    assert.equal(ringer.length, 1);
+    assert.equal(ringer[0].length, 5, 'fire hjørner pluss lukkingen');
+    // Og den oppfører seg som et polygon.
+    assert.equal(pointInRing({ lat: 59.99, lon: 10.68 }, ringer[0]), true);
+    assert.equal(pointInRing({ lat: 59.5, lon: 10.68 }, ringer[0]), false);
+});
+
+test('et stykke med motsatt retning snus før det skjøtes', () => {
+    // Vanlig i OSM: medlemmene i et multipolygon har ikke felles retning.
+    const a = [
+        { lat: 59.98, lon: 10.66 },
+        { lat: 59.98, lon: 10.7 },
+        { lat: 60.0, lon: 10.7 },
+    ];
+    const bReversert = [
+        { lat: 59.98, lon: 10.66 },
+        { lat: 60.0, lon: 10.66 },
+        { lat: 60.0, lon: 10.7 },
+    ];
+    const ringer = assembleRings([a, bReversert]);
+    assert.equal(ringer.length, 1);
+    assert.equal(pointInRing({ lat: 59.99, lon: 10.68 }, ringer[0]), true);
+});
+
+test('et medlem som alt er en lukket ring slipper gjennom uendret', () => {
+    const lukket = [
+        { lat: 60.0, lon: 10.0 },
+        { lat: 60.0, lon: 10.02 },
+        { lat: 60.01, lon: 10.02 },
+        { lat: 60.01, lon: 10.0 },
+        { lat: 60.0, lon: 10.0 },
+    ];
+    const ringer = assembleRings([lukket]);
+    assert.equal(ringer.length, 1);
+    assert.deepEqual(ringer[0], lukket);
+});
+
+test('flere adskilte ringer holdes fra hverandre', () => {
+    // Et anlegg kan være tegnet som to atskilte flater.
+    const ring1 = [
+        { lat: 60.0, lon: 10.0 },
+        { lat: 60.0, lon: 10.01 },
+        { lat: 60.01, lon: 10.01 },
+        { lat: 60.0, lon: 10.0 },
+    ];
+    const ring2 = [
+        { lat: 61.0, lon: 11.0 },
+        { lat: 61.0, lon: 11.01 },
+        { lat: 61.01, lon: 11.01 },
+        { lat: 61.0, lon: 11.0 },
+    ];
+    assert.equal(assembleRings([ring1, ring2]).length, 2);
+});
+
+test('en åpen kant FORKASTES — en halv ring er ikke et polygon', () => {
+    // Ødelagt multipolygon i OSM, eller et medlem utenfor spørringens område.
+    // Å teste mot en åpen «ring» ville gitt vilkårlige treff; kallstedet må ha
+    // en fallback i stedet.
+    const halv = [
+        { lat: 59.98, lon: 10.66 },
+        { lat: 59.98, lon: 10.7 },
+        { lat: 60.0, lon: 10.7 },
+    ];
+    assert.deepEqual(assembleRings([halv]), []);
+});
+
+test('sammensying ignorerer stykker som er for korte', () => {
+    assert.deepEqual(assembleRings([[]]), []);
+    assert.deepEqual(assembleRings([[{ lat: 60, lon: 10 }]]), []);
+    assert.deepEqual(assembleRings([]), []);
+});
+
+test('anyInsideOrNearAny treffer når ETT av flere polygoner treffer', () => {
+    const ring1 = [
+        { lat: 60.0, lon: 10.0 },
+        { lat: 60.0, lon: 10.02 },
+        { lat: 60.01, lon: 10.02 },
+        { lat: 60.01, lon: 10.0 },
+    ];
+    const ring2 = [
+        { lat: 61.0, lon: 11.0 },
+        { lat: 61.0, lon: 11.02 },
+        { lat: 61.01, lon: 11.02 },
+        { lat: 61.01, lon: 11.0 },
+    ];
+    const iRing2 = [{ lat: 61.005, lon: 11.01 }];
+    assert.equal(anyInsideOrNearAny(iRing2, [ring1, ring2], 50), true);
+    assert.equal(anyInsideOrNearAny(iRing2, [ring1], 50), false);
+    assert.equal(anyInsideOrNearAny(iRing2, [], 50), false);
 });

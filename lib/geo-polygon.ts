@@ -154,3 +154,75 @@ export function anyInsideOrNear(
 ): boolean {
     return points.some((p) => insideOrNear(p, ring, toleranceMeters));
 }
+
+/** Som [anyInsideOrNear], men mot FLERE ringer — et multipolygon. */
+export function anyInsideOrNearAny(
+    points: readonly GeoPoint[],
+    rings: readonly (readonly GeoPoint[])[],
+    toleranceMeters: number
+): boolean {
+    return rings.some((ring) => anyInsideOrNear(points, ring, toleranceMeters));
+}
+
+/** To punkter er samme node når de er under ~1 cm fra hverandre.
+ *  Overpass skriver ut samme node med identiske desimaler i begge ways den
+ *  deles av, så eksakt likhet ville holdt — epsilon er billig forsikring. */
+const JOIN_EPS = 1e-7;
+
+function same(a: GeoPoint, b: GeoPoint): boolean {
+    return Math.abs(a.lat - b.lat) < JOIN_EPS && Math.abs(a.lon - b.lon) < JOIN_EPS;
+}
+
+function isClosed(ring: readonly GeoPoint[]): boolean {
+    return ring.length >= 4 && same(ring[0], ring[ring.length - 1]);
+}
+
+/**
+ * Setter sammen ringer fra løse linjestykker — et multipolygons ytre kant.
+ *
+ * HVORFOR DEN TRENGS: en OSM-relation lagrer ikke en ferdig ring. Den ytre
+ * kanten er ofte delt på flere member-ways, hver med sin egen retning, og
+ * Overpass leverer dem som de er. Ray casting på en usortert punktmengde gir
+ * tilfeldige svar — derfor må stykkene syes sammen FØR de testes.
+ *
+ * Algoritmen er grådig: start på et stykke, forleng i enden med et stykke som
+ * deler endepunkt (snu det om nødvendig), til ringen lukker seg. Finnes ingen
+ * fortsettelse, er ringen ufullstendig og FORKASTES — en åpen ring er ikke et
+ * polygon, og å teste mot den ville gitt vilkårlige treff.
+ *
+ * Kallstedet må derfor ha en fallback for relations der sammensyingen ikke
+ * lykkes (ødelagt multipolygon i OSM, eller medlemmer utenfor spørringens
+ * område). Der brukes Overpass sin egen `bounds`.
+ */
+export function assembleRings(
+    segments: readonly (readonly GeoPoint[])[]
+): GeoPoint[][] {
+    const pool = segments.filter((s) => s.length >= 2).map((s) => [...s]);
+    const rings: GeoPoint[][] = [];
+
+    while (pool.length > 0) {
+        let ring = pool.shift()!;
+        // Et medlem kan alt være en lukket ring (øy eller enkel ytterkant).
+        let extended = true;
+        while (!isClosed(ring) && extended) {
+            extended = false;
+            const end = ring[ring.length - 1];
+            for (let i = 0; i < pool.length; i++) {
+                const seg = pool[i];
+                if (same(seg[0], end)) {
+                    ring = ring.concat(seg.slice(1));
+                } else if (same(seg[seg.length - 1], end)) {
+                    ring = ring.concat([...seg].reverse().slice(1));
+                } else {
+                    continue;
+                }
+                pool.splice(i, 1);
+                extended = true;
+                break;
+            }
+        }
+        // Kun lukkede ringer er polygoner. Resten kastes bevisst.
+        if (isClosed(ring)) rings.push(ring);
+    }
+    return rings;
+}

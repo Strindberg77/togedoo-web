@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { anyInsideOrNear } from '../lib/geo-polygon';
+import { anyInsideOrNear, anyInsideOrNearAny, pointInRing } from '../lib/geo-polygon';
 
 process.env.PLACES_OVERPASS_BACKOFF_MS = '0';
 process.env.PLACES_OVERPASS_ENDPOINTS = 'https://speil-a.test/api';
@@ -82,19 +82,68 @@ test('bevis-selektoren henter mer enn kategoritesten trenger', async () => {
     assert.match(SKI_EVIDENCE_SELECTOR, /"route"="mtb"/);
 });
 
-test('isAlpineEvidence: heis eller utforløype, ikke langrenn', async () => {
-    const { isAlpineEvidence } = await load();
-    assert.equal(isAlpineEvidence({ aerialway: 'chair_lift' }), true);
-    assert.equal(isAlpineEvidence({ aerialway: 'rope_tow' }), true);
-    assert.equal(isAlpineEvidence({ 'piste:type': 'downhill' }), true);
-    assert.equal(isAlpineEvidence({ 'piste:type': 'downhill;nordic' }), true);
+test('skiVerdict: utforløype kvalifiserer, heis alene gjør det ikke', async () => {
+    // KRAVET BLE STRAMMET etter tørrkjøringen mot Oslo. «Heis ELLER
+    // utforløype» slapp inn Holmenkollen nasjonalanlegg, Linderudkollen
+    // hoppbakke og Lia skisenter — et hoppanlegg har heis opp til tilløpet.
+    const { skiVerdict } = await load();
 
-    assert.equal(isAlpineEvidence({ 'piste:type': 'nordic' }), false);
-    assert.equal(isAlpineEvidence({ 'piste:type': 'sled' }), false,
+    assert.equal(skiVerdict({}, [{ 'piste:type': 'downhill' }]), 'alpint');
+    assert.equal(skiVerdict({}, [{ 'piste:type': 'downhill;nordic' }]), 'alpint');
+    assert.equal(skiVerdict({ 'piste:type': 'downhill' }, []), 'alpint',
+        'polygonets egne tagger teller også');
+
+    // Heis uten utforløype: ikke importert, men RAPPORTERT.
+    assert.equal(skiVerdict({}, [{ aerialway: 'chair_lift' }]), 'usikker-heis');
+    assert.equal(skiVerdict({}, [{ aerialway: 'rope_tow' }]), 'usikker-heis');
+
+    assert.equal(skiVerdict({}, [{ 'piste:type': 'nordic' }]), 'ikke-alpint');
+    assert.equal(skiVerdict({}, [{ 'piste:type': 'sled' }]), 'ikke-alpint',
         'en akebakke alene gjør ikke polygonet til et alpinanlegg');
-    assert.equal(isAlpineEvidence({ 'mtb:type': 'downhill' }), false,
+    assert.equal(skiVerdict({}, [{ 'mtb:type': 'downhill' }]), 'ikke-alpint',
         'en sykkelløype er ikke bevis for SKIanlegg');
-    assert.equal(isAlpineEvidence({}), false);
+    assert.equal(skiVerdict({}, []), 'ikke-alpint');
+});
+
+test('FEIL 2: hoppanlegg med heis slipper IKKE inn lenger', async () => {
+    // Holmenkollen nasjonalanlegg (way/81300521) og Linderudkollen hoppbakke
+    // (way/64845752) ble begge VERIFISERT i den første tørrkjøringen.
+    // Mekanismen gjenskapt: hoppbakke + heis opp til tilløpet, ingen nedfart.
+    const { skiVerdict } = await load();
+    const hoppanlegg = skiVerdict({ 'piste:type': 'ski_jump' }, [
+        { aerialway: 'chair_lift' },
+        { 'piste:type': 'nordic' },
+    ]);
+    assert.equal(hoppanlegg, 'usikker-heis', 'rapporteres, importeres ikke');
+    assert.notEqual(hoppanlegg, 'alpint');
+
+    const medSportTagg = skiVerdict({ sport: 'ski_jumping' }, [{ aerialway: 't-bar' }]);
+    assert.notEqual(medSportTagg, 'alpint');
+});
+
+test('et kombinert anlegg med BÅDE hoppbakke og alpinbakke består', async () => {
+    // Grunnen til at ski_jump ikke er en diskvalifisering: en liste over
+    // hoppsignaler ville tatt feil her, og slike anlegg er vanlige.
+    const { skiVerdict } = await load();
+    assert.equal(
+        skiVerdict({ sport: 'ski_jumping' }, [
+            { 'piste:type': 'ski_jump' },
+            { 'piste:type': 'downhill' },
+            { aerialway: 'chair_lift' },
+        ]),
+        'alpint'
+    );
+});
+
+test('hoppsignalet regnes ut, men avgjør ingenting', async () => {
+    // Det brukes kun til rapportlinja, så et «usikker-heis» kan forklares.
+    const { hasSkiJump, hasDownhillPiste, hasSkiLift } = await load();
+    assert.equal(hasSkiJump([{ 'piste:type': 'ski_jump' }]), true);
+    assert.equal(hasSkiJump([{ sport: 'ski_jumping' }]), true);
+    assert.equal(hasSkiJump([{ 'piste:type': 'downhill' }]), false);
+    assert.equal(hasDownhillPiste([{ 'piste:type': 'downhill' }]), true);
+    assert.equal(hasSkiLift([{ aerialway: 'gondola' }]), true);
+    assert.equal(hasSkiLift([{ 'piste:type': 'downhill' }]), false);
 });
 
 test('matches krever romlig verifisering — tagger alene holder ikke', async () => {
@@ -129,8 +178,10 @@ test('is_free leser fee-taggen når OSM faktisk har den', async () => {
 
 test('Varingskollen skistadion faller ut, Kirkerudbakken består', async () => {
     // Det avgjørende tilfellet, gjenskapt med koordinater. Begge er
-    // landuse=recreation_ground; forskjellen er heisen.
-    const { isAlpineEvidence } = await load();
+    // landuse=recreation_ground. Etter innstrammingen er forskjellen
+    // NEDFARTEN, ikke heisen — et langrennsstadion med trekkheis ville
+    // tidligere passert.
+    const { skiVerdict } = await load();
 
     const polygon = [
         { lat: 60.0, lon: 10.0 },
@@ -138,34 +189,33 @@ test('Varingskollen skistadion faller ut, Kirkerudbakken består', async () => {
         { lat: 60.01, lon: 10.02 },
         { lat: 60.01, lon: 10.0 },
     ];
+    const inne = (pts: { lat: number; lon: number }[]) =>
+        anyInsideOrNear(pts, polygon, 50);
 
-    // Langrennsstadion: en nordic-løype inne i polygonet, ingen heis.
-    const langrenn = [{ tags: { 'piste:type': 'nordic' }, points: [{ lat: 60.005, lon: 10.01 }] }];
-    const langrennInne = langrenn.filter((e) => anyInsideOrNear(e.points, polygon, 50));
+    // Langrennsstadion: nordic-løype inne, ingen nedfart.
+    const langrenn = [
+        { tags: { 'piste:type': 'nordic' }, points: [{ lat: 60.005, lon: 10.01 }] },
+    ];
+    const langrennInne = langrenn.filter((e) => inne(e.points));
     assert.equal(langrennInne.length, 1, 'løypa ligger inne');
     assert.equal(
-        langrennInne.some((e) => isAlpineEvidence(e.tags)),
-        false,
-        'men ingenting av det er alpint — polygonet skal IKKE bli Skianlegg'
+        skiVerdict({}, langrennInne.map((e) => e.tags)),
+        'ikke-alpint'
     );
 
-    // Alpinsenter: samme polygon, men en stolheis krysser det.
+    // Alpinsenter: samme polygon, men en utforløype krysser det.
     const alpint = [
         { tags: { 'piste:type': 'nordic' }, points: [{ lat: 60.005, lon: 10.01 }] },
         {
-            tags: { aerialway: 'chair_lift' },
+            tags: { 'piste:type': 'downhill' },
             points: [
-                { lat: 59.998, lon: 9.998 }, // bunnstasjon utenfor polygonet
-                { lat: 60.008, lon: 10.015 }, // toppen inne
+                { lat: 59.998, lon: 9.998 }, // starter utenfor polygonet
+                { lat: 60.008, lon: 10.015 }, // ender inne
             ],
         },
     ];
-    const alpintInne = alpint.filter((e) => anyInsideOrNear(e.points, polygon, 50));
-    assert.equal(
-        alpintInne.some((e) => isAlpineEvidence(e.tags)),
-        true,
-        'heisen gjør polygonet til Skianlegg'
-    );
+    const alpintInne = alpint.filter((e) => inne(e.points));
+    assert.equal(skiVerdict({}, alpintInne.map((e) => e.tags)), 'alpint');
 });
 
 test('en heis langt unna smitter ikke over på nabopolygonet', async () => {
@@ -179,4 +229,158 @@ test('en heis langt unna smitter ikke over på nabopolygonet', async () => {
     ];
     const heisINabodalen = [{ lat: 60.05, lon: 10.06 }, { lat: 60.06, lon: 10.07 }];
     assert.equal(anyInsideOrNear(heisINabodalen, polygon, 50), false);
+});
+
+// ===========================================================================
+// FEIL 1: alle relasjoner falt ut
+// ===========================================================================
+//
+// Tørrkjøringen mot Oslo ga 4 av 4 relasjoner forkastet, inkludert
+// Skimore Oslo (relation/2259942) — Oslos største alpinanlegg med 11 heiser.
+//
+// MERK om testdataene: koordinatene under er KONSTRUERTE. Overpass er
+// blokkert fra containeren der denne koden ble skrevet, så de ekte
+// geometriene til de tolv Oslo-objektene kunne ikke hentes. ID-ene og
+// navnene er ekte; formene er gjenskapt for å reprodusere feilklassen.
+
+test('FEIL 1: en relasjon har ikke geometri på toppnivå — bare på medlemmene', async () => {
+    // Mekanismen, isolert. Dette er hele årsaken: `el.geometry` er undefined
+    // for en relation, og den gamle koden gjorde `poly.geometry ?? []` og
+    // forkastet alt med færre enn tre punkter.
+    const { polygonRings } = await load();
+
+    const relasjon = {
+        type: 'relation' as const,
+        id: 2259942,
+        tags: { landuse: 'winter_sports', name: 'Skimore Oslo' },
+        // Ytre kant delt på to ways, slik Overpass leverer dem.
+        members: [
+            {
+                type: 'way' as const,
+                ref: 1,
+                role: 'outer',
+                geometry: [
+                    { lat: 59.98, lon: 10.66 },
+                    { lat: 59.98, lon: 10.7 },
+                    { lat: 60.0, lon: 10.7 },
+                ],
+            },
+            {
+                type: 'way' as const,
+                ref: 2,
+                role: 'outer',
+                geometry: [
+                    { lat: 60.0, lon: 10.7 },
+                    { lat: 60.0, lon: 10.66 },
+                    { lat: 59.98, lon: 10.66 },
+                ],
+            },
+        ],
+    };
+
+    assert.equal(relasjon.geometry, undefined, 'forutsetningen: ingen toppnivå-geometri');
+    const rings = polygonRings(relasjon);
+    assert.equal(rings.length, 1, 'medlemmene skal sys til én ring');
+    assert.ok(rings[0].length >= 4);
+});
+
+test('en relasjon når helt fram til «alpint» med en nedfart inni', async () => {
+    // Regresjonen i sin helhet: geometri → romlig test → dom.
+    const { polygonRings, elementPoints, skiVerdict } = await load();
+    const relasjon = {
+        type: 'relation' as const,
+        id: 2259942,
+        tags: { landuse: 'winter_sports', name: 'Skimore Oslo' },
+        members: [
+            { type: 'way' as const, ref: 1, role: 'outer', geometry: [
+                { lat: 59.98, lon: 10.66 }, { lat: 59.98, lon: 10.7 }, { lat: 60.0, lon: 10.7 } ] },
+            { type: 'way' as const, ref: 2, role: 'outer', geometry: [
+                { lat: 60.0, lon: 10.7 }, { lat: 60.0, lon: 10.66 }, { lat: 59.98, lon: 10.66 } ] },
+        ],
+    };
+    const nedfart = {
+        type: 'way' as const,
+        id: 999,
+        tags: { 'piste:type': 'downhill' },
+        geometry: [{ lat: 59.99, lon: 10.68 }, { lat: 59.995, lon: 10.685 }],
+    };
+
+    const rings = polygonRings(relasjon);
+    const inne = anyInsideOrNearAny(elementPoints(nedfart), rings, 50);
+    assert.equal(inne, true, 'nedfarten ligger i multipolygonet');
+    assert.equal(skiVerdict(relasjon.tags, [nedfart.tags]), 'alpint');
+});
+
+test('en way er uendret — rettingen brøt ikke det som virket', async () => {
+    const { polygonRings } = await load();
+    const way = {
+        type: 'way' as const,
+        id: 97706914,
+        tags: { landuse: 'winter_sports', name: 'Jerikobakken' },
+        geometry: [
+            { lat: 59.9, lon: 10.6 },
+            { lat: 59.9, lon: 10.62 },
+            { lat: 59.91, lon: 10.62 },
+            { lat: 59.91, lon: 10.6 },
+        ],
+    };
+    assert.deepEqual(polygonRings(way), [way.geometry]);
+});
+
+test('bevis som er en RELASJON teller — route=mtb er typisk en relasjon', async () => {
+    // Samme feilklasse på bevissiden: en relasjon har ingen punkter på
+    // toppnivå, så den talte aldri som bevis og ga aldri fasetter.
+    const { elementPoints } = await load();
+    const mtbRute = {
+        type: 'relation' as const,
+        id: 4242,
+        tags: { route: 'mtb' },
+        members: [
+            { type: 'way' as const, ref: 7, role: '', geometry: [
+                { lat: 59.99, lon: 10.68 }, { lat: 59.991, lon: 10.681 } ] },
+        ],
+    };
+    assert.deepEqual(elementPoints(mtbRute), [
+        { lat: 59.99, lon: 10.68 },
+        { lat: 59.991, lon: 10.681 },
+    ]);
+});
+
+test('et ødelagt multipolygon faller tilbake på bounds i stedet for å forsvinne', async () => {
+    // En åpen ytre kant kan ikke sys. Da er bounds grovere, men å miste
+    // anlegget er verre — det var nettopp den stille feilen.
+    const { polygonRings, boundsRing } = await load();
+    const odelagt = {
+        type: 'relation' as const,
+        id: 1410326,
+        tags: { name: 'Leirskallen skisenter' },
+        bounds: { minlat: 59.86, minlon: 10.79, maxlat: 59.87, maxlon: 10.81 },
+        members: [
+            { type: 'way' as const, ref: 1, role: 'outer', geometry: [
+                { lat: 59.86, lon: 10.79 }, { lat: 59.86, lon: 10.81 } ] },
+        ],
+    };
+    assert.deepEqual(polygonRings(odelagt), [], 'åpen kant kan ikke sys');
+    const fallback = boundsRing(odelagt.bounds);
+    assert.equal(fallback.length, 5);
+    assert.equal(pointInRing({ lat: 59.865, lon: 10.8 }, fallback), true);
+});
+
+test('inner-medlemmer (hull) tas ikke med i ytterkanten', async () => {
+    const { polygonRings } = await load();
+    const medHull = {
+        type: 'relation' as const,
+        id: 1,
+        tags: {},
+        members: [
+            { type: 'way' as const, ref: 1, role: 'outer', geometry: [
+                { lat: 60.0, lon: 10.0 }, { lat: 60.0, lon: 10.02 },
+                { lat: 60.02, lon: 10.02 }, { lat: 60.02, lon: 10.0 },
+                { lat: 60.0, lon: 10.0 } ] },
+            { type: 'way' as const, ref: 2, role: 'inner', geometry: [
+                { lat: 60.005, lon: 10.005 }, { lat: 60.005, lon: 10.01 },
+                { lat: 60.01, lon: 10.01 }, { lat: 60.005, lon: 10.005 } ] },
+        ],
+    };
+    assert.equal(polygonRings(medHull).length, 1, 'kun ytterkanten');
 });
