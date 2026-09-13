@@ -160,13 +160,70 @@ test('lekeplass-taggen playground forveksles ikke med piste:type=playground', as
     assert.deepEqual(osmFacetTokens({ 'piste:type': 'playground' }), ['skileik']);
 });
 
-test('ingen kategori er koblet på facetsFor ennå', async () => {
-    // Standardregelen er kategoriuavhengig, så kroken skal stå ubrukt til en
-    // kategori faktisk trenger en annen regel. Feiler denne, har noen koblet
-    // på en override — og da bør de også ha skrevet en test for den.
+test('kun Skianlegg er koblet på facetsFor', async () => {
+    // Standardregelen er kategoriuavhengig, så kroken skal stå ubrukt med
+    // mindre kategorien trenger noe annet. Skianlegg gjør det: fasettene
+    // ligger på MEDLEMMENE (nedfartene, akebakken, sykkelløypene), ikke på
+    // polygonet. Kobles en til på, skal den også ha egne tester.
     const { PLACE_CATEGORIES } = await load();
     const koblet = PLACE_CATEGORIES.filter((c) => c.facetsFor).map((c) => c.key);
-    assert.deepEqual(koblet, []);
+    assert.deepEqual(koblet, ['skianlegg']);
+});
+
+test('osmFacetTokensFrom unionerer flere tagg-sett', async () => {
+    // Motivasjonen: piste:type står på barneobjektene. Kalt med polygonets
+    // egne tagger ville osmFacetTokens gitt tom liste, og hver alpinrad ville
+    // fått facets = '{}' — feilen kolonnen ble bygget for å unngå.
+    const { osmFacetTokensFrom } = await load();
+    assert.deepEqual(
+        osmFacetTokensFrom([
+            { landuse: 'winter_sports' }, // polygonet selv: ingen fasett
+            { 'piste:type': 'downhill' },
+            { 'piste:type': 'sled' },
+            { 'piste:type': 'playground' },
+        ]).sort(),
+        ['aking', 'alpint', 'skileik']
+    );
+});
+
+test('osmFacetTokensFrom gir hvert token én gang', async () => {
+    // Ti nedfarter i samme anlegg skal gi «alpint», ikke «alpint» ti ganger.
+    const { osmFacetTokensFrom } = await load();
+    const mange = Array.from({ length: 10 }, () => ({ 'piste:type': 'downhill' }));
+    assert.deepEqual(osmFacetTokensFrom(mange), ['alpint']);
+});
+
+test('osmFacetTokensFrom: tom inndata gir tom liste', async () => {
+    const { osmFacetTokensFrom } = await load();
+    assert.deepEqual(osmFacetTokensFrom([]), []);
+    assert.deepEqual(osmFacetTokensFrom([{}, {}]), []);
+});
+
+test('et anlegg med bade ski og sykkel far alle fire — Trysil-tilfellet', async () => {
+    // Hele poenget med at Trysil blir ÉN rad: fasettene sier hva du kan gjøre
+    // der, ikke hvilken sesong det er. Reglene er additive.
+    const { osmFacetTokensFrom } = await load();
+    assert.deepEqual(
+        osmFacetTokensFrom([
+            { landuse: 'winter_sports' },
+            { 'piste:type': 'downhill' },
+            { 'piste:type': 'sled' },
+            { 'mtb:type': 'downhill' },
+            { route: 'mtb' },
+        ]).sort(),
+        ['aking', 'alpint', 'downhill', 'terrengsykling']
+    );
+});
+
+test('sammenslaaing til ett taggobjekt ville tapt data — derfor en variant', async () => {
+    // Dokumenterer valget i 0b. Slår man medlemstaggene sammen til ETT
+    // objekt, kolliderer to nedfarter på nøkkelen `piste:type` og den ene
+    // overskriver den andre. Unionen over sett taper ingenting.
+    const { osmFacetTokensFrom, osmFacetTokens } = await load();
+    const medlemmer = [{ 'piste:type': 'downhill' }, { 'piste:type': 'sled' }];
+    const naivtSammenslatt = Object.assign({}, ...medlemmer);
+    assert.deepEqual(osmFacetTokens(naivtSammenslatt), ['aking'], 'downhill ble overskrevet');
+    assert.deepEqual(osmFacetTokensFrom(medlemmer).sort(), ['aking', 'alpint']);
 });
 
 test('utledningen emitterer bare tokens fra vokabularet', async () => {

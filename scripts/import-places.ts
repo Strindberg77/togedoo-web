@@ -19,6 +19,13 @@
 // være synlig med lenke til openstreetmap.org/copyright.
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
 import { SKATEBOARD_IMPLIES, type FacetToken } from '../lib/facets';
+import {
+    anyInsideOrNear,
+    boundsOf,
+    centerOfBounds,
+    type GeoBounds,
+    type GeoPoint,
+} from '../lib/geo-polygon';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
 
 // Speilene kan overstyres via env (komma-separert) — nyttig for selvhostet
@@ -64,6 +71,18 @@ interface OsmElement {
     lon?: number;
     center?: { lat: number; lon: number };
     tags?: OsmTags;
+    // Fra `out geom` (kun Skianlegg-spørringen). Nodene i en way/relation.
+    geometry?: GeoPoint[];
+    bounds?: GeoBounds;
+    // Settes KUN av skianleggElements(), aldri av Overpass:
+    /** Taggene til objektene som ligger i eller inntil polygonet. Driver
+     *  fasettene — piste:type og mtb:type står på barneobjektene, ikke på
+     *  polygonet. */
+    memberTags?: OsmTags[];
+    /** Polygonet har bestått heis-/utforløype-testen. Uten denne ville
+     *  `matches` gjort et hvilket som helst ski-tagget polygon til Skianlegg,
+     *  også et langrennsstadion som kom inn via en annen kategoris spørring. */
+    skiVerified?: boolean;
 }
 
 /**
@@ -203,6 +222,35 @@ export function osmFacetTokens(t: OsmTags): FacetToken[] {
 }
 
 /**
+ * [osmFacetTokens] over FLERE tagg-sett, unionert.
+ *
+ * HVORFOR DEN TRENGS: osmFacetTokens leser ett element. For en POLYGON-
+ * forankret rad — et alpinanlegg — står `piste:type` og `mtb:type` på
+ * barneobjektene (nedfartene, akebakken, sykkelløypene), ikke på polygonet.
+ * Kalt med polygonets egne tagger ville funksjonen gitt tom liste, og hver
+ * importert alpinrad ville fått `facets = '{}'` — nøyaktig feilen kolonnen
+ * ble bygget for å unngå.
+ *
+ * Valget falt på en variant her framfor å slå sammen medlemstaggene til ett
+ * syntetisk tagg-objekt på kallstedet. To grunner:
+ *
+ *  1. Sammenslåing TAPER data. To nedfarter med `piste:type=downhill` og
+ *     `piste:type=sled` ville kollidert på samme nøkkel, og den ene ville
+ *     overskrevet den andre. Semikolon-liming («downhill;sled») ville
+ *     virket her, men bare fordi disse taggene tilfeldigvis er
+ *     semikolon-separerbare — det er ikke en egenskap ved OSM-tagger
+ *     generelt, og regelen ville vært et felt unna å ryke.
+ *  2. Et syntetisk tagg-objekt kunne lett endt i `osm_tags`-kolonnen, som
+ *     skal inneholde RÅ tagger fra ett objekt. Å aldri lage et slikt objekt
+ *     er billigere enn å passe på at det ikke lekker.
+ */
+export function osmFacetTokensFrom(tagSets: readonly OsmTags[]): FacetToken[] {
+    const facets = new Set<FacetToken>();
+    for (const t of tagSets) for (const f of osmFacetTokens(t)) facets.add(f);
+    return [...facets];
+}
+
+/**
  * Sport-tokens som gjør et sports_centre til et GENERISK flerbruksanlegg.
  * Samme presedens som [GENERIC_BALL_SPORTS]: en hall tagget «climbing;multi»
  * er en flerbrukshall som også har klatrevegg, ikke et klatresenter — den
@@ -333,6 +381,133 @@ export function resolveIsFree(tags: OsmTags, categoryDefault: true | null): bool
     return categoryDefault;
 }
 
+/**
+ * HEISVERDIENE som teller som bevis på et alpinanlegg.
+ *
+ * Eksportert for test — samme presedens som [resolveIsFree] og [sportTokens]:
+ * en testkopi av lista ville kunnet drive fra den ekte.
+ *
+ * `cable_car` er BEVISST utelatt: Krossobanen og Fløibanen er turistbaner,
+ * ikke skiheiser. En generisk `["aerialway"]` ville gjort Fløyen til et
+ * alpinanlegg.
+ *
+ * Livssyklus-prefikser trenger ingen egen vakt her: `disused:aerialway=...`
+ * har ingen `aerialway`-nøkkel i det hele tatt, så regex-en treffer den ikke.
+ * Vakten mot `disused=yes` PÅ en aktiv nøkkel ligger i selektorene under.
+ */
+export const SKI_LIFT_VALUES =
+    'drag_lift|t-bar|j-bar|platter|rope_tow|magic_carpet|chair_lift|gondola|mixed_lift';
+
+/** Hvor langt utenfor polygonets bounding box et bevis fortsatt teller.
+ *
+ *  Heiser er ofte tegnet fra parkeringsplassen utenfor polygonet og opp i
+ *  bakken, så en ren containment-test ville mistet dem. 50 m er valgt lavt
+ *  med vilje: tolleransen er den eneste tingen som kan la et NABOanlegg
+ *  smitte over på et langrennsstadion, og Varingskollen har begge deler i
+ *  samme dal. Hev den bare med en måling i hånda. */
+const SKI_EVIDENCE_TOLERANCE_M = 50;
+
+/** Vakt mot nedlagte anlegg på en ellers aktiv nøkkel. */
+const NOT_DISUSED = '["disused"!~"."]["abandoned"!~"."]';
+
+/** Polygonene som KAN være et alpinanlegg. Fire tagge-mønstre, fordi norsk
+ *  OSM ikke bruker ett: winter_sports, recreation_ground med en piste:*-tagg,
+ *  recreation_ground med sport~ski, og sports_centre med sport~ski.
+ *  Varingskollen har bare `piste:lit`, Skimore Kongsberg bare
+ *  `piste:difficulty` — derfor tre separate piste:*-linjer. */
+export const SKI_AREA_SELECTOR = [
+    `nwr["landuse"="winter_sports"]${NOT_DISUSED}(area.a);`,
+    `nwr["landuse"="recreation_ground"]["piste:type"]${NOT_DISUSED}(area.a);`,
+    `nwr["landuse"="recreation_ground"]["piste:lit"]${NOT_DISUSED}(area.a);`,
+    `nwr["landuse"="recreation_ground"]["piste:difficulty"]${NOT_DISUSED}(area.a);`,
+    `nwr["landuse"="recreation_ground"]["sport"~"ski",i]${NOT_DISUSED}(area.a);`,
+    `nwr["leisure"="sports_centre"]["sport"~"ski",i]${NOT_DISUSED}(area.a);`,
+].join('\n  ');
+
+/** BEVISENE. Hentes én gang per by og brukes til to ting:
+ *   - kategoritesten: heis ELLER piste:type=downhill i/inntil polygonet
+ *   - fasettene: ALT som ligger inne, inkludert sled, playground og mtb
+ *  Derfor er settet bredere enn testen krever. */
+export const SKI_EVIDENCE_SELECTOR = [
+    `nwr["aerialway"~"^(${SKI_LIFT_VALUES})$"]${NOT_DISUSED}(area.a);`,
+    `nwr["piste:type"]${NOT_DISUSED}(area.a);`,
+    `nwr["mtb:type"]${NOT_DISUSED}(area.a);`,
+    `nwr["route"="mtb"]${NOT_DISUSED}(area.a);`,
+].join('\n  ');
+
+/** Punktene et element dekker: nodens eget punkt, eller way/relation-geometrien. */
+function elementPoints(el: OsmElement): GeoPoint[] {
+    if (el.geometry?.length) return el.geometry;
+    if (typeof el.lat === 'number' && typeof el.lon === 'number') {
+        return [{ lat: el.lat, lon: el.lon }];
+    }
+    if (el.center) return [{ lat: el.center.lat, lon: el.center.lon }];
+    return [];
+}
+
+/** Er dette elementet bevis for at polygonet er ALPINT (og ikke langrenn)? */
+export function isAlpineEvidence(t: OsmTags): boolean {
+    if (t.aerialway) return true;
+    return sportTokens(t['piste:type']).includes('downhill');
+}
+
+/**
+ * Henter Skianlegg for én by, ferdig romlig verifisert.
+ *
+ * Skiller seg fra alle andre kategorier på tre måter, og det er derfor den
+ * har sin egen henter i stedet for å gå gjennom standardveien:
+ *
+ *  1. `out geom` i stedet for `out center` — punkt-i-polygon trenger ringen.
+ *     Senteret regnes ut selv fra `bounds`, så resten av rørledningen ser
+ *     nøyaktig det samme som fra `out center`.
+ *  2. En ANDRE spørring etter bevis (heiser og løyper), som ikke blir rader.
+ *  3. Et romlig filter: et alpinanlegg og et langrennsstadion er tagget likt.
+ *
+ * Varingskollen skistadion (piste:type=nordic, ingen heis) faller ut her.
+ * Kirkerudbakken (recreation_ground med heis) består.
+ */
+async function skianleggElements(city: string): Promise<OsmElement[]> {
+    const q = (selector: string) => `[out:json][timeout:180];
+area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
+(
+  ${selector}
+);
+out geom tags;`;
+
+    const polygons = await fetchOverpass(q(SKI_AREA_SELECTOR), `${city}/skianlegg:omrade`);
+    await sleep(OVERPASS_QUERY_PAUSE_MS);
+    const evidence = await fetchOverpass(q(SKI_EVIDENCE_SELECTOR), `${city}/skianlegg:bevis`);
+
+    const withPoints = evidence.map((el) => ({ el, points: elementPoints(el) }));
+    const verified: OsmElement[] = [];
+    for (const poly of polygons) {
+        const ring = poly.geometry ?? [];
+        // En node kan ikke være et anlegg med utstrekning. Overpass kan
+        // returnere en i `nwr`-settet; den har ingen ring å teste mot.
+        if (ring.length < 3) continue;
+        const inside = withPoints.filter(({ points }) =>
+            anyInsideOrNear(points, ring, SKI_EVIDENCE_TOLERANCE_M)
+        );
+        if (!inside.some(({ el }) => isAlpineEvidence(el.tags ?? {}))) continue;
+        const b = poly.bounds ?? boundsOf(ring);
+        if (!b) continue;
+        const c = centerOfBounds(b);
+        verified.push({
+            ...poly,
+            // Se centerOfBounds: dette er bbox-senteret, altså midt i bakken
+            // og ikke ved bunnstasjonen. Kjent og akseptert i v1.
+            center: { lat: c.lat, lon: c.lon },
+            memberTags: inside.map(({ el }) => el.tags ?? {}),
+            skiVerified: true,
+        });
+    }
+    console.log(
+        `  ${city}/skianlegg   ${String(polygons.length).padStart(4)} polygoner, ` +
+            `${evidence.length} bevisobjekter → ${verified.length} verifiserte anlegg`
+    );
+    return verified;
+}
+
 interface PlaceCategoryDef {
     key: string;
     /** Kategoriens navn OG standard tittel-prefiks. */
@@ -341,7 +516,15 @@ interface PlaceCategoryDef {
     category: string;
     audience: string;
     selector: string;
-    matches: (t: OsmTags) => boolean;
+    /**
+     * Andre argument er ELEMENTET, ikke bare taggene. Alle kategorier unntatt
+     * Skianlegg ignorerer det og avgjør på tagger alene. Skianlegg trenger
+     * det fordi taggene ikke er nok: et langrennsstadion og et alpinanlegg
+     * ser identiske ut, og skillet er den romlige verifiseringen som
+     * [skianleggElements] har gjort. Uten den ville et ski-tagget polygon som
+     * kom inn via idrettshall-spørringen blitt hevdet av Skianlegg her.
+     */
+    matches: (t: OsmTags, el?: OsmElement) => boolean;
     /**
      * Kategoriens prisantakelse når OSM ikke sier noe. Typen er `true | null`,
      * IKKE boolean: en kategori kan påstå at noe er gratis, aldri at det
@@ -371,7 +554,13 @@ interface PlaceCategoryDef {
      * kategori har en fasett som bare gir mening der (f.eks. et anlegg der
      * en tagg betyr noe annet enn ellers).
      */
-    facetsFor?: (t: OsmTags) => FacetToken[];
+    facetsFor?: (el: OsmElement) => FacetToken[];
+    /**
+     * Erstatter standardhentingen (selector + `out center tags`) for denne
+     * kategorien. Satt kun for Skianlegg, som trenger `out geom`, en ekstra
+     * bevisspørring og et romlig filter.
+     */
+    fetchElements?: (city: string) => Promise<OsmElement[]>;
 }
 
 // Rekkefølgen er match-prioritet (et element kategoriseres av første treff).
@@ -547,6 +736,34 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         titleLabelFor: (t: OsmTags) => climbTitleLabel(t.sport),
     },
     {
+        // MÅ STÅ FØR idrettshall. Rekkefølgen er match-prioritet, og
+        // idrettshall er en ukvalifisert oppsamler for leisure=sports_centre.
+        // Står Skianlegg etter, havner de 13 sports_centre-alpinanleggene i
+        // Idrettshall — trolig nøyaktig slik Saupstad skisenter har havnet der.
+        key: 'skianlegg',
+        label: 'Skianlegg',
+        category: 'Skianlegg',
+        audience: 'For alle',
+        selector: SKI_AREA_SELECTOR,
+        fetchElements: skianleggElements,
+        // Taggene alene kan ikke avgjøre dette — se [PlaceCategoryDef.matches].
+        // skiVerified settes kun av skianleggElements, etter at heis eller
+        // utforløype er funnet i eller inntil polygonet.
+        matches: (_t: OsmTags, el?: OsmElement) => el?.skiVerified === true,
+        // Fasettene kommer fra MEDLEMMENE: piste:type og mtb:type står på
+        // nedfartene og løypene, ikke på polygonet. Polygonets egne tagger tas
+        // med fordi et lite anlegg av og til bærer piste:type selv.
+        facetsFor: (el: OsmElement) =>
+            osmFacetTokensFrom([el.tags ?? {}, ...(el.memberTags ?? [])]),
+        // UKJENT, ikke «betalt». Alpinanlegg med heis koster nesten alltid
+        // penger, men kategorien rommer også kommunale barnebakker med gratis
+        // rope_tow, akebakker og skileikområder. En default på `false` ville
+        // vært den samme feilen som museene hadde: et «Betalt inngang»-merke
+        // uten grunnlag, som er verre enn ingen påstand. resolveIsFree leser
+        // fee=yes/no der OSM faktisk har den.
+        isFree: null,
+    },
+    {
         key: 'idrettshall',
         label: 'Idrettshall',
         category: 'Idrettshall',
@@ -678,7 +895,11 @@ area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
   ${cat.selector}
 );
 out center tags;`;
-        const elements = await fetchOverpass(query, `${city}/${cat.key}`);
+        // Skianlegg har egen henter: den trenger `out geom`, en ekstra
+        // bevisspørring og et romlig filter. Alle andre går standardveien.
+        const elements = cat.fetchElements
+            ? await cat.fetchElements(city)
+            : await fetchOverpass(query, `${city}/${cat.key}`);
         let added = 0;
         for (const el of elements) {
             const id = `${el.type}/${el.id}`;
@@ -745,7 +966,7 @@ export async function buildRows(
     const perCategory = new Map<string, number>();
     for (const el of elements) {
         const tags = el.tags ?? {};
-        const cat = cats.find((c) => c.matches(tags));
+        const cat = cats.find((c) => c.matches(tags, el));
         const pos = coords(el);
         if (!cat || !pos) continue;
         if ((perCategory.get(cat.key) ?? 0) >= limit) continue;
@@ -793,7 +1014,7 @@ export async function buildRows(
             url: `https://www.openstreetmap.org/${el.type}/${el.id}`,
             osm_tags: tags,
             // Utledes på nytt hver kjøring, fra taggene alene.
-            facets: cat.facetsFor?.(tags) ?? osmFacetTokens(tags),
+            facets: cat.facetsFor?.(el) ?? osmFacetTokens(tags),
             status: 'published',
             titleSource: titled.source,
             geocodeError: titled.geocodeError,
