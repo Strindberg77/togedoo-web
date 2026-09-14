@@ -120,17 +120,60 @@ export const OSM_CLAIMS: readonly OsmClaim[] = [
         note: 'Seed har verifisert startpunkt ved Frognerseteren; importen gir bbox-senteret midt i løypa.',
     },
     // ─────────────────────────────────────────────────────────────────────
-    // VENTER PÅ OSLO-SEEDEN FOR ALPINT (egen oppgave). Id-ene er kjent, men
-    // en claim kan ikke skrives før seed-raden finnes — [assertClaimsResolve]
-    // ville feilet med én gang. Skriv dem sammen med seed-entryene:
+    // OSLO-ALPINT (sep. 2026): FEM CLAIMS FOR TO OSM-OBJEKTER.
     //
-    //   relation/2259942  →  Tryvann OG Wyller          (to rader, én relasjon)
-    //   relation/1762278  →  Trollvannskleiva OG Grefsenkleiva (to rader, én relasjon)
+    // SLIK UTTRYKKES ÉN-TIL-MANGE. Én claim er ett PAR — (OSM-objekt,
+    // kuratert rad) — ikke en nøkkel. Eier fem rader to objekter, er det fem
+    // claims. [claimsByOsmId] grupperer dem, og [applyOsmClaims] gir ÉN
+    // hoppet-over-linje per objekt med alle eierne listet.
     //
-    // Det er disse to som gjør én-til-mange til et krav og ikke et
-    // tankeeksperiment: anleggene har hvert sitt startpunkt en halvtimes
-    // kjøretur fra hverandre, og ett bbox-senter er feil for begge.
+    // ALTERNATIVET, én claim per objekt med en liste av externalId-er, ble
+    // forkastet: da måtte [assertClaimsResolve] løpe gjennom en liste i en
+    // liste, og — viktigere — en claim ville ikke lenger vært det den er, en
+    // påstand om at ÉN navngitt rad dekker stedet. Med fem claims fanger
+    // vakten at `wyller` forsvinner fra seeden. Med to hadde bare `tryvann`
+    // og `trollvannskleiva` vært voktet, og de tre andre kunne blitt slettet
+    // uten at noe sa fra.
     //
+    // expectName BESKRIVER OSM-OBJEKTET, ikke raden. Alle tre
+    // Skimore-claimene venter «Skimore Oslo», for det er det relasjonen
+    // heter. Radene heter noe annet med vilje: «Skimore» er et
+    // heiskortsystem, ikke et stedsnavn.
+    {
+        osmId: 'relation/2259942',
+        source: 'kuratert-vintertilbud',
+        externalId: 'tryvann',
+        expectName: 'Skimore Oslo',
+        note: 'OSM har én relasjon per driftsselskap; importen ga bbox-senteret 59.9915, 10.6510 for tre anlegg med hvert sitt startpunkt.',
+    },
+    {
+        osmId: 'relation/2259942',
+        source: 'kuratert-vintertilbud',
+        externalId: 'wyller',
+        expectName: 'Skimore Oslo',
+        note: 'Wyller har egen parkering i Sørkedalen, 30 minutters kjøretur fra Tryvann. Samme relasjon i OSM.',
+    },
+    {
+        osmId: 'relation/2259942',
+        source: 'kuratert-vintertilbud',
+        externalId: 'tommkleiva',
+        expectName: 'Skimore Oslo',
+        note: 'Tommkleiva har eget startpunkt ved Øvresetertjern. Samme relasjon i OSM.',
+    },
+    {
+        osmId: 'relation/1762278',
+        source: 'kuratert-vintertilbud',
+        externalId: 'trollvannskleiva',
+        expectName: 'Oslo Skisenter',
+        note: 'OSM har én relasjon per driftsselskap; importen ga bbox-senteret 59.9567, 10.8097 for to anlegg med parkering i hver sin ende av Grefsenåsen.',
+    },
+    {
+        osmId: 'relation/1762278',
+        source: 'kuratert-vintertilbud',
+        externalId: 'grefsenkleiva',
+        expectName: 'Oslo Skisenter',
+        note: 'Grefsenkleiva har egen parkering mot Østreheimsveien. Samme relasjon i OSM.',
+    },
     // ─────────────────────────────────────────────────────────────────────
     // IKKE SKREVET, FORDI ID-EN IKKE ER SLÅTT OPP:
     //
