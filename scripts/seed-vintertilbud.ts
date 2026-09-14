@@ -26,6 +26,7 @@
 // geokoding (for steder uten gateadresse, som en akebakke).
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
 import type { FacetToken } from '../lib/facets';
+import { assertClaimsResolve } from '../lib/osm-claims';
 
 // Vinter-splitt (steg 5): «Vinter & innendørs» er avviklet og fordelt på fem
 // nye kategorier + inne/ute-flagg (is_indoor). Nøkkel = seed.externalId. Alle
@@ -470,6 +471,14 @@ function toRow(seed: VinterSeed, sourceId: string, lat: number, lng: number, ver
 async function main() {
     const dryRun = process.argv.includes('--dry-run');
     const noGeocode = process.argv.includes('--no-geocode');
+
+    // EIERSKAP: noen av disse radene eier et OSM-objekt, så importen ikke
+    // lager en rad ved siden av (lib/osm-claims.ts). Claimen peker på
+    // externalId her; døpes et entry om eller slettes uten at claimen
+    // følger med, undertrykker importen et OSM-objekt til fordel for en rad
+    // som ikke finnes — og stedet forsvinner helt fra appen, i stillhet.
+    // Kastes hardt, og fanges i --dry-run, som splitFor().
+    assertClaimsResolve(SOURCE.slug, SEED.map((s) => s.externalId));
 
     const resolved: { seed: VinterSeed; lat: number; lng: number; verified: boolean; note: string }[] = [];
     const warnings: string[] = [];
