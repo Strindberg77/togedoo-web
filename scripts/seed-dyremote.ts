@@ -23,6 +23,7 @@
 // Rader med locked=true (brukerrapport «finnes ikke») røres aldri, som i
 // OSM-importen.
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
+import { assertClaimsResolve } from '../lib/osm-claims';
 
 const SOURCE = {
     slug: 'kuratert-dyremote',
@@ -240,6 +241,12 @@ function toRow(seed: DyremoteSeed, sourceId: string, lat: number, lng: number, v
 async function main() {
     const dryRun = process.argv.includes('--dry-run');
     const noGeocode = process.argv.includes('--no-geocode');
+
+    // Samme vakt som i seed-vintertilbud: en claim mot denne kilden må peke
+    // på et externalId som finnes her. Ingen claims er skrevet mot
+    // kuratert-dyremote i dag — vakten står her for den dagen en besøksgård
+    // også finnes i OSM. Se lib/osm-claims.ts.
+    assertClaimsResolve(SOURCE.slug, SEED.map((s) => s.externalId));
 
     // Løs koordinater per sted: Kartverket-geokoding, ellers fallback.
     const resolved: { seed: DyremoteSeed; lat: number; lng: number; verified: boolean; note: string }[] = [];

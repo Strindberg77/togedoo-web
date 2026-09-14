@@ -30,6 +30,13 @@ import {
     type GeoBounds,
     type GeoPoint,
 } from '../lib/geo-polygon';
+import {
+    claimNameMatches,
+    claimsByOsmId,
+    OSM_CLAIMS,
+    staleClaims,
+    type OsmClaim,
+} from '../lib/osm-claims';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
 import { sanitizeWebsite } from '../lib/website';
 
@@ -1786,17 +1793,95 @@ export function rowsMissingCityAnchor(rows: readonly ImportRow[]): ImportRow[] {
     );
 }
 
+export interface ClaimSkip {
+    el: OsmElement;
+    /** Alle kuraterte rader som eier objektet. Flere ved én-til-mange. */
+    claims: OsmClaim[];
+    /** OSM-navnet stemte ikke med noen av claimenes [expectName]. */
+    navnAvvik: boolean;
+}
+
+export interface ClaimFilter {
+    kept: OsmElement[];
+    skipped: ClaimSkip[];
+}
+
+/**
+ * LAG 1 i eierskapsmekanismen: fjerner elementer en kuratert rad allerede
+ * eier, før de rekker å bli rader.
+ *
+ * Nøkkelen er `type/id`, altså nøyaktig den strengen [buildRows] skriver til
+ * `external_id`. Det er ikke en tilfeldighet, men hele kontrakten: en claim
+ * navngir en EXTERNAL_ID. For Aking betyr det klyngens ANKER — en claim på
+ * ett av Korketrekkerens 14 segmenter ville aldri truffet noe, og ville stått
+ * som «traff ingenting» i rapporten.
+ *
+ * Ren funksjon, uten nettverk og uten database, så både filtreringen og
+ * navnekontrollen kan testes mot den ekte claim-lista.
+ */
+export function applyOsmClaims(
+    elements: readonly OsmElement[],
+    claims: readonly OsmClaim[] = OSM_CLAIMS
+): ClaimFilter {
+    const index = claimsByOsmId(claims);
+    const kept: OsmElement[] = [];
+    const skipped: ClaimSkip[] = [];
+    for (const el of elements) {
+        const treff = index.get(`${el.type}/${el.id}`);
+        if (!treff) {
+            kept.push(el);
+            continue;
+        }
+        skipped.push({
+            el,
+            claims: treff,
+            // Avvik bare når INGEN av claimene kjenner igjen navnet. Ved
+            // én-til-mange holder det at én gjør det: Tryvann og Wyller deler
+            // relasjon, og relasjonens navn kan bare stemme med den ene.
+            navnAvvik: !treff.some((c) => claimNameMatches(c, el.tags?.name)),
+        });
+    }
+    return { kept, skipped };
+}
+
+/**
+ * LAG 2: radene importen faktisk har lov til å skrive.
+ *
+ * Trukket ut av upsert-blokka og eksportert nettopp fordi den ER mekanismen
+ * som hindrer at en erstattet OSM-rad gjenoppstår. Låsen settes av
+ * 'unpublish' i lib/moderation.ts (status='rejected' + locked=true), og
+ * 'publish' frigir den igjen — begge uten SQL-editoren.
+ *
+ * Backstop, ikke hovedvei: fjernes en claim ved et uhell, stopper låsen
+ * fortsatt skrivingen. Låsen alene er derimot IKKE nok, fordi den slås opp
+ * per kilde — se toppen av lib/osm-claims.ts.
+ */
+export function writableRows(
+    rows: readonly ImportRow[],
+    locked: ReadonlySet<string>
+): ImportRow[] {
+    return rows.filter((r) => !locked.has(r.external_id));
+}
+
 export async function buildRows(
     city: string,
     elements: OsmElement[],
     limit: number,
     cats: PlaceCategory[] = PLACE_CATEGORIES
 ): Promise<ImportRow[]> {
+    // NULLTE pass: fjern objekter en kuratert rad allerede eier. Må skje FØR
+    // kategorivalget, ellers teller et claimet objekt mot kategoriens `limit`
+    // og fortrenger en ekte rad.
+    // Rapporteringen ligger i [importCity], som er eneste produksjonskaller og
+    // det eneste stedet som kan samle opp claims på tvers av byer. Her
+    // filtreres det bare — også når buildRows kalles direkte fra en test.
+    const { kept } = applyOsmClaims(elements);
+
     // Første pass: velg elementer (kategori + koordinater + limit), så vi
     // vet totalt geokodingsbehov før vi starter — gir ekte fremdriftslinje.
     const selected: { el: OsmElement; cat: (typeof PLACE_CATEGORIES)[number]; pos: { lat: number; lng: number } }[] = [];
     const perCategory = new Map<string, number>();
-    for (const el of elements) {
+    for (const el of kept) {
         const tags = el.tags ?? {};
         const cat = cats.find((c) => c.matches(tags, el));
         const pos = coords(el);
@@ -1883,10 +1968,31 @@ async function importCity(
     dryRun: boolean,
     limit: number,
     cats: PlaceCategory[] = PLACE_CATEGORIES
-) {
+): Promise<{ rows: number; seenClaims: string[] }> {
     console.log(`\n=== ${city} ===`);
     const elements = await overpassCity(city, cats);
     console.log(`  Overpass ga ${elements.length} elementer`);
+
+    // EIERSKAP: hvilke objekter en kuratert rad allerede eier. buildRows
+    // filtrerer dem selv; dette kallet er for RAPPORTEN og for å kunne si til
+    // slutt hvilke claims som aldri traff noe. Se lib/osm-claims.ts.
+    const { skipped } = applyOsmClaims(elements);
+    for (const s of skipped) {
+        const eiere = s.claims.map((c) => `${c.source}/${c.externalId}`).join(' + ');
+        console.log(
+            `  claim ${s.el.type}/${s.el.id} «${s.el.tags?.name ?? '(uten navn)'}» ` +
+                `→ ingen rad, eies av ${eiere}` +
+                (s.claims.length > 1 ? ` (${s.claims.length} kuraterte rader, én relasjon)` : '')
+        );
+        if (s.navnAvvik) {
+            console.log(
+                `    ⚠ NAVNEAVVIK: OSM sier «${s.el.tags?.name ?? '(uten navn)'}», claimen ` +
+                    `ventet «${s.claims.map((c) => c.expectName ?? '(uten navn)').join('» / «')}». ` +
+                    `Feil id i en claim undertrykker FEIL sted — sjekk lib/osm-claims.ts.`
+            );
+        }
+    }
+    const seenClaims = skipped.map((s) => `${s.el.type}/${s.el.id}`);
     const rows = await buildRows(city, elements, limit, cats);
 
     // Vaktbikkje + tittelkilde-fordeling per kategori. 'kun-kategori' med
@@ -1959,7 +2065,7 @@ async function importCity(
     if (dryRun) {
         console.log(`  [dry-run] Ingen databaseskriving. Revers-geokoding KJØRES (uten cache hvis Supabase-env mangler).`);
         console.log(`  [dry-run] ${rows.length} rader klare.`);
-        return rows.length;
+        return { rows: rows.length, seenClaims };
     }
 
     if (!isDatahubConfigured()) throw new Error('SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY mangler.');
@@ -2001,7 +2107,7 @@ async function importCity(
         );
     }
 
-    const writable = rows.filter((r) => !locked.has(r.external_id));
+    const writable = writableRows(rows, locked);
     if (locked.size) console.log(`  Hopper over ${rows.length - writable.length} låste rader.`);
 
     for (let i = 0; i < writable.length; i += 500) {
@@ -2019,7 +2125,7 @@ async function importCity(
         .update({ last_synced_at: new Date().toISOString(), last_sync_status: `ok: ${writable.length} steder (${city})` })
         .eq('id', source.id);
     console.log(`  Skrev ${writable.length} rader.`);
-    return writable.length;
+    return { rows: writable.length, seenClaims };
 }
 
 export interface ImportArgs {
@@ -2100,9 +2206,12 @@ async function main() {
     // Trondheim) skal IKKE avbryte hele kjøringen — de øvrige byene fullføres
     // og skrives, og de feilede oppsummeres til slutt med exit-kode 1.
     const failed: { city: string; error: string }[] = [];
+    const seenClaims = new Set<string>();
     for (const city of cities) {
         try {
-            total += await importCity(city, dryRun, limit, cats);
+            const res = await importCity(city, dryRun, limit, cats);
+            total += res.rows;
+            for (const id of res.seenClaims) seenClaims.add(id);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             console.error(`  ✗ ${city} FEILET — hoppes over, fortsetter til neste by: ${msg}`);
@@ -2135,6 +2244,35 @@ async function main() {
         // operatør/CI at minst én by mangler ved å avslutte med kode 1.
         process.exitCode = 1;
     }
+    // DØDE CLAIMS. Ei liste som vedlikeholdes for hånd rotner i stillhet, og
+    // en claim som ikke lenger treffer noe undertrykker ingenting — men den
+    // ser ut som om den gjør det. Ved nasjonal skala (250 alpinklynger,
+    // 89 akebakker) er dette den eneste måten å oppdage at en relasjon er
+    // splittet eller slettet i OSM.
+    //
+    // FORBEHOLDET skrives ut hver gang, fordi tallet er meningsløst uten det:
+    // en kjøring for én by henter ikke objekter i andre kommuner.
+    const doede = staleClaims(seenClaims);
+    if (doede.length) {
+        const heleKjoringen = cities.length === DEFAULT_CITIES.length && !catArg;
+        console.log(
+            `\nCLAIMS SOM IKKE TRAFF NOE (${doede.length} av ${OSM_CLAIMS.length}):`
+        );
+        for (const c of doede) {
+            console.log(`  ${c.osmId.padEnd(20)} → ${c.source}/${c.externalId}`);
+        }
+        console.log(
+            heleKjoringen
+                ? '  Kjøringen dekket alle byer og alle kategorier. En claim her treffer ' +
+                      'ikke lenger noe OSM-objekt importen henter — enten er objektet ' +
+                      'delt/slettet i OSM, eller claimen peker på noe annet enn den ' +
+                      'external_id-en raden ville fått (for Aking: ankeret, ikke et segment).'
+                : `  Kjøringen dekket bare ${cities.join(', ')}${catArg ? ` og kategori ${catArg}` : ''} — ` +
+                      'en claim utenfor rekkevidden er IKKE død. Kjør uten --city og ' +
+                      '--category før du fjerner noe.'
+        );
+    }
+
     console.log('Husk ODbL-attribusjon der dataene vises: «© OpenStreetMap contributors».');
 }
 
