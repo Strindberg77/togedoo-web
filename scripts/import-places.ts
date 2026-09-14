@@ -31,12 +31,19 @@ import {
     type GeoPoint,
 } from '../lib/geo-polygon';
 import {
+    fingerprint,
+    planForCities,
+    runCoversEverything,
+    type ImportChunk,
+} from '../lib/import-chunks';
+import {
     claimNameMatches,
     claimsByOsmId,
     OSM_CLAIMS,
     staleClaims,
     type OsmClaim,
 } from '../lib/osm-claims';
+import { FileStore, NullStore, type WorkStore } from './work-store';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
 import { sanitizeWebsite } from '../lib/website';
 
@@ -62,7 +69,9 @@ const OVERPASS_BACKOFF_MS = (() => {
     return parsed.length ? parsed : [5000, 15000, 45000];
 })();
 // 2a: kort høflighetspause mellom de per-kategori-spørringene innen én by.
-const OVERPASS_QUERY_PAUSE_MS = 1000;
+// Overstyrbar av samme grunn som de andre pausene: bekreftelsen av et tomt
+// svar legger på én pause til per tom kategori, og tester skal ikke sove.
+const OVERPASS_QUERY_PAUSE_MS = Number(process.env.PLACES_OVERPASS_QUERY_PAUSE_MS ?? 1000);
 // Kartverket punktsøk svarte 502 under 100 ms-kadens og var treg (timeouts)
 // ved 400 ms (jul. 2026). Pausen dekker nå OGSÅ Nominatim-bydeloppslaget
 // (i-omraade), som krever ≥1 req/s — derfor 1100 ms default. Pausen kjøres
@@ -119,6 +128,26 @@ interface OsmElement {
      *  ikke ett av flere segmenter, og det er ikke en alpinbakke. Se
      *  [akingVerdict] for hvorfor taggene alene ikke er nok. */
     akingVerified?: boolean;
+}
+
+/**
+ * HENTESTEGETS utdata for én kategori: navngitte sett med rå OSM-elementer.
+ *
+ * Et KART og ikke en liste, fordi Skianlegg henter to sett med ulik rolle —
+ * `omrade` blir rader, `bevis` gjør det aldri. Etter sømmen går settene
+ * gjennom mellomleddet, og da må rollen overleve turen. Alle andre
+ * kategorier bruker ett sett, `main`.
+ */
+export type FetchSets = Record<string, OsmElement[]>;
+
+/** BERIKELSESSTEGETS utdata for én kategori. */
+export interface EnrichOutput {
+    /** Elementene som kan bli rader. */
+    elements: OsmElement[];
+    /** Linjer til rapporten, med innrykk. */
+    rapport: string[];
+    /** Én oppsummeringslinje, uten innrykk og uten kategoriprefiks. */
+    summary?: string;
 }
 
 /**
@@ -617,7 +646,7 @@ export function skiVerdict(
  * Varingskollen skistadion (piste:type=nordic, ingen heis) faller ut her.
  * Kirkerudbakken (recreation_ground med heis) består.
  */
-async function skianleggElements(city: string): Promise<OsmElement[]> {
+async function skianleggFetch(chunk: ImportChunk): Promise<FetchSets> {
     // `out geom`, IKKE `out geom tags`. Se [OUT_GEOM_TAGS] — ordet `tags`
     // slår av medlemslista, og uten den har ingen relasjon her noen gang hatt
     // medlemmer. [polygonRings] falt derfor alltid til `bounds (grov)`, og
@@ -628,16 +657,33 @@ async function skianleggElements(city: string): Promise<OsmElement[]> {
     // kategori med grønn tørrkjøring — `grunnlag`-kolonnen i rapporten viser
     // forskjellen, så kjør en ny tørrkjøring for Skianlegg før neste import.
     const q = (selector: string) => `[out:json][timeout:180];
-area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
+${chunk.overpassArea};
 (
   ${selector}
 );
 out geom;`;
 
-    const polygons = await fetchOverpass(q(SKI_AREA_SELECTOR), `${city}/skianlegg:omrade`);
+    const omrade = await fetchOverpass(q(SKI_AREA_SELECTOR), `${chunk.label}/skianlegg:omrade`);
     await sleep(OVERPASS_QUERY_PAUSE_MS);
-    const evidence = await fetchOverpass(q(SKI_EVIDENCE_SELECTOR), `${city}/skianlegg:bevis`);
+    const bevis = await fetchOverpass(q(SKI_EVIDENCE_SELECTOR), `${chunk.label}/skianlegg:bevis`);
+    // TO navngitte sett. Grunnen til at [FetchSets] er et kart og ikke en
+    // liste: bevisene blir aldri rader, de er inndata til den romlige testen
+    // i berikelsen, og de to må derfor kunne skilles etter at de har vært
+    // innom mellomleddet.
+    return { omrade, bevis };
+}
 
+/**
+ * BERIKELSEN for Skianlegg: den romlige verifiseringen, uten nettverk.
+ *
+ * Skilt fra hentingen i sømmen (sep. 2026). Den avgjør hvilke polygoner som
+ * ER alpinanlegg, og det er en TOLKNING av hentede data — ikke en henting.
+ * Skillet er det som gjør at fase 3 kan bytte kilde uten å røre denne
+ * funksjonen, og at den kan testes uten Overpass.
+ */
+export function skianleggVerify(sets: FetchSets): EnrichOutput {
+    const polygons = sets.omrade ?? [];
+    const evidence = sets.bevis ?? [];
     const withPoints = evidence.map((el) => ({ el, points: elementPoints(el) }));
     const verified: OsmElement[] = [];
     const rapport: string[] = [];
@@ -697,13 +743,14 @@ out geom;`;
     }
 
     const usikre = rapport.filter((r) => r.includes('usikker-heis')).length;
-    console.log(
-        `  ${city}/skianlegg   ${String(polygons.length).padStart(4)} polygoner, ` +
+    return {
+        elements: verified,
+        rapport,
+        summary:
+            `${String(polygons.length).padStart(4)} polygoner, ` +
             `${evidence.length} bevisobjekter → ${verified.length} alpinanlegg` +
-            (usikre ? `, ${usikre} med heis uten utforløype (se under)` : '')
-    );
-    for (const linje of rapport) console.log(linje);
-    return verified;
+            (usikre ? `, ${usikre} med heis uten utforløype (se under)` : ''),
+    };
 }
 
 // ─────────────────────────────────── AKING ───────────────────────────────────
@@ -1235,24 +1282,38 @@ export function akingClusters(elements: readonly OsmElement[]): AkingResult {
 /** Henter Aking for én by. `out geom` fordi grupperingen og kartpunktet
  *  trenger geometrien, og fordi relasjonsforankringen trenger MEDLEMMENE —
  *  se [OUT_GEOM_TAGS] for hvorfor ordet `tags` ikke får stå der. */
-async function akingElements(city: string): Promise<OsmElement[]> {
-    const raw = await fetchOverpass(
+async function akingFetch(chunk: ImportChunk): Promise<FetchSets> {
+    const main = await fetchOverpass(
         `[out:json][timeout:180];
-area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
+${chunk.overpassArea};
 (
   ${AKING_SELECTOR}
 );
 out geom;`,
-        `${city}/aking:objekter`
+        `${chunk.label}/aking:objekter`
     );
+    return { main };
+}
+
+/**
+ * BERIKELSEN for Aking: klyngingen, uten nettverk.
+ *
+ * KLYNGING ER IKKE HENTING. Det er den avgjørelsen som gjør de 14
+ * Korketrekker-segmentene til ÉN rad, og den er ren tolkning av data vi
+ * allerede har. Lå den i hentesteget, ville et bytte av kilde i fase 3 tatt
+ * den med seg — og den er det mest særegne i hele kategorien.
+ */
+export function akingEnrich(sets: FetchSets): EnrichOutput {
+    const raw = sets.main ?? [];
     const { anchors, rapport, domTelling } = akingClusters(raw);
-    console.log(
-        `  ${city}/aking       ${String(raw.length).padStart(4)} objekter → ` +
+    return {
+        elements: anchors,
+        rapport,
+        summary:
+            `${String(raw.length).padStart(4)} objekter → ` +
             `${anchors.length} akebakker (avvist: ${domTelling['alpint-blandet']} alpint-blandet, ` +
-            `${domTelling.lekeplass} lekeplass, ${domTelling['uten-navn']} uten navn)`
-    );
-    for (const linje of rapport) console.log(linje);
-    return anchors;
+            `${domTelling.lekeplass} lekeplass, ${domTelling['uten-navn']} uten navn)`,
+    };
 }
 
 interface PlaceCategoryDef {
@@ -1304,10 +1365,23 @@ interface PlaceCategoryDef {
     facetsFor?: (el: OsmElement) => FacetToken[];
     /**
      * Erstatter standardhentingen (selector + `out center tags`) for denne
-     * kategorien. Satt kun for Skianlegg, som trenger `out geom`, en ekstra
-     * bevisspørring og et romlig filter.
+     * kategorien. Satt for Skianlegg (to spørringer, `out geom`) og Aking
+     * (én spørring, `out geom`).
+     *
+     * HENTER BARE. Alt som TOLKER de hentede dataene hører hjemme i
+     * [enrichSets] — se der for hvorfor skillet er verdt en ekstra funksjon.
      */
-    fetchElements?: (city: string) => Promise<OsmElement[]>;
+    fetchSets?: (chunk: ImportChunk) => Promise<FetchSets>;
+    /**
+     * Gjør hentede sett om til elementene som kan bli rader.
+     *
+     * Satt for Skianlegg (romlig verifisering) og Aking (klynging). Begge er
+     * RENE funksjoner uten nettverk, og det er poenget med sømmen: de
+     * overlever at kilden byttes i fase 3, og de kan testes uten Overpass.
+     *
+     * Standarden er identitet på settet `main`.
+     */
+    enrichSets?: (sets: FetchSets) => EnrichOutput;
     /**
      * Tagg-nøklene stedets navn leses fra, i prioritert rekkefølge.
      * Default [DEFAULT_NAME_TAGS] = kun `name`, som er det alle kategorier
@@ -1387,7 +1461,8 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         // snevrere påstand enn kategorien bærer.
         audience: 'For alle',
         selector: AKING_SELECTOR,
-        fetchElements: akingElements,
+        fetchSets: akingFetch,
+        enrichSets: akingEnrich,
         // Første og eneste kategori som leser noe annet enn `name`.
         // way/558688673 Sollibakken bærer piste:name og falt ut som «uten
         // navn» i tørrkjøringen sep. 2026. Grupperingen leser SAMME liste.
@@ -1549,7 +1624,8 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         category: 'Skianlegg',
         audience: 'For alle',
         selector: SKI_AREA_SELECTOR,
-        fetchElements: skianleggElements,
+        fetchSets: skianleggFetch,
+        enrichSets: skianleggVerify,
         // Taggene alene kan ikke avgjøre dette — se [PlaceCategoryDef.matches].
         // skiVerified settes kun av skianleggElements, etter at heis eller
         // utforløype er funnet i eller inntil polygonet.
@@ -1657,11 +1733,24 @@ export async function fetchOverpass(query: string, label: string): Promise<OsmEl
                 // er siste forsøk brukt, kaster løkka under som ved enhver annen
                 // feil, og importCity isolerer den til én by.
                 const remark = typeof json.remark === 'string' ? json.remark.trim() : '';
-                if (!remark) return (json.elements ?? []) as OsmElement[];
-                console.log(
-                    `    ${label}: ${endpoint} svarte 200 med remark «${remark}» ` +
-                        `(forsøk ${i + 1}/${attempts.length})`
-                );
+                // `elements` MÅ være en liste. Var det før `json.elements ?? []`,
+                // og da var et 200-svar UTEN elements-nøkkel — en proxy-feilside,
+                // et gateway-svar i JSON — ikke til å skille fra et tomt område.
+                // Samme feilklasse som remark-sjekken over, funnet sep. 2026 da
+                // det tomme hentesteget ble undersøkt. Retryes på lik linje.
+                if (!remark && !Array.isArray(json.elements)) {
+                    console.log(
+                        `    ${label}: ${endpoint} svarte 200 uten elements-liste ` +
+                            `(forsøk ${i + 1}/${attempts.length})`
+                    );
+                } else if (!remark) {
+                    return json.elements as OsmElement[];
+                } else {
+                    console.log(
+                        `    ${label}: ${endpoint} svarte 200 med remark «${remark}» ` +
+                            `(forsøk ${i + 1}/${attempts.length})`
+                    );
+                }
             } else if (!OVERPASS_RETRY_STATUS.has(res.status)) {
                 // Kun forbigående statuser er verdt å prøve på nytt; andre er faste feil.
                 throw new Error(`Overpass HTTP ${res.status} (${label})`);
@@ -1686,36 +1775,158 @@ export async function fetchOverpass(query: string, label: string): Promise<OsmEl
 /// sammensatte kommunegrense. Resultatene slås sammen og dedupes på
 /// type/id; første kategori som treffer et element vinner (samme match-
 /// prioritet som før, siden PLACE_CATEGORIES itereres i rekkefølge).
-async function overpassCity(
-    city: string,
+/**
+ * ÉN RAD I MELLOMLEDDET etter hentesteget.
+ *
+ * Flat, og med korte nøkler, fordi det blir én linje NDJSON per OSM-objekt og
+ * en nasjonal kjøring er ~39 500 av dem (osmium mot Geofabrik, sep. 2026).
+ * `c` = kategorinøkkel, `s` = settnavn, `e` = det rå elementet.
+ *
+ * KATEGORIEN LAGRES, selv om match-prioriteten avgjøres på nytt i berikelsen.
+ * Grunnen er at et element bare kan berikes av den kategorien som hentet det:
+ * Skianleggs bevissett gir ingen mening for Aking, og et bevisobjekt skal
+ * aldri bli en rad. Uten `c` og `s` er den informasjonen tapt i det øyeblikket
+ * settene skrives til disk.
+ */
+export interface FetchRecord {
+    c: string;
+    s: string;
+    e: OsmElement;
+}
+
+/**
+ * HENTESTEGET. Rå OSM-elementer for én chunk, per kategori og sett.
+ *
+ * ÉN SPØRRING PER KATEGORI, som før: hver delspørring (område + én selektor)
+ * er langt lettere enn område + sju selektorer, og holder seg under
+ * gateway-timeouten.
+ *
+ * Steget TOLKER ingenting. Verken dedupliseringen, klyngingen, den romlige
+ * verifiseringen eller claims hører hjemme her — de er berikelse, og de skal
+ * kunne kjøres om uten å hente på nytt. Det er hele grunnen til at sømmen går
+ * nettopp her.
+ */
+export async function fetchChunk(
+    chunk: ImportChunk,
     cats: PlaceCategory[] = PLACE_CATEGORIES
-): Promise<OsmElement[]> {
-    const seen = new Set<string>();
-    const all: OsmElement[] = [];
+): Promise<{ records: FetchRecord[]; emptySets: string[] }> {
+    const records: FetchRecord[] = [];
+    const emptySets: string[] = [];
     for (const cat of cats) {
-        const query = `[out:json][timeout:180];
-area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
+        const hent = async (): Promise<FetchSets> => {
+            const query = `[out:json][timeout:180];
+${chunk.overpassArea};
 (
   ${cat.selector}
 );
 out center tags;`;
-        // Skianlegg har egen henter: den trenger `out geom`, en ekstra
-        // bevisspørring og et romlig filter. Alle andre går standardveien.
-        const elements = cat.fetchElements
-            ? await cat.fetchElements(city)
-            : await fetchOverpass(query, `${city}/${cat.key}`);
+            // Skianlegg og Aking har egne hentere: de trenger `out geom`, og
+            // Skianlegg i tillegg en ekstra bevisspørring.
+            return cat.fetchSets
+                ? await cat.fetchSets(chunk)
+                : { main: await fetchOverpass(query, `${chunk.label}/${cat.key}`) };
+        };
+
+        let sets = await hent();
+        let antall = Object.values(sets).reduce((n, liste) => n + liste.length, 0);
+
+        // ─────────────────────────────────────────────────────────────────
+        // TOM ER BÅDE ET GYLDIG SVAR OG DET MEST SANNSYNLIGE SYMPTOMET PÅ EN
+        // FEIL, og ingenting i svaret skiller de to. Derfor tas en OBSERVASJON
+        // TIL i stedet for å gjette.
+        //
+        // Observert sep. 2026: Oslo/park fikk 504 på første forsøk, deretter et
+        // helt ordinært 200 med `elements: []` og ingen remark. fetchOverpass
+        // hadde ingen grunn til å mistenke noe — og samme spørring ga 34
+        // objekter både før og etter. Sømmen skrev da to tomme steg og markerte
+        // begge ferdig, og neste --resume gjenopptok null rader uten å røre
+        // nettet.
+        //
+        // Bekreftelsen koster ÉN ekstra spørring, og bare for kategorier som
+        // faktisk kom tomme tilbake. Den gjør ikke en legitimt tom chunk til en
+        // evig retry: bekreftet tom er et ENDELIG svar, steget markeres ferdig,
+        // og --resume gjenbruker det.
+        //
+        // TERSKELEN ER HELE KATEGORIEN, ikke det enkelte settet. Ga ETT av
+        // Skianleggs to sett data, har området løst seg og Overpass har svart —
+        // det er nettopp det som skulle verifiseres. At `omrade` er tom mens
+        // `bevis` har 4000 objekter er normalt i en kommune uten alpinanlegg,
+        // og å kjøre den dyre bevisspørringen på nytt for det ville vært å
+        // betale mest der signalet er svakest. Slike sett rapporteres likevel
+        // (se [emptySets]).
+        let merknad = '';
+        if (antall === 0) {
+            await sleep(OVERPASS_QUERY_PAUSE_MS);
+            const andre = await hent();
+            const antallAndre = Object.values(andre).reduce((n, liste) => n + liste.length, 0);
+            if (antallAndre > 0) {
+                merknad =
+                    `  ← FØRSTE SVAR VAR TOMT, andre ga ${antallAndre}: ` +
+                    'forbigående tomt svar, ikke et tomt område';
+                sets = andre;
+                antall = antallAndre;
+            } else {
+                merknad = '  ← BEKREFTET TOM (målt to ganger)';
+            }
+        }
+
+        const deler: string[] = [];
+        for (const [navn, elementer] of Object.entries(sets)) {
+            for (const e of elementer) records.push({ c: cat.key, s: navn, e });
+            deler.push(`${elementer.length} ${navn}`);
+            if (elementer.length === 0) emptySets.push(`${cat.key}/${navn}`);
+        }
+        // Kategorier uten et eneste sett (en henter som returnerte {}) ville
+        // ellers vært usynlige — verken tomme sett eller elementer.
+        if (Object.keys(sets).length === 0) emptySets.push(`${cat.key}/(ingen sett)`);
+        console.log(
+            `  hent ${chunk.label}/${cat.key.padEnd(11)} ${deler.join(', ') || 'ingen sett'}${merknad}`
+        );
+        await sleep(OVERPASS_QUERY_PAUSE_MS);
+    }
+    return { records, emptySets };
+}
+
+/** Mellomleddet tilbake til navngitte sett per kategori. */
+export function groupFetchRecords(records: readonly FetchRecord[]): Map<string, FetchSets> {
+    const m = new Map<string, FetchSets>();
+    for (const r of records) {
+        let sets = m.get(r.c);
+        if (!sets) m.set(r.c, (sets = {}));
+        (sets[r.s] ??= []).push(r.e);
+    }
+    return m;
+}
+
+/**
+ * Slår kategorienes berikede elementer sammen til ÉN liste, deduplisert på
+ * `type/id`, i kategorirekkefølge.
+ *
+ * LØFTET UORENDRET UT AV overpassCity. Dedupliseringen var et
+ * hente-biprodukt før sømmen, men den er en TOLKNING: den avgjør hvilken
+ * kategori som får et objekt som to selektorer treffer, og svaret er «den
+ * første i PLACE_CATEGORIES». Samme regel som [buildRows] bruker når den
+ * kaller `cats.find(...)`, og de to må aldri komme i utakt — derfor er
+ * rekkefølgen her kategorirekkefølgen, ikke noe annet.
+ */
+export function mergeEnriched(
+    perCategory: readonly { cat: PlaceCategory; elements: readonly OsmElement[] }[]
+): { merged: OsmElement[]; addedPerCategory: Map<string, number> } {
+    const seen = new Set<string>();
+    const merged: OsmElement[] = [];
+    const addedPerCategory = new Map<string, number>();
+    for (const { cat, elements } of perCategory) {
         let added = 0;
         for (const el of elements) {
             const id = `${el.type}/${el.id}`;
             if (seen.has(id)) continue;
             seen.add(id);
-            all.push(el);
+            merged.push(el);
             added += 1;
         }
-        console.log(`  ${city}/${cat.key.padEnd(11)} ${String(elements.length).padStart(4)} elementer (${added} nye)`);
-        await sleep(OVERPASS_QUERY_PAUSE_MS);
+        addedPerCategory.set(cat.key, added);
     }
-    return all;
+    return { merged, addedPerCategory };
 }
 
 function coords(el: OsmElement): { lat: number; lng: number } | null {
@@ -1963,19 +2174,64 @@ export async function buildRows(
     return rows;
 }
 
-async function importCity(
-    city: string,
-    dryRun: boolean,
+export interface EnrichedChunk {
+    rows: ImportRow[];
+    /** OSM-id-er undertrykt av en claim. Havner i manifestet, se der. */
+    seenClaims: string[];
+}
+
+/**
+ * BERIKELSESSTEGET. Rå elementer inn, ferdige rader ut. Ingen skriving.
+ *
+ * Rekkefølgen er den samme som før sømmen, og det er med vilje — dette
+ * steget er de gamle linjene i importCity, flyttet, ikke skrevet om:
+ *
+ *   1. per kategori: [PlaceCategoryDef.enrichSets] (klynging, romlig test)
+ *   2. sammenslåing + deduplisering på type/id, i kategorirekkefølge
+ *   3. claims: rapporten her, filtreringen inne i [buildRows]
+ *   4. [buildRows]: kategorivalg, --limit, geokoding, titler
+ *   5. rapportblokka per kategori
+ *
+ * GEOKODINGEN LIGGER HER, og det er den dyre delen (~1,1 s per sted uten
+ * brukbart OSM-navn). Derfor er det NØYAKTIG dette stegets utdata som er
+ * verdt å lagre: `geocode_cache` gjør et gjenkall billig per koordinat, men
+ * bare mellomleddet gjør hele chunken gratis.
+ */
+async function enrichChunk(
+    chunk: ImportChunk,
+    fetched: readonly FetchRecord[],
     limit: number,
     cats: PlaceCategory[] = PLACE_CATEGORIES
-): Promise<{ rows: number; seenClaims: string[] }> {
-    console.log(`\n=== ${city} ===`);
-    const elements = await overpassCity(city, cats);
-    console.log(`  Overpass ga ${elements.length} elementer`);
+): Promise<EnrichedChunk> {
+    const perKategori = groupFetchRecords(fetched);
+    const beriket: { cat: PlaceCategory; elements: OsmElement[] }[] = [];
+    for (const cat of cats) {
+        const sets = perKategori.get(cat.key) ?? {};
+        const ut: EnrichOutput = cat.enrichSets
+            ? cat.enrichSets(sets)
+            : { elements: sets.main ?? [], rapport: [] };
+        beriket.push({ cat, elements: ut.elements });
+        if (ut.summary) console.log(`  ${chunk.label}/${cat.key.padEnd(11)} ${ut.summary}`);
+        for (const linje of ut.rapport) console.log(linje);
+    }
 
-    // EIERSKAP: hvilke objekter en kuratert rad allerede eier. buildRows
-    // filtrerer dem selv; dette kallet er for RAPPORTEN og for å kunne si til
-    // slutt hvilke claims som aldri traff noe. Se lib/osm-claims.ts.
+    const { merged: elements, addedPerCategory } = mergeEnriched(beriket);
+    for (const { cat, elements: egne } of beriket) {
+        console.log(
+            `  berik ${chunk.label}/${cat.key.padEnd(11)} ` +
+                `${String(egne.length).padStart(4)} elementer ` +
+                `(${addedPerCategory.get(cat.key) ?? 0} nye)`
+        );
+    }
+    console.log(`  ${elements.length} elementer etter deduplisering`);
+
+    // EIERSKAP: hvilke objekter en kuratert rad allerede eier.
+    //
+    // BERIKELSEN EIER CLAIMS, ikke hentingen. To grunner: en områdespørring
+    // kan ikke ekskludere en enkelt id billig (og et uttrekk i fase 3 leser
+    // uansett alt), og et claimet objekt må heller ikke koste geokoding —
+    // som skjer her. [buildRows] filtrerer dem selv; dette kallet er for
+    // rapporten og for manifestet. Se lib/osm-claims.ts.
     const { skipped } = applyOsmClaims(elements);
     for (const s of skipped) {
         const eiere = s.claims.map((c) => `${c.source}/${c.externalId}`).join(' + ');
@@ -1993,7 +2249,11 @@ async function importCity(
         }
     }
     const seenClaims = skipped.map((s) => `${s.el.type}/${s.el.id}`);
-    const rows = await buildRows(city, elements, limit, cats);
+
+    // cityAnchor er chunkens ene kommune. Er den null (en flis), blir
+    // municipality tom og [rowsMissingCityAnchor] kaster før upsert — se
+    // ImportChunk. Det er fase 2 sin oppgave, ikke denne.
+    const rows = await buildRows(chunk.cityAnchor ?? '', elements, limit, cats);
 
     // Vaktbikkje + tittelkilde-fordeling per kategori. 'kun-kategori' med
     // geocodeError betyr at revers-geokodingen FEILET — ikke at adressen mangler.
@@ -2027,21 +2287,21 @@ async function importCity(
             (el) => cats.find((c) => c.matches(el.tags ?? {}, el)) === cat
         ).length;
         if (catElements === 0) {
-            // Kategorier med egen henter filtrerer også ROMLIG, så «0» her kan
-            // bety to ting: selektoren traff ingenting, eller den traff men
+            // Kategorier med egen berikelse filtrerer også ROMLIG, så «0» her
+            // kan bety to ting: selektoren traff ingenting, eller den traff men
             // ingenting besto. Per-polygon-rapporten over skiller dem — uten
             // dette hintet leser man «sjekk selektoren» om en by som rett og
             // slett ikke har alpinanlegg.
-            const hint = cat.fetchElements
+            const hint = cat.enrichSets
                 ? ` ${cat.category} filtrerer også romlig — se linjene over for hvert polygon.`
                 : '';
             console.log(
-                `    ADVARSEL: Overpass ga 0 elementer for ${cat.category} i ${city}` +
+                `    ADVARSEL: Overpass ga 0 elementer for ${cat.category} i ${chunk.label}` +
                     ` — sjekk selektoren og tag-endring i OSM.${hint}`
             );
         } else if (catRows.length === 0) {
             console.log(
-                `    ADVARSEL: ${catElements} elementer for ${cat.category} i ${city}, men 0 rader` +
+                `    ADVARSEL: ${catElements} elementer for ${cat.category} i ${chunk.label}, men 0 rader` +
                     ` — alle manglet koordinater eller ble silt bort av --limit.`
             );
         }
@@ -2062,10 +2322,27 @@ async function importCity(
         for (const [reason, n] of reasons) console.log(`    ${n} × ${reason}`);
     }
 
+    return { rows, seenClaims };
+}
+
+/**
+ * SKRIVESTEGET. Rader inn, upsert ut.
+ *
+ * ALDRI HOPPET OVER VED GJENOPPTAGELSE, og derfor heller ikke i manifestet:
+ * upserten er idempotent på `(source_id, external_id)`, så å skrive samme
+ * chunk to ganger koster sekunder. Hadde steget vært merket ferdig, ville en
+ * kjøring som døde midt i bolkeløkka (500 rader om gangen) etterlatt en
+ * halvskrevet chunk som så ferdig ut. Se [StageName].
+ */
+async function writeChunk(
+    chunk: ImportChunk,
+    rows: readonly ImportRow[],
+    dryRun: boolean
+): Promise<number> {
     if (dryRun) {
         console.log(`  [dry-run] Ingen databaseskriving. Revers-geokoding KJØRES (uten cache hvis Supabase-env mangler).`);
         console.log(`  [dry-run] ${rows.length} rader klare.`);
-        return { rows: rows.length, seenClaims };
+        return rows.length;
     }
 
     if (!isDatahubConfigured()) throw new Error('SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY mangler.');
@@ -2096,8 +2373,9 @@ async function importCity(
     const locked = new Set((lockedRows ?? []).map((r) => r.external_id));
 
     // Se [rowsMissingCityAnchor]: en rad uten by-anker er usynlig i by-modus.
-    // Umulig i per-by-modus; hard feil fordi det betyr at kjøremodusen er
-    // endret uten at dette ble tatt stilling til.
+    // Umulig når chunken er én kommune; hard feil fordi det betyr at
+    // arbeidsenheten er endret (f.eks. til en flis) uten at municipality er
+    // tatt stilling til. Det er fase 2.
     const utenAnker = rowsMissingCityAnchor(rows);
     if (utenAnker.length > 0) {
         throw new Error(
@@ -2111,21 +2389,98 @@ async function importCity(
     if (locked.size) console.log(`  Hopper over ${rows.length - writable.length} låste rader.`);
 
     for (let i = 0; i < writable.length; i += 500) {
-        const chunk = writable
+        const bolk = writable
             .slice(i, i + 500)
             .map(({ titleSource: _ts, geocodeError: _ge, osmName: _on, nameTag: _nt, ...row }) => ({
                 ...row,
                 source_id: source.id,
             }));
-        const { error } = await db.from('activities').upsert(chunk, { onConflict: 'source_id,external_id' });
-        if (error) throw new Error(`Upsert feilet (${city}, chunk ${i / 500}): ${error.message}`);
+        const { error } = await db.from('activities').upsert(bolk, { onConflict: 'source_id,external_id' });
+        if (error) throw new Error(`Upsert feilet (${chunk.label}, bolk ${i / 500}): ${error.message}`);
     }
     await db
         .from('sources')
-        .update({ last_synced_at: new Date().toISOString(), last_sync_status: `ok: ${writable.length} steder (${city})` })
+        .update({ last_synced_at: new Date().toISOString(), last_sync_status: `ok: ${writable.length} steder (${chunk.label})` })
         .eq('id', source.id);
     console.log(`  Skrev ${writable.length} rader.`);
-    return { rows: writable.length, seenClaims };
+    return writable.length;
+}
+
+/**
+ * Forutsetningene som bestemmer hvert stegs utdata, som hash.
+ *
+ * SELEKTORTEKSTEN ER MED, ikke bare kategorinøkkelen. Uten den ville «rett en
+ * selektor og kjør med --resume» gitt gårsdagens hentede data uten en eneste
+ * advarsel — den mest sannsynlige og mest kostbare gjenopptagelsesfeilen.
+ *
+ * `--limit` påvirker BARE berikelsen (den kappes i buildRows), så en kjøring
+ * med og uten limit deler hentesteg. Det er riktig: hentingen er den dyre
+ * delen mot Overpass, og limit endrer ingenting ved den.
+ */
+function stageFingerprints(
+    chunk: ImportChunk,
+    cats: PlaceCategory[],
+    limit: number
+): { fetch: string; enrich: string } {
+    const fetchFp = fingerprint({
+        v: 1,
+        area: chunk.overpassArea,
+        cats: cats.map((c) => [c.key, c.selector, Boolean(c.fetchSets)]),
+    });
+    return {
+        fetch: fetchFp,
+        enrich: fingerprint({
+            v: 1,
+            fetch: fetchFp,
+            anchor: chunk.cityAnchor,
+            limit: limit === Infinity ? 'inf' : limit,
+            cats: cats.map((c) => [c.key, c.category, Boolean(c.enrichSets)]),
+            claims: OSM_CLAIMS.map((c) => [c.osmId, c.source, c.externalId]),
+        }),
+    };
+}
+
+/** Kjører de tre stegene for én chunk, med gjenbruk fra mellomleddet der
+ *  steget allerede er ferdig med de samme forutsetningene. */
+async function runChunk(
+    chunk: ImportChunk,
+    opts: { dryRun: boolean; limit: number; cats: PlaceCategory[]; store: WorkStore; resume: boolean }
+): Promise<{ rows: number; seenClaims: string[] }> {
+    const { dryRun, limit, cats, store, resume } = opts;
+    console.log(`\n=== ${chunk.label} (${chunk.id}) ===`);
+    const fp = stageFingerprints(chunk, cats, limit);
+
+    let fetched: FetchRecord[];
+    if (resume && store.isDone(chunk, 'fetch', fp.fetch)) {
+        fetched = store.read<FetchRecord>(chunk, 'fetch');
+        const tomme = store.entries().get(`${chunk.id}/fetch`)?.emptySets ?? [];
+        console.log(`  [gjenopptatt] hent: ${fetched.length} elementer fra mellomleddet`);
+        // Gjenopptagelsen hopper over berikelsen, og dermed over ADVARSEL-linja
+        // som ellers ville sagt fra om en tom kategori. Uten denne linja ville
+        // en tom chunk vært helt usynlig i en gjenopptatt kjøring.
+        if (tomme.length) {
+            console.log(`  [gjenopptatt] BEKREFTET TOMME SETT: ${tomme.join(', ')}`);
+        }
+    } else {
+        const ut = await fetchChunk(chunk, cats);
+        fetched = ut.records;
+        console.log(`  Overpass ga ${fetched.length} elementer`);
+        store.write(chunk, 'fetch', fp.fetch, fetched, { emptySets: ut.emptySets });
+    }
+
+    let enriched: EnrichedChunk;
+    if (resume && store.isDone(chunk, 'enrich', fp.enrich)) {
+        const rows = store.read<ImportRow>(chunk, 'enrich');
+        const entry = store.entries().get(`${chunk.id}/enrich`);
+        enriched = { rows, seenClaims: [...(entry?.seenClaims ?? [])] };
+        console.log(`  [gjenopptatt] berik: ${rows.length} rader fra mellomleddet (ingen geokoding)`);
+    } else {
+        enriched = await enrichChunk(chunk, fetched, limit, cats);
+        store.write(chunk, 'enrich', fp.enrich, enriched.rows, { seenClaims: enriched.seenClaims });
+    }
+
+    const skrevet = await writeChunk(chunk, enriched.rows, dryRun);
+    return { rows: skrevet, seenClaims: enriched.seenClaims };
 }
 
 export interface ImportArgs {
@@ -2134,9 +2489,28 @@ export interface ImportArgs {
     limit: number;
     cats: PlaceCategory[];
     catArg?: string;
+    /** Arbeidskatalog for mellomleddet. `null` = ingen lagring (standard). */
+    workDir: string | null;
+    /** Hopp over steg som allerede er ferdige med samme forutsetninger. */
+    resume: boolean;
 }
 
-const KNOWN_FLAGS = ['--dry-run', '--city=', '--limit=', '--category='];
+/** Standard arbeidskatalog når --work eller --resume er gitt uten verdi.
+ *  Ligger i repoet og er .gitignore-et: innholdet er mellomresultater, ikke
+ *  kildekode, og en nasjonal kjøring legger igjen titalls MB. */
+export const DEFAULT_WORK_DIR = '.import-work';
+
+// Oppføringer som slutter på «=» er VERDIFLAGG og prefiksmatches; resten må
+// treffe eksakt. Skillet ble nødvendig da --work kom til: den finnes både
+// som `--work` og `--work=<dir>`, og med den gamle regelen (prefiks for alt)
+// ville «--worksheet» sluppet gjennom som gyldig. Strammingen gjelder også de
+// gamle flaggene — «--dry-runx» ble før akseptert og ignorert i stillhet,
+// nøyaktig den klassen feil denne parseren finnes for å stoppe.
+const KNOWN_FLAGS = ['--dry-run', '--city=', '--limit=', '--category=', '--work', '--work=', '--resume'];
+
+function isKnownFlag(arg: string): boolean {
+    return KNOWN_FLAGS.some((f) => (f.endsWith('=') ? arg.startsWith(f) : arg === f));
+}
 
 /**
  * Argumentparsing, streng med vilje. ALLE verdiflagg bruker `=`
@@ -2145,7 +2519,7 @@ const KNOWN_FLAGS = ['--dry-run', '--city=', '--limit=', '--category='];
  * overraskelse mot produksjonsdata. Ukjente argumenter avvises derfor nå.
  */
 export function parseArgs(args: string[]): ImportArgs {
-    const unknown = args.filter((a) => !KNOWN_FLAGS.some((f) => a === f || a.startsWith(f)));
+    const unknown = args.filter((a) => !isKnownFlag(a));
     if (unknown.length) {
         throw new Error(
             `Ukjent argument: ${unknown.join(', ')}\n` +
@@ -2187,7 +2561,28 @@ export function parseArgs(args: string[]): ImportArgs {
         }
     }
 
-    return { dryRun, cities, limit, cats, catArg };
+    // MELLOMLEDDET ER OPT-IN, og det er et bevisst valg framfor standard PÅ.
+    //
+    // Uten --work skriver importen ingen nye filer noe sted, og en tørrkjøring
+    // rører fortsatt ingenting. Kravet om ingen oppførselsendring er dermed
+    // oppfylt bokstavelig: `--city=Oslo` gjør nøyaktig det samme som før
+    // sømmen, med nøyaktig de samme bivirkningene (ingen).
+    //
+    // --resume innebærer --work: å be om gjenopptagelse uten et sted å
+    // gjenoppta fra er alltid en skrivefeil, ikke et ønske.
+    const workRaw = args.find((a) => a === '--work' || a.startsWith('--work='));
+    const resume = args.includes('--resume');
+    const workDir =
+        workRaw !== undefined
+            ? // slice framfor split('='): en katalogsti kan inneholde «=».
+              workRaw === '--work'
+                ? DEFAULT_WORK_DIR
+                : workRaw.slice(workRaw.indexOf('=') + 1) || DEFAULT_WORK_DIR
+            : resume
+              ? DEFAULT_WORK_DIR
+              : null;
+
+    return { dryRun, cities, limit, cats, catArg, workDir, resume };
 }
 
 async function main() {
@@ -2198,43 +2593,73 @@ async function main() {
         console.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
     }
-    const { dryRun, cities, limit, cats, catArg } = parsed;
+    const { dryRun, cities, limit, cats, catArg, workDir, resume } = parsed;
+
+    const plan = planForCities(cities);
+    const store: WorkStore = workDir ? new FileStore(workDir) : new NullStore();
 
     console.log(`Import av faste steder: ${cities.join(', ')}${dryRun ? ' [DRY-RUN]' : ''}${limit !== Infinity ? ` [limit=${limit}/kategori]` : ''}${catArg ? ` [kategori=${cats.map((c) => c.key).join(',')}]` : ''}`);
+    console.log(`Arbeidskatalog: ${store.describe()}${resume ? ' [--resume]' : ''}`);
+
+    // GJENOPPTAGELSE ER EKSPLISITT. Å hoppe over ferdige steg i stillhet er
+    // den klassiske fella: man retter en selektor, kjører på nytt, og får
+    // gårsdagens data. Fingeravtrykket fanger MYE av det (selektortekst,
+    // kategoriliste, limit, claims), men ikke alt — en endring inne i
+    // matches() eller i en klyngefunksjon er usynlig for det.
+    //
+    // Prisen er at man kan glemme flagget og betale en natt. Derfor sier vi
+    // fra: finnes det ferdige steg i katalogen uten at --resume er gitt,
+    // skrives det ut hvor mange og hva flagget heter.
+    if (workDir && !resume) {
+        const ferdige = plan.filter((c) => store.entries().has(`${c.id}/enrich`)).length;
+        if (ferdige) {
+            console.log(
+                `  MERK: ${ferdige} av ${plan.length} chunks har et ferdig berikelsessteg i ` +
+                    `${workDir}. Uten --resume hentes og geokodes de på nytt. Legg til --resume ` +
+                    `for å gjenbruke dem.`
+            );
+        }
+    }
+
     let total = 0;
-    // Feiltoleranse per by: én bys feil (f.eks. konsekvent Overpass-504 for
-    // Trondheim) skal IKKE avbryte hele kjøringen — de øvrige byene fullføres
+    // Feiltoleranse per chunk: én chunks feil (f.eks. konsekvent Overpass-504
+    // for Trondheim) skal IKKE avbryte hele kjøringen — de øvrige fullføres
     // og skrives, og de feilede oppsummeres til slutt med exit-kode 1.
     const failed: { city: string; error: string }[] = [];
     const seenClaims = new Set<string>();
-    for (const city of cities) {
+    for (const chunk of plan) {
         try {
-            const res = await importCity(city, dryRun, limit, cats);
+            const res = await runChunk(chunk, { dryRun, limit, cats, store, resume });
             total += res.rows;
             for (const id of res.seenClaims) seenClaims.add(id);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            console.error(`  ✗ ${city} FEILET — hoppes over, fortsetter til neste by: ${msg}`);
-            failed.push({ city, error: msg });
+            console.error(`  ✗ ${chunk.label} FEILET — hoppes over, fortsetter til neste: ${msg}`);
+            failed.push({ city: chunk.label, error: msg });
         }
-        if (city !== cities[cities.length - 1]) await sleep(CITY_PAUSE_MS);
+        if (chunk !== plan[plan.length - 1]) await sleep(CITY_PAUSE_MS);
     }
-    const okCount = cities.length - failed.length;
-    console.log(`\nFerdig: ${total} steder ${dryRun ? 'klare (ingenting skrevet)' : 'importert'} — ${okCount}/${cities.length} byer gikk gjennom.`);
+    const okCount = plan.length - failed.length;
+    console.log(`\nFerdig: ${total} steder ${dryRun ? 'klare (ingenting skrevet)' : 'importert'} — ${okCount}/${plan.length} chunks gikk gjennom.`);
     if (failed.length) {
-        console.log(`\nFEILEDE BYER (${failed.length}):`);
+        console.log(`\nFEILEDE CHUNKS (${failed.length}):`);
         for (const f of failed) console.log(`  ✗ ${f.city}: ${f.error}`);
         // Importen er additiv (upsert på source_id+external_id, ingen sletting),
-        // og en by skrives FØRST når hele byen er bygget. En feilet by har
-        // derfor ikke lagt igjen halv tilstand, og kan trygt kjøres på nytt —
-        // alene. Vi skriver ut den nøyaktige kommandoen, så gjenkjøringen ikke
-        // ved et uhell tar med byene som allerede gikk gjennom.
+        // og en chunk skrives FØRST når hele chunken er bygget. En feilet
+        // chunk har derfor ikke lagt igjen halv tilstand, og kan trygt kjøres
+        // på nytt — alene. Vi skriver ut den nøyaktige kommandoen, så
+        // gjenkjøringen ikke ved et uhell tar med det som allerede gikk.
+        //
+        // Med --work er dette billigere enn før: et ferdig hentesteg
+        // gjenbrukes, så en gjenkjøring med --resume koster bare det som
+        // faktisk feilet.
         const rerunFlags = [
             dryRun ? '--dry-run' : null,
             limit !== Infinity ? `--limit=${limit}` : null,
             catArg ? `--category=${catArg}` : null,
+            workDir ? `--work=${workDir} --resume` : null,
         ].filter(Boolean);
-        console.log('\nKjør de feilede på nytt, én by om gangen (trygt — upsert er idempotent):');
+        console.log('\nKjør de feilede på nytt, én om gangen (trygt — upsert er idempotent):');
         for (const f of failed) {
             console.log(
                 `  npx --yes tsx scripts/import-places.ts --city=${f.city} ${rerunFlags.join(' ')}`.trimEnd()
@@ -2244,17 +2669,63 @@ async function main() {
         // operatør/CI at minst én by mangler ved å avslutte med kode 1.
         process.exitCode = 1;
     }
+    // TOMME SETT, samlet til slutt og lest fra MANIFESTET.
+    //
+    // Midt i utskriften er en tom kategori synlig for én chunk og usynlig for
+    // 353 over en natt. Her står de samlet, og de står der enten chunken ble
+    // kjørt denne gangen eller gjenopptatt fra mellomleddet.
+    //
+    // «Bekreftet tom» betyr målt to ganger, ikke antatt. Det er fortsatt
+    // mulig at begge spørringene var forbigående tomme — sannsynligheten er
+    // bare mye lavere, og lista er stedet å se etter et mønster: ÉN tom
+    // kategori i én kommune er normalt, den SAMME kategorien tom i tjue
+    // kommuner er ikke.
+    const tommeSett: string[] = [];
+    for (const chunk of plan) {
+        for (const sett of store.entries().get(`${chunk.id}/fetch`)?.emptySets ?? []) {
+            tommeSett.push(`${chunk.id.padEnd(16)} ${sett}`);
+        }
+    }
+    if (tommeSett.length) {
+        console.log(`\nTOMME SETT (${tommeSett.length}):`);
+        for (const linje of tommeSett) console.log(`  ${linje}`);
+        console.log(
+            '  Hvert av disse ga 0 objekter. En kategori kan være legitimt tom i en ' +
+                'kommune (ikke alle har en akebakke), og hele kategorien ble målt to ' +
+                'ganger før den ble godtatt som tom. Se etter MØNSTER: samme kategori ' +
+                'tom i mange chunks er en selektor- eller tag-endring, ikke geografi.'
+        );
+    } else if (workDir) {
+        console.log('\nIngen tomme sett.');
+    }
+
     // DØDE CLAIMS. Ei liste som vedlikeholdes for hånd rotner i stillhet, og
     // en claim som ikke lenger treffer noe undertrykker ingenting — men den
-    // ser ut som om den gjør det. Ved nasjonal skala (250 alpinklynger,
-    // 89 akebakker) er dette den eneste måten å oppdage at en relasjon er
-    // splittet eller slettet i OSM.
+    // ser ut som om den gjør det. Ved nasjonal skala er dette den eneste
+    // måten å oppdage at en relasjon er splittet eller slettet i OSM.
     //
-    // FORBEHOLDET skrives ut hver gang, fordi tallet er meningsløst uten det:
-    // en kjøring for én by henter ikke objekter i andre kommuner.
+    // TO TING ENDRET SEG MED SØMMEN:
+    //
+    //  1. Vilkåret var `cities.length === DEFAULT_CITIES.length && !catArg`.
+    //     Det sluttet å bety noe i det øyeblikket enheten ikke lenger er en
+    //     by. [runCoversEverything] uttrykker det samme i PLANEN, og
+    //     overlever at standardplanen blir 353 fliser.
+    //  2. Ved --resume hoppes ferdige chunks over, og et rent minnebasert
+    //     sett ville manglet nettopp de chunkene som gikk bra — rapporten
+    //     ville meldt levende claims som døde. Derfor leses `seenClaims`
+    //     også fra MANIFESTET, som husker hva hver chunk fant.
+    for (const [nokkel, entry] of store.entries()) {
+        if (!nokkel.endsWith('/enrich')) continue;
+        for (const id of entry.seenClaims ?? []) seenClaims.add(id);
+    }
     const doede = staleClaims(seenClaims);
     if (doede.length) {
-        const heleKjoringen = cities.length === DEFAULT_CITIES.length && !catArg;
+        const heleKjoringen = runCoversEverything(
+            plan,
+            planForCities(DEFAULT_CITIES),
+            cats.length,
+            PLACE_CATEGORIES.length
+        );
         console.log(
             `\nCLAIMS SOM IKKE TRAFF NOE (${doede.length} av ${OSM_CLAIMS.length}):`
         );
@@ -2263,11 +2734,11 @@ async function main() {
         }
         console.log(
             heleKjoringen
-                ? '  Kjøringen dekket alle byer og alle kategorier. En claim her treffer ' +
+                ? '  Kjøringen dekket hele standardplanen og alle kategorier. En claim her treffer ' +
                       'ikke lenger noe OSM-objekt importen henter — enten er objektet ' +
                       'delt/slettet i OSM, eller claimen peker på noe annet enn den ' +
                       'external_id-en raden ville fått (for Aking: ankeret, ikke et segment).'
-                : `  Kjøringen dekket bare ${cities.join(', ')}${catArg ? ` og kategori ${catArg}` : ''} — ` +
+                : `  Kjøringen dekket bare ${plan.map((c) => c.label).join(', ')}${catArg ? ` og kategori ${catArg}` : ''} — ` +
                       'en claim utenfor rekkevidden er IKKE død. Kjør uten --city og ' +
                       '--category før du fjerner noe.'
         );

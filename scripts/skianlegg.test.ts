@@ -558,8 +558,9 @@ test('spørringen sier `out geom`, ALDRI `out geom tags`', async (t) => {
         });
     }) as typeof fetch;
 
+    const { chunkForCity } = await import('../lib/import-chunks');
     const cat = await ski();
-    await cat.fetchElements!('Oslo');
+    await cat.fetchSets!(chunkForCity('Oslo'));
     // To spørringer: områdene og bevisene. Begge må ha medlemmene med.
     assert.equal(sendt.length, 2);
     for (const q of sendt) {
