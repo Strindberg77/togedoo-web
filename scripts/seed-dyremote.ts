@@ -25,7 +25,7 @@
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
 import { assertClaimsResolve } from '../lib/osm-claims';
 
-const SOURCE = {
+export const SOURCE = {
     slug: 'kuratert-dyremote',
     name: 'Kuratert: Dyremøte',
     kind: 'manual' as const,
@@ -55,7 +55,7 @@ interface DyremoteSeed {
     openingHours?: string | null;
 }
 
-const SEED: DyremoteSeed[] = [
+export const SEED: DyremoteSeed[] = [
     // --- Oslo ---
     {
         externalId: 'kampen-barnebondegard',
@@ -345,7 +345,14 @@ async function main() {
     console.log(`\nFerdig: upsertet ${rows.length} steder i kategorien Dyremøte.`);
 }
 
-main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-});
+// Samme vakt som i import-places.ts: modulen skal kunne IMPORTERES uten å
+// kjøre seeden. Uten den kunne ingen test lese SEED — og det er nettopp
+// koblingen mellom SEED og claim-lista i lib/osm-claims.ts som er verdt å
+// vokte i CI framfor å oppdage i en --dry-run.
+const isDirectRun = process.argv[1]?.endsWith('seed-dyremote.ts');
+if (isDirectRun) {
+    main().catch((e) => {
+        console.error(e);
+        process.exit(1);
+    });
+}

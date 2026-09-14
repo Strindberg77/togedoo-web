@@ -29,8 +29,11 @@ import type { FacetToken } from '../lib/facets';
 import { assertClaimsResolve } from '../lib/osm-claims';
 
 // Vinter-splitt (steg 5): «Vinter & innendørs» er avviklet og fordelt på fem
-// nye kategorier + inne/ute-flagg (is_indoor). Nøkkel = seed.externalId. Alle
-// 25 MÅ finnes her — toRow feiler hardt hvis en mangler (fanges i --dry-run).
+// nye kategorier + inne/ute-flagg (is_indoor). Nøkkel = seed.externalId. HVER
+// ENESTE seed-rad MÅ finnes her — toRow feiler hardt hvis en mangler (fanges i
+// --dry-run). Tallet sto her før og var 25; det er utelatt med vilje, fordi et
+// tall i en kommentar går ut på dato i stillhet mens vakten i splitFor() ikke
+// gjør det.
 //
 // FASETTER (migrasjon 0016) settes samme sted, av samme grunn som is_indoor:
 // seed-rader har osm_tags = null, så API-et utleder sports = [] for dem. Uten
@@ -42,7 +45,7 @@ const SPLIT: Record<
     string,
     { category: string; isIndoor: boolean; facets?: FacetToken[] }
 > = {
-    // Skianlegg (5): SNØ er innendørs, resten ute. Korketrekkeren lå her til
+    // Skianlegg (10): SNØ er innendørs, resten ute. Korketrekkeren lå her til
     // sep. 2026 og er nå Aking (1) — se under.
     // SNØ Lørenskog er alpint selv om det er innendørs — fasetten sier hva du
     // GJØR der, is_indoor sier hvor. De to aksene er uavhengige.
@@ -51,6 +54,13 @@ const SPLIT: Record<
     'kirkerudbakken-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     'eikedalen-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     'vassfjellet-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    // OSLO-ALPINT (sep. 2026). Fem anlegg, to OSM-relasjoner, fem rader.
+    // Se kommentaren over seed-entryene og lib/osm-claims.ts.
+    'tryvann': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'wyller': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'tommkleiva': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'trollvannskleiva': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'grefsenkleiva': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     // Korketrekkeren er en akebakke, ikke et alpinanlegg — og fra sep. 2026
     // er det en EGEN kategori, ikke bare en fasett på Skianlegg. Raden lå
     // under Skianlegg med «(akebakke)» skrevet inn i tittelen, som er en
@@ -85,7 +95,7 @@ const SPLIT: Record<
     'sormarka-arena-stavanger': { category: 'Skøyter', isIndoor: true },
 };
 
-function splitFor(
+export function splitFor(
     externalId: string
 ): { category: string; isIndoor: boolean; facets: FacetToken[] } {
     const s = SPLIT[externalId];
@@ -93,7 +103,7 @@ function splitFor(
     return { ...s, facets: s.facets ?? [] };
 }
 
-const SOURCE = {
+export const SOURCE = {
     slug: 'kuratert-vintertilbud',
     name: 'Kuratert: Vinter & innendørs',
     kind: 'manual' as const,
@@ -120,7 +130,7 @@ interface VinterSeed {
     openingHours?: string | null;
 }
 
-const SEED: VinterSeed[] = [
+export const SEED: VinterSeed[] = [
     // --- Oslo-regionen: utenfor kommunegrensen (nearCity = Oslo) ---
     {
         externalId: 'sno-lorenskog',
@@ -229,6 +239,94 @@ const SEED: VinterSeed[] = [
         manualCoord: { lat: 59.9836, lng: 10.6790 },
         fallbackLat: 59.9836, fallbackLng: 10.6790,
         isFree: true, url: 'https://akeforeningen.no', targetAudience: 'For alle',
+    },
+
+
+    // --- OSLO-ALPINT (sep. 2026) --------------------------------------
+    //
+    // FEM RADER FOR TO OSM-RELASJONER. OSM har én relasjon per
+    // DRIFTSSELSKAP — relation/2259942 «Skimore Oslo» og relation/1762278
+    // «Oslo Skisenter» — men anleggene har hvert sitt startpunkt. Tryvann og
+    // Wyller er 30 minutters kjøretur fra hverandre; Trollvannskleiva og
+    // Grefsenkleiva har parkering i hver sin ende av åsen. Bakkene henger
+    // sammen i toppen og deler heiskort, men en forelder må velge hvor hun
+    // parkerer, og ett kartpunkt for to anlegg kan sende henne feil.
+    //
+    // Importen ga derfor to rader (bbox-senteret til hver relasjon), og de er
+    // claimet i lib/osm-claims.ts slik at den slutter å lage dem. Fem claims,
+    // ikke to: én per (OSM-objekt, kuratert rad).
+    //
+    // NAVN UTEN «SKIMORE». Det er et heiskortsystem, ikke et stedsnavn —
+    // ingen sier «Skimore Tryvann». Merk at det gjør OSM-navnet
+    // («Skimore Oslo») ULIKT radnavnet; det er nettopp derfor claimens
+    // expectName beskriver OSM-OBJEKTET og ikke raden.
+    //
+    // ÉN URL PER GRUPPE, fordi det er én drift per gruppe. Tre rader deler
+    // oslo.skimore.no, to deler oslo-skisenter.no.
+    //
+    // KOORDINATENE er manuelt verifisert i kart av Frederik, ved parkering
+    // eller naturlig startpunkt — derfor manualCoord, som hopper over
+    // geokodingen helt. Kommunen er ETTERPRØVD ved punkt-i-polygon mot
+    // Kartverkets kommunegrenser (2024): alle fem ligger i Oslo (0301).
+    // Wyller, den eneste som var i tvil, ligger ~1,9 km innenfor grensen mot
+    // Bærum.
+    //
+    // SLUGENE ER FROSNE. external_id er upsert-nøkkelen; endres den, blir
+    // radene duplisert i stedet for oppdatert (docs/nasjonal-dekning.md).
+    {
+        externalId: 'tryvann',
+        title: 'Tryvann',
+        description: 'Oslos største alpinanlegg, på Tryvann i Nordmarka — nedfarter for alle nivåer, terrengpark og barnebakke. Krever heiskort.',
+        municipality: 'Oslo',
+        // Ved Tryvannstårnet. Ingen gateadresse — manuelt verifisert punkt.
+        address: 'Tryvannstårnet, Oslo',
+        manualCoord: { lat: 59.98870, lng: 10.66812 },
+        fallbackLat: 59.98870, fallbackLng: 10.66812,
+        isFree: false, url: 'https://oslo.skimore.no',
+    },
+    {
+        externalId: 'wyller',
+        title: 'Wyller',
+        description: 'Alpinanlegg på vestsiden av Tryvann, med egen parkering i Sørkedalen. Samme heiskort som Tryvann, men en halvtimes kjøretur unna.',
+        municipality: 'Oslo',
+        // Parkeringen ved Wyllerløypa. Manuelt verifisert punkt.
+        address: 'Wyllerløypa, Sørkedalen, Oslo',
+        manualCoord: { lat: 59.9909, lng: 10.6304 },
+        fallbackLat: 59.9909, fallbackLng: 10.6304,
+        isFree: false, url: 'https://oslo.skimore.no',
+    },
+    {
+        externalId: 'tommkleiva',
+        title: 'Tommkleiva',
+        description: 'Nedfart ved Øvresetertjern, i samme anlegg som Tryvann. Krever heiskort.',
+        municipality: 'Oslo',
+        // Toppen, ved Øvresetertjern. Manuelt verifisert punkt.
+        address: 'Øvresetertjern, Oslo',
+        manualCoord: { lat: 59.983264, lng: 10.669012 },
+        fallbackLat: 59.983264, fallbackLng: 10.669012,
+        isFree: false, url: 'https://oslo.skimore.no',
+    },
+    {
+        externalId: 'trollvannskleiva',
+        title: 'Trollvannskleiva',
+        description: 'Alpinbakke i Grefsenåsen, med parkering og servering ved Trollvannstua. Krever heiskort.',
+        municipality: 'Oslo',
+        // Bunnen, ved Trollvannstua. Manuelt verifisert punkt.
+        address: 'Trollvannstua, Oslo',
+        manualCoord: { lat: 59.96172, lng: 10.80608 },
+        fallbackLat: 59.96172, fallbackLng: 10.80608,
+        isFree: false, url: 'http://www.oslo-skisenter.no/',
+    },
+    {
+        externalId: 'grefsenkleiva',
+        title: 'Grefsenkleiva',
+        description: 'Alpinbakke i sørenden av Grefsenåsen, med egen parkering mot Østreheimsveien. Samme heiskort som Trollvannskleiva, men annen atkomst.',
+        municipality: 'Oslo',
+        // Parkeringen mot Østreheimsveien. Manuelt verifisert punkt.
+        address: 'Østreheimsveien, Oslo',
+        manualCoord: { lat: 59.951768, lng: 10.814618 },
+        fallbackLat: 59.951768, fallbackLng: 10.814618,
+        isFree: false, url: 'http://www.oslo-skisenter.no/',
     },
 
     // ================= BERGEN =================
@@ -597,7 +695,14 @@ async function main() {
     console.log(`\nFerdig: upsertet ${rows.length} steder (vinter-splitt: Skianlegg/Aking/Badeland/Trampolinepark/Innendørs lekeland/Skøyter).`);
 }
 
-main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-});
+// Samme vakt som i import-places.ts: modulen skal kunne IMPORTERES uten å
+// kjøre seeden. Uten den kunne ingen test lese SEED — og det er nettopp
+// koblingen mellom SEED og claim-lista i lib/osm-claims.ts som er verdt å
+// vokte i CI framfor å oppdage i en --dry-run.
+const isDirectRun = process.argv[1]?.endsWith('seed-vintertilbud.ts');
+if (isDirectRun) {
+    main().catch((e) => {
+        console.error(e);
+        process.exit(1);
+    });
+}

@@ -107,17 +107,35 @@ To kontroller holder lista i live:
 | Sted | Seed | OSM | Status |
 |---|---|---|---|
 | Korketrekkeren | `korketrekkeren-aking` | `relation/1459739` | **claimet** |
-| Tryvann + Wyller | (ikke skrevet) | `relation/2259942` | venter på Oslo-seeden |
-| Trollvannskleiva + Grefsenkleiva | (ikke skrevet) | `relation/1762278` | venter på Oslo-seeden |
+| Tryvann + Wyller + Tommkleiva | `tryvann`, `wyller`, `tommkleiva` | `relation/2259942` | **claimet** (3 claims) |
+| Trollvannskleiva + Grefsenkleiva | `trollvannskleiva`, `grefsenkleiva` | `relation/1762278` | **claimet** (2 claims) |
 | Kirkerudbakken | `kirkerudbakken-skisenter` | `recreation_ground`, id ikke slått opp | utenfor de fire byene |
 | Varingskollen | `varingskollen-alpinsenter` | `recreation_ground`, id ikke slått opp | utenfor de fire byene |
 
 SNØ Lørenskog, Eikedalen og Vassfjellet er ikke bekreftet i OSM.
 
-De to relasjonene som venter er hele grunnen til at én-til-mange er et krav og
-ikke et tankeeksperiment: OSM har **én** relasjon der vi vil ha **to** rader,
-fordi anleggene har hvert sitt startpunkt en halvtimes kjøretur fra hverandre.
-Ett bbox-senter er feil for begge.
+De to Oslo-relasjonene er hele grunnen til at én-til-mange er et krav og ikke
+et tankeeksperiment: OSM har **én** relasjon per driftsselskap der vi vil ha
+én rad per anlegg, fordi anleggene har hvert sitt startpunkt en halvtimes
+kjøretur fra hverandre. Ett bbox-senter er feil for begge.
+
+**Slik uttrykkes det:** én claim er ett PAR — (OSM-objekt, kuratert rad) —
+ikke en nøkkel. Fem rader som eier to objekter gir **fem claims**.
+`claimsByOsmId` grupperer dem, og `applyOsmClaims` gir én hoppet-over-linje
+per objekt med alle eierne listet.
+
+Alternativet, én claim per objekt med en liste av `externalId`-er, ble
+forkastet: da ville `assertClaimsResolve` bare voktet den første raden i hver
+liste, og de øvrige kunne blitt slettet fra seeden i stillhet mens importen
+fortsatt undertrykte OSM-objektet deres.
+
+`expectName` beskriver **OSM-objektet**, ikke raden. Alle tre
+Skimore-claimene venter «Skimore Oslo», for det er det relasjonen heter —
+radene heter Tryvann, Wyller og Tommkleiva med vilje, siden «Skimore» er et
+heiskortsystem og ikke et stedsnavn.
+
+Kjøreboka for nedtakingen av de to gamle importradene står i
+`docs/runbooks/oslo-alpin.md`.
 
 Kirkerudbakken og Varingskollen ligger i Bærum og Nittedal. Importen kjører
 per kommune for de fire byene, så OSM-objektene hentes ikke i dag og
