@@ -247,3 +247,33 @@ export function runCoversEverything(
     const dekket = new Set(plan.map((c) => c.id));
     return defaultPlan.every((c) => dekket.has(c.id));
 }
+
+/**
+ * Hvor stor del av NORGE planen dekker — eller null når det ikke er mulig å
+ * si.
+ *
+ * DETTE ER EN RETTING AV EN EKTE FEIL, funnet ved en tørrkjøring sep. 2026.
+ * Utbyttesjekken brukte «andel av standardplanen» som forholdstall, og for en
+ * kjøring med alle fire byene er den 1. Da ble forventningen hele det
+ * nasjonale tallet — 3 070 parker for fire kommuner — og vakten slo ut på en
+ * helt normal kjøring.
+ *
+ * Feilen var en kategoriforveksling: [NATIONAL_EXPECTATION] er en NASJONAL
+ * størrelse, og fire byer er ikke en brøkdel av Norge man kan regne ut fra
+ * antall chunks. Oslo alene har en tredel av landets lekeplasser.
+ *
+ * Derfor svarer denne funksjonen bare når svaret er kjent:
+ *
+ *   alle chunks uten cityAnchor  → 1   (den nasjonale planen, én eller flere
+ *                                       chunks som til sammen er landet)
+ *   ellers                       → null (per-kommune-plan: andelen av Norge
+ *                                       er ukjent, og utbyttesjekken hopper
+ *                                       over)
+ *
+ * Den dagen planen blir 356 kommune-chunks med kjent dekning, er det HER det
+ * skal stå — ikke i vakten.
+ */
+export function nationalCoverage(plan: readonly ImportChunk[]): number | null {
+    if (plan.length && plan.every((c) => c.cityAnchor === null)) return 1;
+    return null;
+}

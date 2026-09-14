@@ -75,9 +75,14 @@ test('cable_car er IKKE en skiheis', async () => {
 test('bevis-selektoren henter mer enn kategoritesten trenger', async () => {
     // Bevisene brukes til TO ting: kategoritesten (heis eller downhill) og
     // fasettene (også sled, playground og mtb). Derfor er settet bredere.
+    //
+    // MEN IKKE UBEGRENSET, fra sep. 2026: piste:type er verdifiltrert til de
+    // tre verdiene koden leser. Uten filteret hentet spørringen 47 988
+    // langrennssegmenter med `out geom` for ingenting. Vakten over filteret
+    // står i scripts/piste-filter.test.ts.
     const { SKI_EVIDENCE_SELECTOR } = await load();
     assert.match(SKI_EVIDENCE_SELECTOR, /"aerialway"~/);
-    assert.match(SKI_EVIDENCE_SELECTOR, /\["piste:type"\]/);
+    assert.match(SKI_EVIDENCE_SELECTOR, /\["piste:type"~"downhill\|sled\|playground"\]/);
     assert.match(SKI_EVIDENCE_SELECTOR, /\["mtb:type"\]/);
     assert.match(SKI_EVIDENCE_SELECTOR, /"route"="mtb"/);
 });
