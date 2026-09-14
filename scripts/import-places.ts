@@ -20,13 +20,15 @@
 import { supabaseAdmin, isDatahubConfigured } from '../lib/supabase';
 import { SKATEBOARD_IMPLIES, type FacetToken } from '../lib/facets';
 import {
-    anyInsideOrNear,
+    anyInsideOrNearAny,
+    assembleRings,
     boundsOf,
     centerOfBounds,
     type GeoBounds,
     type GeoPoint,
 } from '../lib/geo-polygon';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
+import { sanitizeWebsite } from '../lib/website';
 
 // Speilene kan overstyres via env (komma-separert) — nyttig for selvhostet
 // Overpass og for å verifisere feilhåndteringen mot et test-endepunkt.
@@ -72,8 +74,21 @@ interface OsmElement {
     center?: { lat: number; lon: number };
     tags?: OsmTags;
     // Fra `out geom` (kun Skianlegg-spørringen). Nodene i en way/relation.
+    // `out geom` legger geometri på WAYS her …
     geometry?: GeoPoint[];
     bounds?: GeoBounds;
+    // … men på RELASJONER ligger den per medlem, ikke på toppnivå. Å lese
+    // el.geometry på en relation gir undefined, og det var grunnen til at
+    // alle fire relasjonene i Oslo — Skimore Oslo med 11 heiser inkludert —
+    // falt ut før bevistesten i det hele tatt kjørte.
+    members?: {
+        type: 'node' | 'way' | 'relation';
+        ref: number;
+        role?: string;
+        geometry?: GeoPoint[];
+        lat?: number;
+        lon?: number;
+    }[];
     // Settes KUN av skianleggElements(), aldri av Overpass:
     /** Taggene til objektene som ligger i eller inntil polygonet. Driver
      *  fasettene — piste:type og mtb:type står på barneobjektene, ikke på
@@ -400,12 +415,20 @@ export const SKI_LIFT_VALUES =
 
 /** Hvor langt utenfor polygonets bounding box et bevis fortsatt teller.
  *
- *  Heiser er ofte tegnet fra parkeringsplassen utenfor polygonet og opp i
- *  bakken, så en ren containment-test ville mistet dem. 50 m er valgt lavt
- *  med vilje: tolleransen er den eneste tingen som kan la et NABOanlegg
+ *  Heiser og løyper er ofte tegnet fra parkeringsplassen utenfor polygonet og
+ *  opp i bakken, så en ren containment-test ville mistet dem. 50 m er valgt
+ *  lavt med vilje: tolleransen er den eneste tingen som kan la et NABOanlegg
  *  smitte over på et langrennsstadion, og Varingskollen har begge deler i
- *  samme dal. Hev den bare med en måling i hånda. */
-const SKI_EVIDENCE_TOLERANCE_M = 50;
+ *  samme dal.
+ *
+ *  Overstyrbar med PLACES_SKI_TOLERANCE_M. Den finnes fordi et polygon som
+ *  rapporteres med «0 bevis inne» kan ha to helt ulike årsaker — ingen
+ *  nedfart i det hele tatt, eller en nedfart som ligger like utenfor. To
+ *  tørrkjøringer med ulik tolleranse skiller dem, uten en kodeendring
+ *  imellom. */
+const SKI_EVIDENCE_TOLERANCE_M = Number(
+    process.env.PLACES_SKI_TOLERANCE_M ?? 50
+) || 50;
 
 /** Vakt mot nedlagte anlegg på en ellers aktiv nøkkel. */
 const NOT_DISUSED = '["disused"!~"."]["abandoned"!~"."]';
@@ -435,9 +458,26 @@ export const SKI_EVIDENCE_SELECTOR = [
     `nwr["route"="mtb"]${NOT_DISUSED}(area.a);`,
 ].join('\n  ');
 
-/** Punktene et element dekker: nodens eget punkt, eller way/relation-geometrien. */
-function elementPoints(el: OsmElement): GeoPoint[] {
+/**
+ * Punktene et element dekker.
+ *
+ * Rekkefølgen er ikke tilfeldig: RELASJONER må hentes fra medlemmene, fordi
+ * `out geom` ikke legger geometri på relasjonen selv. Uten medlems-grenen fikk
+ * en route=mtb-relasjon eller en løype mappet som relation null punkter, og
+ * talte dermed aldri som bevis.
+ */
+export function elementPoints(el: OsmElement): GeoPoint[] {
     if (el.geometry?.length) return el.geometry;
+    if (el.members?.length) {
+        const pts: GeoPoint[] = [];
+        for (const m of el.members) {
+            if (m.geometry?.length) pts.push(...m.geometry);
+            else if (typeof m.lat === 'number' && typeof m.lon === 'number') {
+                pts.push({ lat: m.lat, lon: m.lon });
+            }
+        }
+        if (pts.length) return pts;
+    }
     if (typeof el.lat === 'number' && typeof el.lon === 'number') {
         return [{ lat: el.lat, lon: el.lon }];
     }
@@ -445,10 +485,100 @@ function elementPoints(el: OsmElement): GeoPoint[] {
     return [];
 }
 
-/** Er dette elementet bevis for at polygonet er ALPINT (og ikke langrenn)? */
-export function isAlpineEvidence(t: OsmTags): boolean {
-    if (t.aerialway) return true;
-    return sportTokens(t['piste:type']).includes('downhill');
+/**
+ * RINGENE et polygon-element består av.
+ *
+ * Ways har én ring i `geometry`. Relasjoner (multipolygoner) har den ytre
+ * kanten delt på flere member-ways, hver med sin egen retning — de må sys
+ * sammen før de kan brukes til punkt-i-polygon.
+ *
+ * `inner`-medlemmer (hull) utelates bevisst. Et hull i et alpinanlegg er
+ * typisk en bygning eller et vann; å behandle det som «utenfor» ville bare
+ * gjort testen strengere enn nødvendig, og heisene ligger ikke i hullene.
+ *
+ * Tom liste betyr «kunne ikke bygge et polygon» — kallstedet må da falle
+ * tilbake på `bounds`, ikke forkaste elementet.
+ */
+export function polygonRings(el: OsmElement): GeoPoint[][] {
+    if (el.geometry && el.geometry.length >= 3) return [el.geometry];
+    if (!el.members?.length) return [];
+    const outer = el.members
+        .filter((m) => m.type === 'way' && (m.role ?? 'outer') !== 'inner')
+        .map((m) => m.geometry ?? [])
+        .filter((g) => g.length >= 2);
+    return assembleRings(outer);
+}
+
+/** En ring bygget av elementets bounds — siste utvei når sammensyingen
+ *  ikke lykkes (ødelagt multipolygon, eller medlemmer utenfor området).
+ *  Grovere enn den ekte kanten, men langt bedre enn å miste anlegget. */
+export function boundsRing(b: GeoBounds): GeoPoint[] {
+    return [
+        { lat: b.minlat, lon: b.minlon },
+        { lat: b.minlat, lon: b.maxlon },
+        { lat: b.maxlat, lon: b.maxlon },
+        { lat: b.maxlat, lon: b.minlon },
+        { lat: b.minlat, lon: b.minlon },
+    ];
+}
+
+/** Har noen av tagg-settene en utforløype? Det er det ENESTE som kvalifiserer
+ *  et polygon som alpinanlegg etter rettingen — se [skiVerdict]. */
+export function hasDownhillPiste(tagSets: readonly OsmTags[]): boolean {
+    return tagSets.some((t) => sportTokens(t['piste:type']).includes('downhill'));
+}
+
+/** Har noen av tagg-settene en skiheis? Kvalifiserer IKKE alene lenger, men
+ *  brukes til å rapportere polygoner som er verdt et manuelt blikk. */
+export function hasSkiLift(tagSets: readonly OsmTags[]): boolean {
+    return tagSets.some((t) => Boolean(t.aerialway));
+}
+
+/** Hoppanlegg-signal. Diskvalifiserer ikke — se [skiVerdict] — men forklarer
+ *  hvorfor et heis-treff uten utforløype trolig ikke er alpint. */
+export function hasSkiJump(tagSets: readonly OsmTags[]): boolean {
+    return tagSets.some(
+        (t) =>
+            sportTokens(t['piste:type']).includes('ski_jump') ||
+            sportTokens(t.sport).includes('ski_jumping')
+    );
+}
+
+export type SkiVerdict = 'alpint' | 'usikker-heis' | 'ikke-alpint';
+
+/**
+ * Er polygonet et ALPINANLEGG?
+ *
+ * KRAVET BLE STRAMMET ETTER TØRRKJØRINGEN MOT OSLO. Den gamle regelen var
+ * «heis ELLER utforløype», og den slapp inn tre av fem verifiserte anlegg som
+ * ikke er alpine: Holmenkollen nasjonalanlegg, Linderudkollen hoppbakke og
+ * Lia skisenter. Grunnen er enkel når man ser den: et hoppanlegg har heis opp
+ * til tilløpet. Heis er bevis på at noen fraktes oppover, ikke på at de kjører
+ * utfor.
+ *
+ * Ny regel: `piste:type=downhill` i eller inntil polygonet. Ingenting annet
+ * kvalifiserer.
+ *
+ * HVORFOR IKKE EN DISKVALIFISERING PÅ ski_jump/ski_jumping I STEDET: den ville
+ * vært en liste som kan være ufullstendig, og den ville tatt feil på et anlegg
+ * som har BÅDE hoppbakke og alpinbakke — som er vanlig. Med utforløype som
+ * krav trengs ingen slik liste: et hoppanlegg uten alpinbakke har ingen
+ * downhill-løype og faller ut av seg selv, mens et kombinert anlegg består på
+ * riktig grunnlag.
+ *
+ * PRISEN er recall: en liten kommunal bakke med heis der ingen har tagget
+ * nedfarten faller ut. Den taper vi bevisst framfor å hente inn hoppanlegg —
+ * men den forsvinner ikke i stillhet. Slike polygoner får «usikker-heis» og
+ * skrives ut i rapporten, så de kan seedes eller tagges i OSM.
+ */
+export function skiVerdict(
+    polygonTags: OsmTags,
+    memberTags: readonly OsmTags[]
+): SkiVerdict {
+    const alle = [polygonTags, ...memberTags];
+    if (hasDownhillPiste(alle)) return 'alpint';
+    if (hasSkiLift(alle)) return 'usikker-heis';
+    return 'ikke-alpint';
 }
 
 /**
@@ -480,31 +610,69 @@ out geom tags;`;
 
     const withPoints = evidence.map((el) => ({ el, points: elementPoints(el) }));
     const verified: OsmElement[] = [];
+    const rapport: string[] = [];
+
     for (const poly of polygons) {
-        const ring = poly.geometry ?? [];
-        // En node kan ikke være et anlegg med utstrekning. Overpass kan
-        // returnere en i `nwr`-settet; den har ingen ring å teste mot.
-        if (ring.length < 3) continue;
+        const id = `${poly.type}/${poly.id}`;
+        const navn = poly.tags?.name ?? '(uten navn)';
+        // Ways har ringen i `geometry`, relasjoner må sys sammen fra
+        // medlemmene. Lykkes ingen av delene, faller vi tilbake på Overpass
+        // sin egen bounds framfor å miste anlegget — det var nøyaktig den
+        // stille feilen som tok Skimore Oslo.
+        let rings = polygonRings(poly);
+        let grunnlag = poly.geometry?.length ? 'way-ring' : 'sydd ring';
+        if (rings.length === 0 && poly.bounds) {
+            rings = [boundsRing(poly.bounds)];
+            grunnlag = 'bounds (grov)';
+        }
+        if (rings.length === 0) {
+            rapport.push(`    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — ingen geometri`);
+            continue;
+        }
+
         const inside = withPoints.filter(({ points }) =>
-            anyInsideOrNear(points, ring, SKI_EVIDENCE_TOLERANCE_M)
+            anyInsideOrNearAny(points, rings, SKI_EVIDENCE_TOLERANCE_M)
         );
-        if (!inside.some(({ el }) => isAlpineEvidence(el.tags ?? {}))) continue;
-        const b = poly.bounds ?? boundsOf(ring);
-        if (!b) continue;
+        const memberTags = inside.map(({ el }) => el.tags ?? {});
+        const verdict = skiVerdict(poly.tags ?? {}, memberTags);
+
+        const b = poly.bounds ?? boundsOf(rings.flat());
+        if (!b) {
+            rapport.push(`    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — ingen bounds`);
+            continue;
+        }
+
+        // Hvert polygon får én linje med DOM og GRUNN. Begge feilene i den
+        // første tørrkjøringen var stille: den ene mistet det største
+        // anlegget, den andre la til noe som så riktig ut i en telling.
+        const hvorfor =
+            `${inside.length} bevis inne` +
+            (hasSkiJump([poly.tags ?? {}, ...memberTags]) ? ', hoppanlegg' : '') +
+            (verdict === 'usikker-heis' ? ', heis uten utforløype' : '');
+        rapport.push(
+            `    ${id.padEnd(18)} ${navn.padEnd(32)} ${verdict.padEnd(13)} ` +
+                `[${grunnlag}, ${hvorfor}]`
+        );
+
+        if (verdict !== 'alpint') continue;
         const c = centerOfBounds(b);
         verified.push({
             ...poly,
             // Se centerOfBounds: dette er bbox-senteret, altså midt i bakken
             // og ikke ved bunnstasjonen. Kjent og akseptert i v1.
             center: { lat: c.lat, lon: c.lon },
-            memberTags: inside.map(({ el }) => el.tags ?? {}),
+            memberTags,
             skiVerified: true,
         });
     }
+
+    const usikre = rapport.filter((r) => r.includes('usikker-heis')).length;
     console.log(
         `  ${city}/skianlegg   ${String(polygons.length).padStart(4)} polygoner, ` +
-            `${evidence.length} bevisobjekter → ${verified.length} verifiserte anlegg`
+            `${evidence.length} bevisobjekter → ${verified.length} alpinanlegg` +
+            (usikre ? `, ${usikre} med heis uten utforløype (se under)` : '')
     );
+    for (const linje of rapport) console.log(linje);
     return verified;
 }
 
@@ -930,6 +1098,20 @@ export interface ImportRow {
     venue_name: string | null;
     address: string | null;
     municipality: string;
+    /**
+     * «Hjemby» for et sted som ligger UTENFOR bykommunen (migrasjon 0012).
+     *
+     * SETTES IKKE i per-by-modus, og det er med vilje. Områdefilteret er
+     * kommunegrensen (`admin_level=7`), så alt importen returnerer ligger i
+     * byen — `municipality` er allerede sant, og «nær Oslo» på et anlegg som
+     * ER i Oslo ville vært en usann påstand. Seeden følger samme regel:
+     * Varingskollen i Nittedal får nearCity='Oslo', Korketrekkeren i Oslo får
+     * ingen (seed-vintertilbud.ts, kommentaren øverst).
+     *
+     * Feltet står her fordi NASJONAL modus må fylle ett av de to — se
+     * [rowsMissingCityAnchor]. En rad uten begge er usynlig i by-modus.
+     */
+    near_city?: string | null;
     lat: number;
     lng: number;
     opening_hours: string | null;
@@ -952,6 +1134,25 @@ export interface ImportRow {
     titleSource: TitleSource;
     geocodeError?: string;
     osmName: string | null;
+}
+
+/**
+ * Rader som ville vært USYNLIGE i by-modus.
+ *
+ * By-modus i /api/activities matcher `municipality ilike X OR near_city ilike
+ * X`. En rad uten noen av delene treffer ingen by og finnes bare i
+ * radius-modus — den forsvinner uten at noe feiler.
+ *
+ * I dag er dette umulig: per-by-importen setter alltid `municipality` til byen
+ * den kjøres for. Vakten finnes for nasjonal modus, der det ikke lenger
+ * finnes én by å sette. Da må importen enten slå opp kommunen per rad eller
+ * sette `near_city` — og denne funksjonen er stedet som nekter å la den
+ * beslutningen bli glemt.
+ */
+export function rowsMissingCityAnchor(rows: readonly ImportRow[]): ImportRow[] {
+    return rows.filter(
+        (r) => !r.municipality?.trim() && !r.near_city?.trim()
+    );
 }
 
 export async function buildRows(
@@ -1011,7 +1212,23 @@ export async function buildRows(
             price_text: tags.charge
                 ? tags.charge.replace(/\bNOK\b/g, 'kr').trim().slice(0, 100) || null
                 : null,
-            url: `https://www.openstreetmap.org/${el.type}/${el.id}`,
+            // Anleggets EGEN side når OSM har den, ellers OSM-objektet.
+            //
+            // En forelder som skal sjekke åpningstider og pris før avreise er
+            // ikke hjulpet av openstreetmap.org/relation/2259942 — Skimore
+            // Oslo har tryvann.no i taggene, og det er den lenka som betyr
+            // noe. Målt i prod: 243 av 7800 rader har website, men de er
+            // konsentrert der det teller (102 av 159 museer, 57 av 76
+            // biblioteker, 4 av 5 skianlegg mot 11 av 3996 lekeplasser).
+            //
+            // ODbL-ATTRIBUSJONEN BERØRES IKKE. Den ligger som eget felt i
+            // API-svaret (route.ts, `attribution`) og som en konstant i appen
+            // (DatahubService.osmAttribution), ikke i denne kolonnen — det er
+            // verifisert før endringen. Og OSM-objektet er uansett ikke tapt:
+            // external_id ER `<type>/<id>`, så lenka kan bygges når som helst.
+            url:
+                sanitizeWebsite(tags.website ?? tags['contact:website']) ??
+                `https://www.openstreetmap.org/${el.type}/${el.id}`,
             osm_tags: tags,
             // Utledes på nytt hver kjøring, fra taggene alene.
             facets: cat.facetsFor?.(el) ?? osmFacetTokens(tags),
@@ -1056,13 +1273,28 @@ async function importCity(
         // siste er forventet oppførsel, ikke en datafeil, og skal ikke se ut som
         // en tag-endring i OSM. `=== cat` er samme identitetsregel som
         // buildRows bruker, så tallet er nøyaktig det kategorien fikk tildelt.
+        //
+        // ELEMENTET MÅ SENDES MED. matches() fikk et andre argument da
+        // Skianlegg kom til, fordi tagger alene ikke kan skille et
+        // alpinanlegg fra et langrennsstadion — dommen ligger på elementet
+        // (skiVerified). buildRows ble oppdatert, denne linja ikke, og da
+        // returnerte Skianlegg sin matches false for ALT: fem steder ble
+        // hentet og skrevet, mens advarselen meldte «0 elementer».
         const catElements = elements.filter(
-            (el) => cats.find((c) => c.matches(el.tags ?? {})) === cat
+            (el) => cats.find((c) => c.matches(el.tags ?? {}, el)) === cat
         ).length;
         if (catElements === 0) {
+            // Kategorier med egen henter filtrerer også ROMLIG, så «0» her kan
+            // bety to ting: selektoren traff ingenting, eller den traff men
+            // ingenting besto. Per-polygon-rapporten over skiller dem — uten
+            // dette hintet leser man «sjekk selektoren» om en by som rett og
+            // slett ikke har alpinanlegg.
+            const hint = cat.fetchElements
+                ? ` ${cat.category} filtrerer også romlig — se linjene over for hvert polygon.`
+                : '';
             console.log(
                 `    ADVARSEL: Overpass ga 0 elementer for ${cat.category} i ${city}` +
-                    ` — sjekk selektoren og tag-endring i OSM.`
+                    ` — sjekk selektoren og tag-endring i OSM.${hint}`
             );
         } else if (catRows.length === 0) {
             console.log(
@@ -1115,6 +1347,18 @@ async function importCity(
         .eq('locked', true);
     if (lockedError) throw new Error(`Oppslag av låste rader feilet: ${lockedError.message}`);
     const locked = new Set((lockedRows ?? []).map((r) => r.external_id));
+
+    // Se [rowsMissingCityAnchor]: en rad uten by-anker er usynlig i by-modus.
+    // Umulig i per-by-modus; hard feil fordi det betyr at kjøremodusen er
+    // endret uten at dette ble tatt stilling til.
+    const utenAnker = rowsMissingCityAnchor(rows);
+    if (utenAnker.length > 0) {
+        throw new Error(
+            `${utenAnker.length} rader mangler både municipality og near_city ` +
+                `(f.eks. ${utenAnker[0].external_id}) — de ville vært usynlige i ` +
+                `by-modus. Sett ett av feltene før upsert.`
+        );
+    }
 
     const writable = rows.filter((r) => !locked.has(r.external_id));
     if (locked.size) console.log(`  Hopper over ${rows.length - writable.length} låste rader.`);
