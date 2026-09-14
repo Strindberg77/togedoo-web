@@ -28,6 +28,7 @@ import {
     type GeoPoint,
 } from '../lib/geo-polygon';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
+import { sanitizeWebsite } from '../lib/website';
 
 // Speilene kan overstyres via env (komma-separert) — nyttig for selvhostet
 // Overpass og for å verifisere feilhåndteringen mot et test-endepunkt.
@@ -1097,6 +1098,20 @@ export interface ImportRow {
     venue_name: string | null;
     address: string | null;
     municipality: string;
+    /**
+     * «Hjemby» for et sted som ligger UTENFOR bykommunen (migrasjon 0012).
+     *
+     * SETTES IKKE i per-by-modus, og det er med vilje. Områdefilteret er
+     * kommunegrensen (`admin_level=7`), så alt importen returnerer ligger i
+     * byen — `municipality` er allerede sant, og «nær Oslo» på et anlegg som
+     * ER i Oslo ville vært en usann påstand. Seeden følger samme regel:
+     * Varingskollen i Nittedal får nearCity='Oslo', Korketrekkeren i Oslo får
+     * ingen (seed-vintertilbud.ts, kommentaren øverst).
+     *
+     * Feltet står her fordi NASJONAL modus må fylle ett av de to — se
+     * [rowsMissingCityAnchor]. En rad uten begge er usynlig i by-modus.
+     */
+    near_city?: string | null;
     lat: number;
     lng: number;
     opening_hours: string | null;
@@ -1119,6 +1134,25 @@ export interface ImportRow {
     titleSource: TitleSource;
     geocodeError?: string;
     osmName: string | null;
+}
+
+/**
+ * Rader som ville vært USYNLIGE i by-modus.
+ *
+ * By-modus i /api/activities matcher `municipality ilike X OR near_city ilike
+ * X`. En rad uten noen av delene treffer ingen by og finnes bare i
+ * radius-modus — den forsvinner uten at noe feiler.
+ *
+ * I dag er dette umulig: per-by-importen setter alltid `municipality` til byen
+ * den kjøres for. Vakten finnes for nasjonal modus, der det ikke lenger
+ * finnes én by å sette. Da må importen enten slå opp kommunen per rad eller
+ * sette `near_city` — og denne funksjonen er stedet som nekter å la den
+ * beslutningen bli glemt.
+ */
+export function rowsMissingCityAnchor(rows: readonly ImportRow[]): ImportRow[] {
+    return rows.filter(
+        (r) => !r.municipality?.trim() && !r.near_city?.trim()
+    );
 }
 
 export async function buildRows(
@@ -1178,7 +1212,23 @@ export async function buildRows(
             price_text: tags.charge
                 ? tags.charge.replace(/\bNOK\b/g, 'kr').trim().slice(0, 100) || null
                 : null,
-            url: `https://www.openstreetmap.org/${el.type}/${el.id}`,
+            // Anleggets EGEN side når OSM har den, ellers OSM-objektet.
+            //
+            // En forelder som skal sjekke åpningstider og pris før avreise er
+            // ikke hjulpet av openstreetmap.org/relation/2259942 — Skimore
+            // Oslo har tryvann.no i taggene, og det er den lenka som betyr
+            // noe. Målt i prod: 243 av 7800 rader har website, men de er
+            // konsentrert der det teller (102 av 159 museer, 57 av 76
+            // biblioteker, 4 av 5 skianlegg mot 11 av 3996 lekeplasser).
+            //
+            // ODbL-ATTRIBUSJONEN BERØRES IKKE. Den ligger som eget felt i
+            // API-svaret (route.ts, `attribution`) og som en konstant i appen
+            // (DatahubService.osmAttribution), ikke i denne kolonnen — det er
+            // verifisert før endringen. Og OSM-objektet er uansett ikke tapt:
+            // external_id ER `<type>/<id>`, så lenka kan bygges når som helst.
+            url:
+                sanitizeWebsite(tags.website ?? tags['contact:website']) ??
+                `https://www.openstreetmap.org/${el.type}/${el.id}`,
             osm_tags: tags,
             // Utledes på nytt hver kjøring, fra taggene alene.
             facets: cat.facetsFor?.(el) ?? osmFacetTokens(tags),
@@ -1223,13 +1273,28 @@ async function importCity(
         // siste er forventet oppførsel, ikke en datafeil, og skal ikke se ut som
         // en tag-endring i OSM. `=== cat` er samme identitetsregel som
         // buildRows bruker, så tallet er nøyaktig det kategorien fikk tildelt.
+        //
+        // ELEMENTET MÅ SENDES MED. matches() fikk et andre argument da
+        // Skianlegg kom til, fordi tagger alene ikke kan skille et
+        // alpinanlegg fra et langrennsstadion — dommen ligger på elementet
+        // (skiVerified). buildRows ble oppdatert, denne linja ikke, og da
+        // returnerte Skianlegg sin matches false for ALT: fem steder ble
+        // hentet og skrevet, mens advarselen meldte «0 elementer».
         const catElements = elements.filter(
-            (el) => cats.find((c) => c.matches(el.tags ?? {})) === cat
+            (el) => cats.find((c) => c.matches(el.tags ?? {}, el)) === cat
         ).length;
         if (catElements === 0) {
+            // Kategorier med egen henter filtrerer også ROMLIG, så «0» her kan
+            // bety to ting: selektoren traff ingenting, eller den traff men
+            // ingenting besto. Per-polygon-rapporten over skiller dem — uten
+            // dette hintet leser man «sjekk selektoren» om en by som rett og
+            // slett ikke har alpinanlegg.
+            const hint = cat.fetchElements
+                ? ` ${cat.category} filtrerer også romlig — se linjene over for hvert polygon.`
+                : '';
             console.log(
                 `    ADVARSEL: Overpass ga 0 elementer for ${cat.category} i ${city}` +
-                    ` — sjekk selektoren og tag-endring i OSM.`
+                    ` — sjekk selektoren og tag-endring i OSM.${hint}`
             );
         } else if (catRows.length === 0) {
             console.log(
@@ -1282,6 +1347,18 @@ async function importCity(
         .eq('locked', true);
     if (lockedError) throw new Error(`Oppslag av låste rader feilet: ${lockedError.message}`);
     const locked = new Set((lockedRows ?? []).map((r) => r.external_id));
+
+    // Se [rowsMissingCityAnchor]: en rad uten by-anker er usynlig i by-modus.
+    // Umulig i per-by-modus; hard feil fordi det betyr at kjøremodusen er
+    // endret uten at dette ble tatt stilling til.
+    const utenAnker = rowsMissingCityAnchor(rows);
+    if (utenAnker.length > 0) {
+        throw new Error(
+            `${utenAnker.length} rader mangler både municipality og near_city ` +
+                `(f.eks. ${utenAnker[0].external_id}) — de ville vært usynlige i ` +
+                `by-modus. Sett ett av feltene før upsert.`
+        );
+    }
 
     const writable = rows.filter((r) => !locked.has(r.external_id));
     if (locked.size) console.log(`  Hopper over ${rows.length - writable.length} låste rader.`);

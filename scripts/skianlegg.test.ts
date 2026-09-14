@@ -384,3 +384,152 @@ test('inner-medlemmer (hull) tas ikke med i ytterkanten', async () => {
     };
     assert.equal(polygonRings(medHull).length, 1, 'kun ytterkanten');
 });
+
+// ===========================================================================
+// Tellingen i «0 elementer»-advarselen
+// ===========================================================================
+
+test('ADVARSEL-tellingen må sende elementet til matches()', async () => {
+    // ÅRSAKEN, isolert. matches() fikk et andre argument da Skianlegg kom
+    // til, fordi tagger alene ikke skiller et alpinanlegg fra et
+    // langrennsstadion — dommen ligger på elementet (skiVerified).
+    // buildRows ble oppdatert, tellelinja ikke. Resultat: fem steder hentet
+    // og skrevet, mens advarselen meldte «0 elementer for Skianlegg».
+    const { PLACE_CATEGORIES } = await load();
+    const ski = PLACE_CATEGORIES.find((c) => c.key === 'skianlegg')!;
+    const el = {
+        type: 'relation' as const,
+        id: 2259942,
+        tags: { landuse: 'winter_sports', name: 'Skimore Oslo' },
+        skiVerified: true,
+    };
+
+    // Slik den gamle tellelinja kalte den:
+    const utenElement = PLACE_CATEGORIES.find((c) => c.matches(el.tags, undefined));
+    assert.notEqual(utenElement, ski, 'uten elementet finner den ikke Skianlegg');
+
+    // Slik buildRows kaller den — og slik tellingen gjør nå:
+    const medElement = PLACE_CATEGORIES.find((c) => c.matches(el.tags, el));
+    assert.equal(medElement, ski);
+});
+
+test('tellingen gir 5 for fem verifiserte anlegg', async () => {
+    // Retning 1: advarselen skal IKKE fyre når noe faktisk kom inn.
+    const { PLACE_CATEGORIES } = await load();
+    const ski = PLACE_CATEGORIES.find((c) => c.key === 'skianlegg')!;
+    const elementer = [64845752, 65479699, 80369623, 81300521, 97706914].map((id) => ({
+        type: 'way' as const,
+        id,
+        tags: { landuse: 'winter_sports' },
+        skiVerified: true,
+    }));
+    const antall = elementer.filter(
+        (el) => PLACE_CATEGORIES.find((c) => c.matches(el.tags ?? {}, el)) === ski
+    ).length;
+    assert.equal(antall, 5);
+});
+
+test('tellingen gir 0 når kategorien VIRKELIG er tom', async () => {
+    // Retning 2: advarselen skal fortsatt fyre. Den fanget en ekte feilklasse
+    // i september, der en hel kategori falt til null i stillhet.
+    const { PLACE_CATEGORIES } = await load();
+    const ski = PLACE_CATEGORIES.find((c) => c.key === 'skianlegg')!;
+    // Ingen ski-elementer i det hele tatt.
+    const bareLekeplasser = [
+        { type: 'way' as const, id: 1, tags: { leisure: 'playground' } },
+    ];
+    assert.equal(
+        bareLekeplasser.filter(
+            (el) => PLACE_CATEGORIES.find((c) => c.matches(el.tags ?? {}, el)) === ski
+        ).length,
+        0
+    );
+    // Og: ski-taggede polygoner som IKKE besto den romlige testen teller
+    // heller ikke. Det er riktig — de ble aldri hentet inn.
+    const ikkeVerifisert = [
+        { type: 'way' as const, id: 2, tags: { landuse: 'winter_sports' } },
+    ];
+    assert.equal(
+        ikkeVerifisert.filter(
+            (el) => PLACE_CATEGORIES.find((c) => c.matches(el.tags ?? {}, el)) === ski
+        ).length,
+        0
+    );
+});
+
+test('vanlige kategorier teller uendret uten elementet', async () => {
+    // Rettingen skal ikke ha endret noe for de kategoriene som avgjør på
+    // tagger alene. Andre argument er valgfritt, og de ignorerer det.
+    const { PLACE_CATEGORIES } = await load();
+    const lekeplass = PLACE_CATEGORIES.find((c) => c.key === 'lekeplass')!;
+    const el = { type: 'way' as const, id: 1, tags: { leisure: 'playground' } };
+    assert.equal(PLACE_CATEGORIES.find((c) => c.matches(el.tags)), lekeplass);
+    assert.equal(PLACE_CATEGORIES.find((c) => c.matches(el.tags, el)), lekeplass);
+});
+
+// ===========================================================================
+// url fra nettside, og by-ankeret
+// ===========================================================================
+
+test('url settes fra website når OSM har den', async () => {
+    // Skimore Oslo: website=http://www.tryvann.no/ i taggene, mens url i
+    // basen var openstreetmap.org/relation/2259942.
+    const { sanitizeWebsite } = await import('../lib/website');
+    const osmLenke = 'https://www.openstreetmap.org/relation/2259942';
+    const url = (t: Record<string, string | undefined>) =>
+        sanitizeWebsite(t.website ?? t['contact:website']) ?? osmLenke;
+
+    assert.equal(url({ website: 'http://www.tryvann.no/' }), 'http://www.tryvann.no/');
+    assert.equal(url({ 'contact:website': 'www.a.no' }), 'https://www.a.no/');
+    // website vinner over contact:website.
+    assert.equal(url({ website: 'a.no', 'contact:website': 'b.no' }), 'https://a.no/');
+    // Ugyldig verdi faller tilbake til OSM-lenka, ikke til null.
+    assert.equal(url({ website: 'post@a.no' }), osmLenke);
+    assert.equal(url({}), osmLenke);
+});
+
+test('OSM-objektet er ikke tapt — external_id er lenka', async () => {
+    // Grunnen til at det er trygt å la url peke på anleggets side: lenka til
+    // OSM kan bygges når som helst fra external_id, som ER «<type>/<id>».
+    const externalId = 'relation/2259942';
+    assert.equal(
+        `https://www.openstreetmap.org/${externalId}`,
+        'https://www.openstreetmap.org/relation/2259942'
+    );
+});
+
+test('rowsMissingCityAnchor: en rad uten by er usynlig i by-modus', async () => {
+    const { rowsMissingCityAnchor } = await load();
+    const rad = (extra: Record<string, unknown>) =>
+        ({
+            external_id: 'way/1',
+            kind: 'place',
+            title: 't',
+            description: '',
+            category: 'Skianlegg',
+            target_audience: 'For alle',
+            venue_name: null,
+            address: null,
+            municipality: '',
+            lat: 60,
+            lng: 10,
+            opening_hours: null,
+            is_free: null,
+            price_text: null,
+            url: 'https://a.no/',
+            osm_tags: {},
+            facets: [],
+            status: 'published',
+            titleSource: 'osm-navn',
+            osmName: null,
+            ...extra,
+        }) as Parameters<typeof rowsMissingCityAnchor>[0][number];
+
+    // Per-by-modus setter alltid municipality — ingen treff.
+    assert.deepEqual(rowsMissingCityAnchor([rad({ municipality: 'Oslo' })]), []);
+    // near_city alene holder også (seedens form for utenbys-steder).
+    assert.deepEqual(rowsMissingCityAnchor([rad({ near_city: 'Oslo' })]), []);
+    // Ingen av delene: fanget. Dette er tilstanden nasjonal modus kan skape.
+    assert.equal(rowsMissingCityAnchor([rad({})]).length, 1);
+    assert.equal(rowsMissingCityAnchor([rad({ municipality: '   ' })]).length, 1);
+});

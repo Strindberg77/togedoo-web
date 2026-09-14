@@ -16,6 +16,7 @@ import {
     sortByDistanceFromCity,
     type LatLng,
 } from '../../../lib/cities';
+import { sanitizeWebsite } from '../../../lib/website';
 import {
     cityModeEventWindowFilter,
     cityModeSortIsLoadBearing,
@@ -48,25 +49,6 @@ interface ActivityRow {
     // nullbar her fordi raden kan komme fra en spørring gjort før
     // migrasjonen er kjørt — da mangler feltet, og `?? []` fanger det.
     facets: string[] | null;
-}
-
-/** Kun http/https-URL-er slipper gjennom til appens webview — OSM-tagger
- *  er fri tekst og kan i verste fall inneholde hva som helst. */
-function sanitizeWebsite(raw: string | null): string | null {
-    if (!raw) return null;
-    try {
-        const url = new URL(raw.trim());
-        if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
-    } catch {
-        // Vanlig OSM-slurv: «www.museum.no» uten skjema.
-        try {
-            const url = new URL(`https://${raw.trim()}`);
-            if (url.hostname.includes('.')) return url.href;
-        } catch {
-            /* ugyldig — dropp */
-        }
-    }
-    return null;
 }
 
 /** OSM-ens sport-tag på Ballbane er ofte semikolon-/komma-separert
