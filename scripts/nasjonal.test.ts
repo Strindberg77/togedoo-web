@@ -26,7 +26,9 @@ const nasjonalChunk: ImportChunk = {
     id: 'norge',
     label: 'Norge',
     cityAnchor: null,
-    overpassArea: '[bbox:57.5,4.0,71.5,31.5]',
+    overpassArea: '',
+    overpassScope: '(57.5,4.0,71.5,31.5)',
+    overpassTimeout: 300,
 };
 
 // ---------------------------------------------------------------------------

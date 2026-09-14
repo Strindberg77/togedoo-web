@@ -70,12 +70,35 @@ export interface ImportChunk {
      */
     readonly cityAnchor: string | null;
     /**
-     * KILDESPESIFIKK. Overpass-klausulen som avgrenser området, uten
-     * avsluttende semikolon. Navngitt etter kilden med vilje: den dagen
-     * fase 3 leser fra et uttrekk i stedet, byttes henteren og dette feltet —
-     * resten av begrepet står.
+     * KILDESPESIFIKK. Setningen som DEFINERER området, uten avsluttende
+     * semikolon — typisk `area[...]->.a`. Tom streng når avgrensningen ikke
+     * trenger en egen setning, som for en bbox.
+     *
+     * Navngitt etter kilden med vilje: den dagen fase 3 leser fra et uttrekk i
+     * stedet, byttes henteren og de tre `overpass*`-feltene — resten av
+     * begrepet står.
      */
     readonly overpassArea: string;
+    /**
+     * KILDESPESIFIKK. Filteret som settes på HVER selektorlinje: `(area.a)`
+     * for en kommune, `(57.5,4.0,71.5,31.5)` for en bbox.
+     *
+     * Selektorene i [PLACE_CATEGORIES] er skrevet med `(area.a)` som
+     * kanonisk form, og [scopedSelector] bytter den ut. Grunnen til at
+     * avgrensningen er et EGET felt og ikke bakt inn i selektorene: elleve
+     * selektorer måtte ellers kjenne til hvordan chunken er avgrenset, og da
+     * ville et kildebytte rørt dem alle.
+     */
+    readonly overpassScope: string;
+    /**
+     * KILDESPESIFIKK. Sekundene Overpass får bruke.
+     *
+     * 180 for en kommune. 300 for den nasjonale chunken, fordi det var det
+     * Frederik målte med: bevisspørringen brukte 35 s ved midnatt, men
+     * belastningen på speilet varierer mye mer enn volumet gjør — Oslo alene
+     * feilet med 504 på dagtid.
+     */
+    readonly overpassTimeout: number;
 }
 
 /** Filnavnsikker id: små bokstaver, tall, bindestrek. Kaster på alt annet, så
@@ -108,6 +131,8 @@ export function chunkForCity(city: string): ImportChunk {
         label: city,
         cityAnchor: city,
         overpassArea: `area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a`,
+        overpassScope: '(area.a)',
+        overpassTimeout: 180,
     };
 }
 
@@ -276,4 +301,69 @@ export function runCoversEverything(
 export function nationalCoverage(plan: readonly ImportChunk[]): number | null {
     if (plan.length && plan.every((c) => c.cityAnchor === null)) return 1;
     return null;
+}
+
+/**
+ * BBOKSEN OVER NORGE, som Frederik faktisk målte mot (sep. 2026).
+ *
+ * Tallene skal ikke justeres uten en ny måling: det er nøyaktig denne boksen
+ * som ga 445 winter_sports-polygoner på 5,5 s og 7 555 bevisobjekter på 35 s,
+ * begge uten remark og på første forsøk.
+ *
+ * DEN DEKKER OGSÅ SVERIGE, DANMARK OG FINLAND. Det er ikke en feil, men et
+ * valg: se [nationalChunk] for hvorfor avgrensningen til Norge skjer på
+ * koordinatet og ikke i spørringen.
+ */
+export const NATIONAL_BBOX = '(57.5,4.0,71.5,31.5)';
+
+/**
+ * HELE NORGE SOM ÉN CHUNK.
+ *
+ * MÅLINGEN SOM GJØR DEN MULIG (overpass-api.de, ved midnatt):
+ *
+ *   område  nwr[landuse=winter_sports]                      445 obj   5,5 s   3,2 MB
+ *   bevis   nwr[piste:type~downhill|sled|playground]       7555 obj    35 s  11,3 MB
+ *
+ * Ingen remark, begge på første forsøk.
+ *
+ * TIDSPUNKTET BETYR MER ENN STØRRELSEN. Oslo ALENE feilet med 504 i hver
+ * eneste kjøring på dagtid, mens hele Norge gikk gjennom ved midnatt. Den
+ * ufiltrerte bevisspørringen feilet med «server is probably too busy» — altså
+ * belastning, ikke volum. Sammenligningen filtrert/ufiltrert er derfor IKKE
+ * målt, og verdifilteret kan ikke krediteres for at nasjonal henting ble
+ * mulig. Det sparer data uansett, siden `nordic` ikke leses av noen.
+ *
+ * ÉN CHUNK, IKKE 356. Konsekvensene er verdt å ha i hodet:
+ *
+ *  + Områdeaksen (admin_level) trengs ikke i det hele tatt.
+ *  + Klyngedelte anlegg over en kommunegrense kan ikke oppstå — det finnes
+ *    ingen grense å dele på.
+ *  + Tre spørringer i stedet for ~700.
+ *  − Ingen delvis gjenopptagelse: feiler chunken, kjøres hele på nytt.
+ *    Hentesteget er 40 sekunder, så det er en billig pris.
+ */
+export function nationalChunk(): ImportChunk {
+    return {
+        id: 'norge',
+        label: 'Norge',
+        // null: chunken dekker 357 kommuner, så municipality utledes per rad
+        // fra grensefila. Se lib/municipality.ts.
+        cityAnchor: null,
+        // En bbox trenger ingen area-setning.
+        overpassArea: '',
+        overpassScope: NATIONAL_BBOX,
+        overpassTimeout: 300,
+    };
+}
+
+/**
+ * Selektoren med chunkens egen avgrensning.
+ *
+ * Selektorene er skrevet med `(area.a)`, som er sant for en kommune-chunk.
+ * For en bbox-chunk byttes den ut. ÉN funksjon gjør byttet, og den er testet
+ * mot hver enkelt selektor i [PLACE_CATEGORIES] — ellers ville en selektor
+ * som glemte konvensjonen blitt hentet for hele planeten uten at noe feilet.
+ */
+export function scopedSelector(selector: string, chunk: ImportChunk): string {
+    return selector.split('(area.a)').join(chunk.overpassScope);
 }

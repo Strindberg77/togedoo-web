@@ -24,6 +24,8 @@ import {
     assembleRings,
     boundsGapMeters,
     boundsOf,
+    boundsOverlap,
+    rejectBoundsFor,
     centerOfBounds,
     distanceMeters,
     pointInBounds,
@@ -32,9 +34,11 @@ import {
 } from '../lib/geo-polygon';
 import {
     fingerprint,
+    nationalChunk,
     nationalCoverage,
     planForCities,
     runCoversEverything,
+    scopedSelector,
     type ImportChunk,
 } from '../lib/import-chunks';
 import {
@@ -96,7 +100,7 @@ const OVERPASS_QUERY_PAUSE_MS = Number(process.env.PLACES_OVERPASS_QUERY_PAUSE_M
 // Overstyr med PLACES_PAUSE_MS. Egen pause, uavhengig av Overpass.
 const TITLE_PAUSE_MS = Number(process.env.PLACES_PAUSE_MS ?? 1100);
 const SOURCE_SLUG = 'osm-steder';
-const DEFAULT_CITIES = ['Oslo', 'Bergen', 'Trondheim', 'Stavanger'];
+export const DEFAULT_CITIES = ['Oslo', 'Bergen', 'Trondheim', 'Stavanger'];
 
 interface OsmTags {
     [key: string]: string | undefined;
@@ -463,6 +467,31 @@ export function resolveIsFree(tags: OsmTags, categoryDefault: true | null): bool
 }
 
 /**
+ * ÉN spørring, bygget av chunken.
+ *
+ * Alt som er kildespesifikt samles her: områdesetningen, avgrensningen på
+ * hver selektorlinje og timeouten. Det er dette stedet fase 3 bytter ut, og
+ * grunnen til at selektorene i [PLACE_CATEGORIES] slipper å vite om de kjøres
+ * mot en kommune eller mot hele landet.
+ *
+ * Områdesetningen utelates når den er tom — en bbox-chunk har ingen
+ * `area[...]->.a` å definere, og en tom linje med semikolon ville vært en
+ * syntaksfeil.
+ */
+export function overpassQuery(
+    chunk: ImportChunk,
+    selector: string,
+    outStatement: string
+): string {
+    const area = chunk.overpassArea ? `${chunk.overpassArea};\n` : '';
+    return `[out:json][timeout:${chunk.overpassTimeout}];
+${area}(
+  ${scopedSelector(selector, chunk)}
+);
+${outStatement};`;
+}
+
+/**
  * HEISVERDIENE som teller som bevis på et alpinanlegg.
  *
  * Eksportert for test — samme presedens som [resolveIsFree] og [sportTokens]:
@@ -706,12 +735,7 @@ async function skianleggFetch(chunk: ImportChunk): Promise<FetchSets> {
     // bounds som før. MERK at den likevel er en oppførselsendring på en
     // kategori med grønn tørrkjøring — `grunnlag`-kolonnen i rapporten viser
     // forskjellen, så kjør en ny tørrkjøring for Skianlegg før neste import.
-    const q = (selector: string) => `[out:json][timeout:180];
-${chunk.overpassArea};
-(
-  ${selector}
-);
-out geom;`;
+    const q = (selector: string) => overpassQuery(chunk, selector, 'out geom');
 
     const omrade = await fetchOverpass(q(SKI_AREA_SELECTOR), `${chunk.label}/skianlegg:omrade`);
     await sleep(OVERPASS_QUERY_PAUSE_MS);
@@ -734,7 +758,13 @@ out geom;`;
 export function skianleggVerify(sets: FetchSets): EnrichOutput {
     const polygons = sets.omrade ?? [];
     const evidence = sets.bevis ?? [];
-    const withPoints = evidence.map((el) => ({ el, points: elementPoints(el) }));
+    // Bevisobjektets egen boks regnes ut ÉN gang, ikke per polygon. Se
+    // [rejectBoundsFor]: sammen utgjør de forkastningsfilteret som gjør den
+    // romlige testen brukbar nasjonalt.
+    const withPoints = evidence.map((el) => {
+        const points = elementPoints(el);
+        return { el, points, bounds: boundsOf(points) };
+    });
     const verified: OsmElement[] = [];
     const rapport: string[] = [];
 
@@ -756,7 +786,22 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
             continue;
         }
 
-        const inside = withPoints.filter(({ points }) =>
+        // FORKASTNINGSFILTER FØRST. Uten det er testen O(polygoner × bevis ×
+        // punkter × ringlengde): 445 polygoner mot 7 555 bevisobjekter er
+        // 3,4 millioner par, og hvert par gikk gjennom hvert punkt i beviset
+        // mot hele ringen — [insideOrNear] regnet til og med ut ringens boks
+        // på nytt for hvert eneste punkt.
+        //
+        // Boks-mot-boks er O(1) og forkaster de aller fleste parene, fordi to
+        // tilfeldige anlegg i Norge ikke ligger oppå hverandre. Filteret er et
+        // OVERSETT av det den ekte testen godtar (se [rejectBoundsFor]), så
+        // dommene er uendret — det er låst av en egenskapstest mot den
+        // ufiltrerte varianten.
+        const reject = rejectBoundsFor(rings, SKI_EVIDENCE_TOLERANCE_M);
+        const kandidater = reject
+            ? withPoints.filter((w) => w.bounds && boundsOverlap(w.bounds, reject))
+            : [];
+        const inside = kandidater.filter(({ points }) =>
             anyInsideOrNearAny(points, rings, SKI_EVIDENCE_TOLERANCE_M)
         );
         const memberTags = inside.map(({ el }) => el.tags ?? {});
@@ -1334,12 +1379,7 @@ export function akingClusters(elements: readonly OsmElement[]): AkingResult {
  *  se [OUT_GEOM_TAGS] for hvorfor ordet `tags` ikke får stå der. */
 async function akingFetch(chunk: ImportChunk): Promise<FetchSets> {
     const main = await fetchOverpass(
-        `[out:json][timeout:180];
-${chunk.overpassArea};
-(
-  ${AKING_SELECTOR}
-);
-out geom;`,
+        overpassQuery(chunk, AKING_SELECTOR, 'out geom'),
         `${chunk.label}/aking:objekter`
     );
     return { main };
@@ -1883,12 +1923,7 @@ export async function fetchChunk(
     const emptySets: string[] = [];
     for (const cat of cats) {
         const hent = async (): Promise<FetchSets> => {
-            const query = `[out:json][timeout:180];
-${chunk.overpassArea};
-(
-  ${cat.selector}
-);
-out center tags;`;
+            const query = overpassQuery(chunk, cat.selector, 'out center tags');
             // Skianlegg og Aking har egne hentere: de trenger `out geom`, og
             // Skianlegg i tillegg en ekstra bevisspørring.
             return cat.fetchSets
@@ -2631,6 +2666,8 @@ export interface ImportArgs {
     resume: boolean;
     /** Bolk-fingeravtrykket som godkjennes. Kreves for å skrive med --work. */
     approve: string | null;
+    /** Hele Norge som ÉN chunk, i stedet for fire by-chunks. */
+    national: boolean;
 }
 
 /** Standard arbeidskatalog når --work eller --resume er gitt uten verdi.
@@ -2644,7 +2681,7 @@ export const DEFAULT_WORK_DIR = '.import-work';
 // ville «--worksheet» sluppet gjennom som gyldig. Strammingen gjelder også de
 // gamle flaggene — «--dry-runx» ble før akseptert og ignorert i stillhet,
 // nøyaktig den klassen feil denne parseren finnes for å stoppe.
-const KNOWN_FLAGS = ['--dry-run', '--city=', '--limit=', '--category=', '--work', '--work=', '--resume', '--approve='];
+const KNOWN_FLAGS = ['--dry-run', '--city=', '--limit=', '--category=', '--work', '--work=', '--resume', '--approve=', '--national'];
 
 function isKnownFlag(arg: string): boolean {
     return KNOWN_FLAGS.some((f) => (f.endsWith('=') ? arg.startsWith(f) : arg === f));
@@ -2680,6 +2717,20 @@ export function parseArgs(args: string[]): ImportArgs {
         ? cityArg.split(',').map((c) => c.trim()).filter(Boolean)
         : DEFAULT_CITIES;
     if (cityArg && !cities.length) throw new Error('--city= er tom.');
+
+    // NASJONAL MODUS KREVER ET EGET FLAGG. Den nærliggende varianten — la
+    // FRAVÆR av --city bety «hele landet» — ble forkastet, og det er den
+    // samme avveiningen som strammingen av argumentparseren: i dag betyr
+    // fravær av --city de fire byene, og å endre det i stillhet ville gjort
+    // at en kommando noen har kjørt i et år plutselig henter 55 000 objekter
+    // fra fire land. Et nytt flagg kan ikke overraske noen.
+    const national = args.includes('--national');
+    if (national && cityArg) {
+        throw new Error(
+            '--national og --city= utelukker hverandre. --national er hele Norge som ÉN ' +
+                'chunk; --city= er én chunk per kommune.'
+        );
+    }
 
     // --category=<key>[,<key>] kjører kun de valgte kategoriene, så et enkelt
     // feilende punkt (f.eks. den tunge «lekeplass»-selektoren) kan fylles inn
@@ -2726,7 +2777,7 @@ export function parseArgs(args: string[]): ImportArgs {
     // --limit eller claim-lista endres. Da nekter skrivingen.
     const approve = args.find((a) => a.startsWith('--approve='))?.slice('--approve='.length) ?? null;
 
-    return { dryRun, cities, limit, cats, catArg, workDir, resume, approve };
+    return { dryRun, cities, limit, cats, catArg, workDir, resume, approve, national };
 }
 
 
@@ -2777,7 +2828,7 @@ async function rapporterGodkjenning(
     plan: readonly ImportChunk[],
     store: WorkStore,
     cats: PlaceCategory[],
-    opts: { workDir: string; dryRun: boolean; limit: number; catArg?: string }
+    opts: { workDir: string; dryRun: boolean; limit: number; catArg?: string; national: boolean }
 ): Promise<{ dom: 'GO' | 'STOPP'; fingerprint: string | null; stoppGrunn?: string }> {
     const fp = batchFingerprint(
         plan.map((c) => c.id),
@@ -2853,6 +2904,7 @@ async function rapporterGodkjenning(
 
     const dom: 'GO' | 'STOPP' = utbytte ? 'STOPP' : 'GO';
     const flagg = [
+        opts.national ? '--national' : null,
         `--work=${opts.workDir}`,
         '--resume',
         opts.limit !== Infinity ? `--limit=${opts.limit}` : null,
@@ -2898,12 +2950,12 @@ async function main() {
         console.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
     }
-    const { dryRun, cities, limit, cats, catArg, workDir, resume, approve } = parsed;
+    const { dryRun, cities, limit, cats, catArg, workDir, resume, approve, national } = parsed;
 
-    const plan = planForCities(cities);
+    const plan = national ? [nationalChunk()] : planForCities(cities);
     const store: WorkStore = workDir ? new FileStore(workDir) : new NullStore();
 
-    console.log(`Import av faste steder: ${cities.join(', ')}${dryRun ? ' [DRY-RUN]' : ''}${limit !== Infinity ? ` [limit=${limit}/kategori]` : ''}${catArg ? ` [kategori=${cats.map((c) => c.key).join(',')}]` : ''}`);
+    console.log(`Import av faste steder: ${national ? 'HELE NORGE (én chunk)' : cities.join(', ')}${dryRun ? ' [DRY-RUN]' : ''}${limit !== Infinity ? ` [limit=${limit}/kategori]` : ''}${catArg ? ` [kategori=${cats.map((c) => c.key).join(',')}]` : ''}`);
     console.log(`Arbeidskatalog: ${store.describe()}${resume ? ' [--resume]' : ''}`);
 
     // GJENOPPTAGELSE ER EKSPLISITT. Å hoppe over ferdige steg i stillhet er
@@ -2954,6 +3006,7 @@ async function main() {
                 dryRun,
                 limit,
                 catArg,
+                national,
             });
         }
         if (!dryRun) {
@@ -3037,6 +3090,7 @@ async function main() {
         // gjenbrukes, så en gjenkjøring med --resume koster bare det som
         // faktisk feilet.
         const rerunFlags = [
+            national ? '--national' : null,
             dryRun ? '--dry-run' : null,
             limit !== Infinity ? `--limit=${limit}` : null,
             catArg ? `--category=${catArg}` : null,
@@ -3045,7 +3099,10 @@ async function main() {
         console.log('\nKjør de feilede på nytt, én om gangen (trygt — upsert er idempotent):');
         for (const f of failed) {
             console.log(
-                `  npx --yes tsx scripts/import-places.ts --city=${f.city} ${rerunFlags.join(' ')}`.trimEnd()
+                (national
+                    ? `  npx --yes tsx scripts/import-places.ts ${rerunFlags.join(' ')}`
+                    : `  npx --yes tsx scripts/import-places.ts --city=${f.city} ${rerunFlags.filter((x) => x !== '--national').join(' ')}`
+                ).trimEnd()
             );
         }
         // Delvis feil: de vellykkede byene er skrevet, men signaliser til
@@ -3058,7 +3115,7 @@ async function main() {
     // ingen gjennom uten et fingeravtrykk, og et fingeravtrykk finnes ikke før
     // alt er beriket.
     if (workDir && !godkjent) {
-        await rapporterGodkjenning(plan, store, cats, { workDir, dryRun, limit, catArg });
+        await rapporterGodkjenning(plan, store, cats, { workDir, dryRun, limit, catArg, national });
     }
 
     // TOMME SETT, samlet til slutt og lest fra MANIFESTET.
