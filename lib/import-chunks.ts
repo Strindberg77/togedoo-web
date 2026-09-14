@@ -147,6 +147,24 @@ export interface ManifestEntry {
     readonly count: number;
     readonly at: string;
     /**
+     * Kun `fetch`: settene som kom tilbake med NULL objekter, som
+     * «<kategori>/<sett>».
+     *
+     * HVORFOR DET MÅ LAGRES. Et tomt hentesteg og et ferdig hentesteg så
+     * nøyaktig like ut i manifestet fram til sep. 2026. En kjøring mot Oslo
+     * fikk 504 på første forsøk og et ekte, tomt 200-svar på det andre; begge
+     * steg ble markert ferdig med null linjer, og neste kjøring med --resume
+     * gjenopptok null rader uten å røre nettet. ADVARSEL-linja kom ikke, fordi
+     * berikelsen ble hoppet over. Samme spørring ga 34 objekter både før og
+     * etter.
+     *
+     * Med feltet her overlever opplysningen gjenopptagelsen, og
+     * oppsummeringen til slutt kan liste hver tomme (chunk, kategori) enten
+     * chunken kjørte denne gangen eller ikke — som er det eneste som virker
+     * når 353 chunks kjører over en natt og ingen leser midtpartiet.
+     */
+    readonly emptySets?: readonly string[];
+    /**
      * Kun `enrich`: OSM-id-ene som ble undertrykt av en claim i denne chunken.
      *
      * HVORFOR HER OG IKKE I MINNET: dødt-claim-rapporten må kunne si «denne

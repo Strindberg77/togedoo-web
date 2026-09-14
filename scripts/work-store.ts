@@ -65,7 +65,7 @@ export interface WorkStore {
         stage: StageName,
         fingerprint: string,
         rows: readonly T[],
-        extra?: Pick<ManifestEntry, 'seenClaims'>
+        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets'>
     ): void;
     /** Hele manifestet, siste oppføring per (chunk, steg). */
     entries(): ReadonlyMap<string, ManifestEntry>;
@@ -134,7 +134,7 @@ export class FileStore implements WorkStore {
         stage: StageName,
         fingerprint: string,
         rows: readonly T[],
-        extra?: Pick<ManifestEntry, 'seenClaims'>
+        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets'>
     ): void {
         const final = this.file(chunk, stage);
         const tmp = `${final}.tmp`;
@@ -149,6 +149,7 @@ export class FileStore implements WorkStore {
             count: rows.length,
             at: new Date().toISOString(),
             ...(extra?.seenClaims ? { seenClaims: extra.seenClaims } : {}),
+            ...(extra?.emptySets ? { emptySets: extra.emptySets } : {}),
         };
         // Append ETTER renamet. Se filhodet: denne rekkefølgen er det som
         // gjør at en manifestlinje aldri kan peke på en halv fil.

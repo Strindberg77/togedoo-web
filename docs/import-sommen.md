@@ -79,6 +79,41 @@ limit deler hentesteg.
 koster sekunder. Var steget merket ferdig, ville en kjøring som døde midt i
 bolkeløkka etterlatt en halvskrevet chunk som så ferdig ut.
 
+## Tomme hentesteg
+
+**Tom er både et gyldig svar og det mest sannsynlige symptomet på en feil**, og
+ingenting i svaret skiller de to.
+
+Observert sep. 2026: Oslo/park fikk 504 på første forsøk og et helt ordinært
+200 med `elements: []` og ingen remark på det andre. `fetchOverpass` hadde
+ingen grunn til å mistenke noe. Sømmen skrev 0 linjer i begge steg og markerte
+begge ferdig; neste `--resume` gjenopptok 0 rader uten å røre nettet, og
+ADVARSEL-linja kom ikke fordi berikelsen ble hoppet over. Samme spørring ga 34
+objekter både før og etter.
+
+**Løsningen er en observasjon til, ikke en gjetning.** Kommer en kategori tomt
+tilbake, stilles spørringen én gang til:
+
+| Andre svar | Utfall |
+|---|---|
+| har data | dataene brukes, første svar var forbigående tomt |
+| også tomt | `BEKREFTET TOM`, føres i manifestet som `emptySets` |
+
+Bekreftet tom er et **endelig** svar: steget markeres ferdig og `--resume`
+gjenbruker det. En legitimt tom chunk blir aldri en evig retry.
+
+**Terskelen er hele kategorien, ikke det enkelte settet.** Ga ett av
+Skianleggs to sett data, har området løst seg og Overpass har svart — det var
+det som skulle verifiseres. At `omrade` er tom mens `bevis` har tusenvis av
+langrennsløyper er normalt i en kommune uten alpinanlegg, og å kjøre den dyre
+bevisspørringen om igjen for det ville vært å betale mest der signalet er
+svakest. Slike sett rapporteres likevel.
+
+Til slutt i kjøringen står alle tomme sett samlet, lest fra manifestet, enten
+chunken kjørte denne gangen eller ble gjenopptatt. **Se etter mønster:** én tom
+kategori i én kommune er geografi, den samme kategorien tom i tjue kommuner er
+en selektor- eller tag-endring.
+
 ## Gjenopptagelse
 
 **Eksplisitt**, med `--resume`. Å gjenbruke i stillhet er den klassiske fella:

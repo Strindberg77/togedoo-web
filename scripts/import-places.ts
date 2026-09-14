@@ -69,7 +69,9 @@ const OVERPASS_BACKOFF_MS = (() => {
     return parsed.length ? parsed : [5000, 15000, 45000];
 })();
 // 2a: kort høflighetspause mellom de per-kategori-spørringene innen én by.
-const OVERPASS_QUERY_PAUSE_MS = 1000;
+// Overstyrbar av samme grunn som de andre pausene: bekreftelsen av et tomt
+// svar legger på én pause til per tom kategori, og tester skal ikke sove.
+const OVERPASS_QUERY_PAUSE_MS = Number(process.env.PLACES_OVERPASS_QUERY_PAUSE_MS ?? 1000);
 // Kartverket punktsøk svarte 502 under 100 ms-kadens og var treg (timeouts)
 // ved 400 ms (jul. 2026). Pausen dekker nå OGSÅ Nominatim-bydeloppslaget
 // (i-omraade), som krever ≥1 req/s — derfor 1100 ms default. Pausen kjøres
@@ -1731,11 +1733,24 @@ export async function fetchOverpass(query: string, label: string): Promise<OsmEl
                 // er siste forsøk brukt, kaster løkka under som ved enhver annen
                 // feil, og importCity isolerer den til én by.
                 const remark = typeof json.remark === 'string' ? json.remark.trim() : '';
-                if (!remark) return (json.elements ?? []) as OsmElement[];
-                console.log(
-                    `    ${label}: ${endpoint} svarte 200 med remark «${remark}» ` +
-                        `(forsøk ${i + 1}/${attempts.length})`
-                );
+                // `elements` MÅ være en liste. Var det før `json.elements ?? []`,
+                // og da var et 200-svar UTEN elements-nøkkel — en proxy-feilside,
+                // et gateway-svar i JSON — ikke til å skille fra et tomt område.
+                // Samme feilklasse som remark-sjekken over, funnet sep. 2026 da
+                // det tomme hentesteget ble undersøkt. Retryes på lik linje.
+                if (!remark && !Array.isArray(json.elements)) {
+                    console.log(
+                        `    ${label}: ${endpoint} svarte 200 uten elements-liste ` +
+                            `(forsøk ${i + 1}/${attempts.length})`
+                    );
+                } else if (!remark) {
+                    return json.elements as OsmElement[];
+                } else {
+                    console.log(
+                        `    ${label}: ${endpoint} svarte 200 med remark «${remark}» ` +
+                            `(forsøk ${i + 1}/${attempts.length})`
+                    );
+                }
             } else if (!OVERPASS_RETRY_STATUS.has(res.status)) {
                 // Kun forbigående statuser er verdt å prøve på nytt; andre er faste feil.
                 throw new Error(`Overpass HTTP ${res.status} (${label})`);
@@ -1791,34 +1806,85 @@ export interface FetchRecord {
  * kunne kjøres om uten å hente på nytt. Det er hele grunnen til at sømmen går
  * nettopp her.
  */
-async function fetchChunk(
+export async function fetchChunk(
     chunk: ImportChunk,
     cats: PlaceCategory[] = PLACE_CATEGORIES
-): Promise<FetchRecord[]> {
-    const ut: FetchRecord[] = [];
+): Promise<{ records: FetchRecord[]; emptySets: string[] }> {
+    const records: FetchRecord[] = [];
+    const emptySets: string[] = [];
     for (const cat of cats) {
-        const query = `[out:json][timeout:180];
+        const hent = async (): Promise<FetchSets> => {
+            const query = `[out:json][timeout:180];
 ${chunk.overpassArea};
 (
   ${cat.selector}
 );
 out center tags;`;
-        // Skianlegg og Aking har egne hentere: de trenger `out geom`, og
-        // Skianlegg i tillegg en ekstra bevisspørring.
-        const sets: FetchSets = cat.fetchSets
-            ? await cat.fetchSets(chunk)
-            : { main: await fetchOverpass(query, `${chunk.label}/${cat.key}`) };
+            // Skianlegg og Aking har egne hentere: de trenger `out geom`, og
+            // Skianlegg i tillegg en ekstra bevisspørring.
+            return cat.fetchSets
+                ? await cat.fetchSets(chunk)
+                : { main: await fetchOverpass(query, `${chunk.label}/${cat.key}`) };
+        };
+
+        let sets = await hent();
+        let antall = Object.values(sets).reduce((n, liste) => n + liste.length, 0);
+
+        // ─────────────────────────────────────────────────────────────────
+        // TOM ER BÅDE ET GYLDIG SVAR OG DET MEST SANNSYNLIGE SYMPTOMET PÅ EN
+        // FEIL, og ingenting i svaret skiller de to. Derfor tas en OBSERVASJON
+        // TIL i stedet for å gjette.
+        //
+        // Observert sep. 2026: Oslo/park fikk 504 på første forsøk, deretter et
+        // helt ordinært 200 med `elements: []` og ingen remark. fetchOverpass
+        // hadde ingen grunn til å mistenke noe — og samme spørring ga 34
+        // objekter både før og etter. Sømmen skrev da to tomme steg og markerte
+        // begge ferdig, og neste --resume gjenopptok null rader uten å røre
+        // nettet.
+        //
+        // Bekreftelsen koster ÉN ekstra spørring, og bare for kategorier som
+        // faktisk kom tomme tilbake. Den gjør ikke en legitimt tom chunk til en
+        // evig retry: bekreftet tom er et ENDELIG svar, steget markeres ferdig,
+        // og --resume gjenbruker det.
+        //
+        // TERSKELEN ER HELE KATEGORIEN, ikke det enkelte settet. Ga ETT av
+        // Skianleggs to sett data, har området løst seg og Overpass har svart —
+        // det er nettopp det som skulle verifiseres. At `omrade` er tom mens
+        // `bevis` har 4000 objekter er normalt i en kommune uten alpinanlegg,
+        // og å kjøre den dyre bevisspørringen på nytt for det ville vært å
+        // betale mest der signalet er svakest. Slike sett rapporteres likevel
+        // (se [emptySets]).
+        let merknad = '';
+        if (antall === 0) {
+            await sleep(OVERPASS_QUERY_PAUSE_MS);
+            const andre = await hent();
+            const antallAndre = Object.values(andre).reduce((n, liste) => n + liste.length, 0);
+            if (antallAndre > 0) {
+                merknad =
+                    `  ← FØRSTE SVAR VAR TOMT, andre ga ${antallAndre}: ` +
+                    'forbigående tomt svar, ikke et tomt område';
+                sets = andre;
+                antall = antallAndre;
+            } else {
+                merknad = '  ← BEKREFTET TOM (målt to ganger)';
+            }
+        }
+
         const deler: string[] = [];
         for (const [navn, elementer] of Object.entries(sets)) {
-            for (const e of elementer) ut.push({ c: cat.key, s: navn, e });
+            for (const e of elementer) records.push({ c: cat.key, s: navn, e });
             deler.push(`${elementer.length} ${navn}`);
+            if (elementer.length === 0) emptySets.push(`${cat.key}/${navn}`);
         }
+        // Kategorier uten et eneste sett (en henter som returnerte {}) ville
+        // ellers vært usynlige — verken tomme sett eller elementer.
+        if (Object.keys(sets).length === 0) emptySets.push(`${cat.key}/(ingen sett)`);
         console.log(
-            `  hent ${chunk.label}/${cat.key.padEnd(11)} ${deler.join(', ')}`
+            `  hent ${chunk.label}/${cat.key.padEnd(11)} ${deler.join(', ') || 'ingen sett'}${merknad}`
         );
         await sleep(OVERPASS_QUERY_PAUSE_MS);
     }
-    return ut;
+    return { records, emptySets };
 }
 
 /** Mellomleddet tilbake til navngitte sett per kategori. */
@@ -2387,11 +2453,19 @@ async function runChunk(
     let fetched: FetchRecord[];
     if (resume && store.isDone(chunk, 'fetch', fp.fetch)) {
         fetched = store.read<FetchRecord>(chunk, 'fetch');
+        const tomme = store.entries().get(`${chunk.id}/fetch`)?.emptySets ?? [];
         console.log(`  [gjenopptatt] hent: ${fetched.length} elementer fra mellomleddet`);
+        // Gjenopptagelsen hopper over berikelsen, og dermed over ADVARSEL-linja
+        // som ellers ville sagt fra om en tom kategori. Uten denne linja ville
+        // en tom chunk vært helt usynlig i en gjenopptatt kjøring.
+        if (tomme.length) {
+            console.log(`  [gjenopptatt] BEKREFTET TOMME SETT: ${tomme.join(', ')}`);
+        }
     } else {
-        fetched = await fetchChunk(chunk, cats);
+        const ut = await fetchChunk(chunk, cats);
+        fetched = ut.records;
         console.log(`  Overpass ga ${fetched.length} elementer`);
-        store.write(chunk, 'fetch', fp.fetch, fetched);
+        store.write(chunk, 'fetch', fp.fetch, fetched, { emptySets: ut.emptySets });
     }
 
     let enriched: EnrichedChunk;
@@ -2595,6 +2669,36 @@ async function main() {
         // operatør/CI at minst én by mangler ved å avslutte med kode 1.
         process.exitCode = 1;
     }
+    // TOMME SETT, samlet til slutt og lest fra MANIFESTET.
+    //
+    // Midt i utskriften er en tom kategori synlig for én chunk og usynlig for
+    // 353 over en natt. Her står de samlet, og de står der enten chunken ble
+    // kjørt denne gangen eller gjenopptatt fra mellomleddet.
+    //
+    // «Bekreftet tom» betyr målt to ganger, ikke antatt. Det er fortsatt
+    // mulig at begge spørringene var forbigående tomme — sannsynligheten er
+    // bare mye lavere, og lista er stedet å se etter et mønster: ÉN tom
+    // kategori i én kommune er normalt, den SAMME kategorien tom i tjue
+    // kommuner er ikke.
+    const tommeSett: string[] = [];
+    for (const chunk of plan) {
+        for (const sett of store.entries().get(`${chunk.id}/fetch`)?.emptySets ?? []) {
+            tommeSett.push(`${chunk.id.padEnd(16)} ${sett}`);
+        }
+    }
+    if (tommeSett.length) {
+        console.log(`\nTOMME SETT (${tommeSett.length}):`);
+        for (const linje of tommeSett) console.log(`  ${linje}`);
+        console.log(
+            '  Hvert av disse ga 0 objekter. En kategori kan være legitimt tom i en ' +
+                'kommune (ikke alle har en akebakke), og hele kategorien ble målt to ' +
+                'ganger før den ble godtatt som tom. Se etter MØNSTER: samme kategori ' +
+                'tom i mange chunks er en selektor- eller tag-endring, ikke geografi.'
+        );
+    } else if (workDir) {
+        console.log('\nIngen tomme sett.');
+    }
+
     // DØDE CLAIMS. Ei liste som vedlikeholdes for hånd rotner i stillhet, og
     // en claim som ikke lenger treffer noe undertrykker ingenting — men den
     // ser ut som om den gjør det. Ved nasjonal skala er dette den eneste
