@@ -94,6 +94,49 @@ export function pointInBounds(p: GeoPoint, b: GeoBounds): boolean {
 }
 
 /**
+ * Avstand mellom to punkter i meter, ekvirektangulær tilnærming.
+ *
+ * IKKE haversine, og det er et bevisst valg: alle avstandene denne kodebasen
+ * måler er under noen få kilometer, innenfor én norsk kommune. På den skalaen
+ * er feilen mot haversine under en promille, og formelen har ingen
+ * trigonometri utover den ene cosinusen — samme cos-korreksjon som
+ * [padBounds], så de to kan aldri komme i utakt om hva «50 meter østover»
+ * betyr.
+ *
+ * Skal noe en dag måle på tvers av landet, må denne byttes ut. Da er dette
+ * kommentaren som sier hvorfor den kunne stå så lenge.
+ */
+export function distanceMeters(a: GeoPoint, b: GeoPoint): number {
+    const midLat = (a.lat + b.lat) / 2;
+    const cos = Math.cos((midLat * Math.PI) / 180);
+    const dLat = (a.lat - b.lat) * METERS_PER_DEG_LAT;
+    const dLon = (a.lon - b.lon) * METERS_PER_DEG_LAT * Math.max(cos, 0.01);
+    return Math.hypot(dLat, dLon);
+}
+
+/**
+ * Korteste avstand mellom to bounding-bokser, i meter. 0 når de overlapper
+ * eller tangerer.
+ *
+ * SYMMETRISK ved konstruksjon, og det er hele grunnen til at den ikke er
+ * skrevet som «padBounds(a, m) overlapper b». Den formen gir cos-korreksjonen
+ * fra A SIN midtbreddegrad, og `nær(a, b)` kunne da svart noe annet enn
+ * `nær(b, a)`. Her regnes gapet med midtbreddegraden til de to boksene sett
+ * under ett, så rekkefølgen ikke kan påvirke svaret — en gruppering som
+ * bygger på denne må kunne stole på det.
+ */
+export function boundsGapMeters(a: GeoBounds, b: GeoBounds): number {
+    const gapLat = Math.max(0, a.minlat - b.maxlat, b.minlat - a.maxlat);
+    const gapLon = Math.max(0, a.minlon - b.maxlon, b.minlon - a.maxlon);
+    const midLat = (a.minlat + a.maxlat + b.minlat + b.maxlat) / 4;
+    const cos = Math.cos((midLat * Math.PI) / 180);
+    return Math.hypot(
+        gapLat * METERS_PER_DEG_LAT,
+        gapLon * METERS_PER_DEG_LAT * Math.max(cos, 0.01)
+    );
+}
+
+/**
  * Punkt-i-polygon med ray casting (partall/oddetall).
  *
  * Skyter en stråle østover fra punktet og teller kryssinger med kantene.

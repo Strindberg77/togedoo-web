@@ -22,8 +22,10 @@ import { SKATEBOARD_IMPLIES, type FacetToken } from '../lib/facets';
 import {
     anyInsideOrNearAny,
     assembleRings,
+    boundsGapMeters,
     boundsOf,
     centerOfBounds,
+    distanceMeters,
     type GeoBounds,
     type GeoPoint,
 } from '../lib/geo-polygon';
@@ -98,6 +100,10 @@ interface OsmElement {
      *  `matches` gjort et hvilket som helst ski-tagget polygon til Skianlegg,
      *  også et langrennsstadion som kom inn via en annen kategoris spørring. */
     skiVerified?: boolean;
+    /** Settes KUN av akingClusters(): objektet er ett anker for én akebakke,
+     *  ikke ett av flere segmenter, og det er ikke en alpinbakke. Se
+     *  [akingVerdict] for hvorfor taggene alene ikke er nok. */
+    akingVerified?: boolean;
 }
 
 /**
@@ -676,6 +682,356 @@ out geom tags;`;
     return verified;
 }
 
+// ─────────────────────────────────── AKING ───────────────────────────────────
+//
+// EGEN KATEGORI fra sep. 2026. Akebakker lå tidligere under Skianlegg, med
+// «(akebakke)» skrevet inn i tittelen på den ene seedede raden. Det var ikke
+// bare upresist: å ake i en alpinbakke i åpningstiden er farlig, og en
+// kategori som blander de to inviterer til nettopp det. Derfor er skillet
+// håndhevet i [akingVerdict] og ikke bare i navnet — et objekt tagget
+// «piste:type=downhill;sled» blir ALDRI en Aking-rad.
+//
+// MÅLT NASJONALT (Overpass, sep. 2026): 89 objekter med piste:type=sled,
+// 43 med piste:type=playground (skileik), og to objekter med
+// «downhill;sled».
+
+/** Akebakke-selektoren. ÉN tagg, og det er med vilje.
+ *
+ *  `sport=toboggan` er BEVISST utelatt. Det eneste målte forekomsten i Oslo
+ *  står på en LEKEPLASS (sammen med `playground=sledding`), og den skal
+ *  forbli en lekeplass — se [akingVerdict]. Om det finnes frittstående
+ *  `sport=toboggan`-objekter uten `piste:type` i Norge er IKKE målt, og en
+ *  selektorlinje for dem ville vært en gjetning. Legges inn den dagen noen
+ *  har telt dem.
+ *
+ *  `piste:type=playground` (skileik) er også utelatt, av en annen grunn: en
+ *  skileik er ikke en akebakke. Den forblir en FASETT (`skileik`), slik den
+ *  har vært siden migrasjon 0016.
+ *
+ *  Regex-en er understreng-matching, som alle Overpass sine `~`. Ingen annen
+ *  piste:type-verdi inneholder «sled», så den er presis nok — og den skal
+ *  fange «downhill;sled», nettopp for at [akingVerdict] kan AVVISE den
+ *  synlig i rapporten framfor at den forsvinner i selektoren. */
+export const AKING_SELECTOR = `nwr["piste:type"~"sled"]${NOT_DISUSED}(area.a);`;
+
+/** Hvor nær to likt navngitte objekter må ligge for å telle som samme bakke.
+ *
+ *  Grupperingen er ENKELTLENKE: segment A og C havner sammen om B ligger
+ *  mellom dem, så en lang bakke kan strekke seg mye lenger enn taket. Taket
+ *  er derfor ikke bakkens lengde, men den største tillatte LUKEN mellom to
+ *  nabosegmenter.
+ *
+ *  1000 m er valgt romslig nok til at et hull i taggingen ikke splitter en
+ *  bakke i to rader, og stramt nok til at to ubeslektede «Akebakken» i hver
+ *  sin bydel forblir to. Overstyrbar med PLACES_AKING_GROUP_M, av samme grunn
+ *  som ski-tolleransen: to tørrkjøringer med ulik verdi skiller «for mange
+ *  rader» fra «feil sammenslått», uten en kodeendring imellom. */
+export const AKING_NAME_GROUP_M =
+    Number(process.env.PLACES_AKING_GROUP_M ?? 1000) || 1000;
+
+/** Har noen av tagg-settene en akeløype? */
+export function hasSledPiste(tagSets: readonly OsmTags[]): boolean {
+    return tagSets.some((t) => sportTokens(t['piste:type']).includes('sled'));
+}
+
+export type AkingVerdict =
+    | 'aking'
+    /** Også utforløype. Hører hjemme i alpinanlegget, ikke her. */
+    | 'alpint-blandet'
+    /** leisure=playground vinner. Se under. */
+    | 'lekeplass'
+    /** Uten brukbart navn — utelatt i v1. Se under. */
+    | 'uten-navn'
+    | 'ikke-aking';
+
+/**
+ * Er dette ÉN akebakke vi kan navngi?
+ *
+ * De tre avvisningene, i den rekkefølgen de tas:
+ *
+ *  1. `downhill;sled` → **alpint-blandet**. To objekter nasjonalt. Dette er
+ *     kategoriens eksistensgrunn: en nedfart som også brukes til aking er en
+ *     alpinbakke, og en akebakke-nål der ville sendt barn ned en bakke med
+ *     slalåmkjørere i. Regelen står her, ikke i selektoren, så avvisningen
+ *     blir synlig i rapporten.
+ *
+ *  2. `leisure=playground` → **lekeplass**. Oslo har minst én lekeplass
+ *     tagget `sport=toboggan` + `playground=sledding`. Lekeplass står FØR
+ *     Aking i [PLACE_CATEGORIES], så dedupliseringen i [overpassCity] ville
+ *     uansett gitt lekeplassen forrang — men bare når begge spørringene
+ *     kjører. Med `--categories=aking` gjør den det ikke, og uten denne
+ *     linja ville akebakke-kategorien stjålet lekeplassen i nettopp den
+ *     kjøringen. Den taper ingenting på å bli stående der den er: fasetten
+ *     `aking` utledes fra `piste:type=sled` av standardregelen
+ *     [osmFacetTokens], så lekeplassen med akebakke er søkbar på aking
+ *     likevel.
+ *
+ *  3. Uten brukbart navn → **uten-navn**. Dette er v1-avgrensningen, og den
+ *     er en ekte kostnad: et navnløst segment blir ingen rad. Grunnen er at
+ *     grupperingen under bygger på navnet. To navnløse segmenter i samme
+ *     bakke kan ikke skilles fra to navnløse bakker ved siden av hverandre,
+ *     og valget står da mellom å lage én rad per segment (14 nåler på
+ *     Korketrekkeren) eller ingen. Ingen er den ærligere feilen — og de
+ *     navnløse telles i rapporten, så tallet ikke forsvinner.
+ */
+export function akingVerdict(t: OsmTags): AkingVerdict {
+    if (!hasSledPiste([t])) return 'ikke-aking';
+    if (hasDownhillPiste([t])) return 'alpint-blandet';
+    if (t.leisure === 'playground') return 'lekeplass';
+    if (!isUsablePlaceName(t.name)) return 'uten-navn';
+    return 'aking';
+}
+
+/** Navnet som GRUPPERINGSNØKKEL. Bare trimming, småbokstaver og kollapset
+ *  mellomrom — ingen fjerning av ord. «Øvre Akebakken» og «Akebakken» er to
+ *  navn, og importen har ingen kilde som sier at de er samme bakke. */
+export function akingNameKey(name: string | undefined): string {
+    return (name ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Kartpunktet for en akebakke: bbox-senteret SNAPPET til nærmeste punkt i
+ * geometrien.
+ *
+ * HVORFOR IKKE BARE BBOX-SENTERET, som Skianlegg bruker: et alpinanlegg er
+ * et FLATE-objekt, og senteret i boksen ligger inne i anlegget. En akebakke
+ * er en LINJE, ofte krum, og boksens senter kan da ligge helt utenfor traseen
+ * — i skogen ved siden av, eller på en vei. Snappingen koster én sortering og
+ * garanterer at nåla står på bakken.
+ *
+ * HVA DEN IKKE KAN: finne TOPPEN. Det er der man begynner å ake, og det er
+ * punktet en forelder vil kjøre til. `out geom` gir ingen høyde på
+ * way-punkter — `ele` finnes bare som tagg på enkelte noder (Griser'n har
+ * ele=163) — og uten høyde kan ikke enden av en linje avgjøres som topp
+ * eller bunn. Retningen på en way er heller ingen regel. Toppen krever en
+ * høydekilde (Kartverkets høyde-API) og er en egen oppgave; v1 setter et
+ * punkt PÅ bakken og sier tydelig i rapporten hvor lang den er, så en
+ * akebakke med stor utstrekning kan kvalitetssikres manuelt.
+ */
+export function akingAnchorPoint(points: readonly GeoPoint[]): GeoPoint | null {
+    const b = boundsOf(points);
+    if (!b) return null;
+    const c = centerOfBounds(b);
+    let best = points[0];
+    let bestD = Infinity;
+    for (const p of points) {
+        const d = distanceMeters(p, c);
+        if (d < bestD) {
+            bestD = d;
+            best = p;
+        }
+    }
+    return best;
+}
+
+/** Sorteringsnøkkel som gjør valget av anker DETERMINISTISK, uavhengig av
+ *  rekkefølgen Overpass tilfeldigvis svarer i. Relasjon slår way slår node —
+ *  et samleobjekt er et bedre anker enn ett av delene — og innenfor samme
+ *  type vinner laveste id. */
+const AKING_TYPE_RANK: Record<OsmElement['type'], number> = {
+    relation: 0,
+    way: 1,
+    node: 2,
+};
+function akingAnchorOrder(a: OsmElement, b: OsmElement): number {
+    return AKING_TYPE_RANK[a.type] - AKING_TYPE_RANK[b.type] || a.id - b.id;
+}
+
+/** Enkeltlenke-gruppering på avstand. O(n²), og det er greit: den største
+ *  navnegruppa i Oslo er et titalls segmenter. */
+export function clusterByProximity(
+    elements: readonly OsmElement[],
+    meters: number
+): OsmElement[][] {
+    const boxes = elements.map((el) => boundsOf(elementPoints(el)));
+    const rest = elements.map((_, i) => i);
+    const out: OsmElement[][] = [];
+    while (rest.length) {
+        const seed = rest.shift()!;
+        const gruppe = [seed];
+        // Bredde-først: hvert nytt medlem kan trekke inn flere, og det er
+        // nettopp det enkeltlenke betyr.
+        for (let i = 0; i < gruppe.length; i += 1) {
+            const a = boxes[gruppe[i]];
+            if (!a) continue;
+            for (let j = rest.length - 1; j >= 0; j -= 1) {
+                const b = boxes[rest[j]];
+                if (!b) continue;
+                if (boundsGapMeters(a, b) <= meters) {
+                    gruppe.push(rest[j]);
+                    rest.splice(j, 1);
+                }
+            }
+        }
+        out.push(gruppe.map((i) => elements[i]));
+    }
+    return out;
+}
+
+export interface AkingResult {
+    /** Ferdige ankere, ett per akebakke, med `center`, `memberTags` og
+     *  `akingVerified` satt. Går rett inn i standard-rørledningen. */
+    anchors: OsmElement[];
+    /** Én linje per objekt/gruppe, for tørrkjøringsrapporten. */
+    rapport: string[];
+    /** Antall objekter per dom — inkludert 'aking', som er de GODKJENTE
+     *  objektene (og ikke antall rader: flere objekter blir én rad). */
+    domTelling: Record<AkingVerdict, number>;
+}
+
+/**
+ * FRA RÅ OVERPASS-SVAR TIL ÉN RAD PER AKEBAKKE.
+ *
+ * FELLA SOM GJØR DETTE NØDVENDIG: Korketrekkeren er 14 separate veisegmenter
+ * i OSM, hver med `piste:type=sled` og samme navn. Uten gruppering ville
+ * kategorien fått 14 nåler oppå hverandre i Nordmarka ved første import.
+ * `relation/1459739` samler de samme segmentene.
+ *
+ * FORANKRINGEN, i prioritert rekkefølge — og hva hvert alternativ gjør med de
+ * fem målte Oslo-objektene:
+ *
+ *  1. RELASJONEN, der den finnes. Medlemmene ekskluderes EKSAKT på
+ *     `type/ref`, ikke på avstand eller navnelikhet. Korketrekkeren → 1 rad.
+ *  2. NAVNEGRUPPE innenfor [AKING_NAME_GROUP_M] for resten. «Akebakken» er
+ *     flere ways uten relasjon → 1 rad. Griser'n (node), Sollibakken og
+ *     Bjartbakken er enkeltobjekter og blir 1 rad hver — en navnegruppe på
+ *     ett medlem er samme kodevei, ikke et unntak.
+ *  3. Navnløse UTELATES. Se [akingVerdict].
+ *
+ * Alternativene som ble forkastet: «bare relasjoner» ville mistet alle fire
+ * de andre Oslo-objektene, siden bare Korketrekkeren har en relasjon. «Bare
+ * avstandsgruppering, uten navn» ville slått Sollibakken og Bjartbakken
+ * sammen om de ligger i samme li — avstand alene kan ikke skille to bakker
+ * som deler skråning.
+ *
+ * MEDLEMMER AV EN RELASJON EKSKLUDERES OGSÅ NÅR RELASJONEN SELV AVVISES SOM
+ * `alpint-blandet`. Ellers ville segmentene i en kombinert bakke sluppet inn
+ * gjennom navnegruppa og gjenopprettet nøyaktig den sammenblandingen
+ * kategorien finnes for å fjerne. En relasjon som avvises som `uten-navn`
+ * ekskluderer derimot IKKE medlemmene sine: der kan segmentene være navngitt
+ * selv, og da er de den beste kilden vi har.
+ *
+ * EXTERNAL_ID er ankerets egen `type/id`, som for alle andre kategorier.
+ * Kjent kostnad: deles eller slås ways sammen i OSM, kan ankeret bytte id, og
+ * den gamle raden blir stående (importen sletter aldri). Et syntetisk
+ * `aking/<by>/<navn>` ville vært stabilt, men brutt konvensjonen om at
+ * external_id peker på et ekte OSM-objekt — og dermed lenka i [buildRows].
+ * Valget er tatt bevisst; en foreldreløs rad kan avpubliseres manuelt, og
+ * `locked` verner rettingen.
+ */
+export function akingClusters(elements: readonly OsmElement[]): AkingResult {
+    const domTelling: Record<AkingVerdict, number> = {
+        aking: 0,
+        'alpint-blandet': 0,
+        lekeplass: 0,
+        'uten-navn': 0,
+        'ikke-aking': 0,
+    };
+    const rapport: string[] = [];
+
+    // Pass 1: dommen per objekt.
+    const dom = new Map<OsmElement, AkingVerdict>();
+    for (const el of elements) {
+        const d = akingVerdict(el.tags ?? {});
+        dom.set(el, d);
+        domTelling[d] += 1;
+    }
+
+    // Pass 2: hvilke medlemmer er allerede dekket av en relasjon?
+    const dekket = new Set<string>();
+    for (const el of elements) {
+        if (el.type !== 'relation') continue;
+        const d = dom.get(el);
+        if (d !== 'aking' && d !== 'alpint-blandet') continue;
+        for (const m of el.members ?? []) dekket.add(`${m.type}/${m.ref}`);
+    }
+
+    const godkjent = elements.filter((el) => dom.get(el) === 'aking');
+    const relasjoner = godkjent.filter((el) => el.type === 'relation');
+    const frie = godkjent.filter(
+        (el) => el.type !== 'relation' && !dekket.has(`${el.type}/${el.id}`)
+    );
+
+    // Pass 3: grupper de frie på navn, så på avstand innenfor navnet.
+    const perNavn = new Map<string, OsmElement[]>();
+    for (const el of frie) {
+        const key = akingNameKey(el.tags?.name);
+        const liste = perNavn.get(key);
+        if (liste) liste.push(el);
+        else perNavn.set(key, [el]);
+    }
+    const grupper: { medlemmer: OsmElement[]; grunnlag: string }[] = [];
+    for (const rel of relasjoner) grupper.push({ medlemmer: [rel], grunnlag: 'relasjon' });
+    // Sortert på navnenøkkel, så rapporten er stabil mellom kjøringer.
+    for (const key of [...perNavn.keys()].sort()) {
+        for (const klynge of clusterByProximity(perNavn.get(key)!, AKING_NAME_GROUP_M)) {
+            grupper.push({
+                medlemmer: klynge,
+                grunnlag: klynge.length > 1 ? `navnegruppe×${klynge.length}` : 'enkeltobjekt',
+            });
+        }
+    }
+
+    const anchors: OsmElement[] = [];
+    for (const { medlemmer, grunnlag } of grupper) {
+        const anker = [...medlemmer].sort(akingAnchorOrder)[0];
+        const punkter = medlemmer.flatMap((el) => elementPoints(el));
+        const punkt = akingAnchorPoint(punkter);
+        const id = `${anker.type}/${anker.id}`;
+        const navn = anker.tags?.name ?? '(uten navn)';
+        if (!punkt) {
+            rapport.push(`    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — ingen geometri`);
+            continue;
+        }
+        // Utstrekningen skrives ut fordi kartpunktet er et kompromiss: en
+        // bakke på 2 km har en nål som ikke står ved starten, og da skal
+        // tallet stå i rapporten framfor å oppdages på kartet.
+        const b = boundsOf(punkter)!;
+        const lengde = Math.round(
+            distanceMeters(
+                { lat: b.minlat, lon: b.minlon },
+                { lat: b.maxlat, lon: b.maxlon }
+            )
+        );
+        rapport.push(
+            `    ${id.padEnd(18)} ${navn.padEnd(32)} ${grunnlag.padEnd(16)} ` +
+                `[${medlemmer.length} objekt, bbox-diagonal ${lengde} m]`
+        );
+        anchors.push({
+            ...anker,
+            lat: undefined,
+            lon: undefined,
+            center: { lat: punkt.lat, lon: punkt.lon },
+            memberTags: medlemmer.map((el) => el.tags ?? {}),
+            akingVerified: true,
+        });
+    }
+
+    return { anchors, rapport, domTelling };
+}
+
+/** Henter Aking for én by. `out geom` fordi grupperingen og kartpunktet
+ *  trenger geometrien; `out center` gir ingen av delene på en relasjon. */
+async function akingElements(city: string): Promise<OsmElement[]> {
+    const raw = await fetchOverpass(
+        `[out:json][timeout:180];
+area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
+(
+  ${AKING_SELECTOR}
+);
+out geom tags;`,
+        `${city}/aking:objekter`
+    );
+    const { anchors, rapport, domTelling } = akingClusters(raw);
+    console.log(
+        `  ${city}/aking       ${String(raw.length).padStart(4)} objekter → ` +
+            `${anchors.length} akebakker (avvist: ${domTelling['alpint-blandet']} alpint-blandet, ` +
+            `${domTelling.lekeplass} lekeplass, ${domTelling['uten-navn']} uten navn)`
+    );
+    for (const linje of rapport) console.log(linje);
+    return anchors;
+}
+
 interface PlaceCategoryDef {
     key: string;
     /** Kategoriens navn OG standard tittel-prefiks. */
@@ -779,6 +1135,53 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         audience: 'Barn',
         selector: 'nwr["leisure"="playground"](area.a);',
         matches: (t: OsmTags) => t.leisure === 'playground',
+        isFree: true,
+    },
+    {
+        // MÅ STÅ ETTER lekeplass. Rekkefølgen er match-prioritet, og Oslo har
+        // minst én lekeplass tagget både `sport=toboggan`/`playground=sledding`
+        // og `piste:type=sled`. Sto Aking først, ville akebakke-kategorien
+        // stjålet en lekeplass — og en lekeplass er det en forelder leter
+        // etter hele året, ikke bare når det er snø.
+        //
+        // Motsatt vei er også håndhevet, og det er den viktigere retningen:
+        // [akingVerdict] avviser `leisure=playground` eksplisitt, så
+        // lekeplassen blir ikke stjålet selv når bare Aking-spørringen kjører
+        // (`--categories=aking`). Den mister ingenting på å bli i Lekeplass:
+        // standardregelen [osmFacetTokens] gir den fasetten `aking` fra
+        // `piste:type=sled` uansett.
+        key: 'aking',
+        label: 'Aking',
+        category: 'Aking',
+        // «For alle», ikke «Barn». Akebakken er et av de få stedene der
+        // voksne faktisk er med ned, og Lekeplass sin «Barn» ville vært en
+        // snevrere påstand enn kategorien bærer.
+        audience: 'For alle',
+        selector: AKING_SELECTOR,
+        fetchElements: akingElements,
+        // Taggene alene kan ikke avgjøre dette. Grupperingen i
+        // [akingClusters] har allerede bestemt hvilket objekt som er ANKERET
+        // for bakken; uten flagget ville hvert av Korketrekkerens 14 segmenter
+        // matchet like godt, og 13 av dem ville blitt egne rader dersom de
+        // kom inn via en annen spørring.
+        matches: (_t: OsmTags, el?: OsmElement) => el?.akingVerified === true,
+        // FAST `aking`, ikke utledet fra medlemmene. Standardregelen ville
+        // gitt det samme i det normale tilfellet — ankeret bærer
+        // `piste:type=sled`, ellers var det ikke her — men [osmFacetTokensFrom]
+        // over medlemstaggene kunne plukket opp `alpint` fra ett segment som
+        // også er tagget downhill, og skrevet «alpint» på en akebakke-rad.
+        // Det er nøyaktig sammenblandingen kategorien finnes for å fjerne, så
+        // løftet holdes eksakt: en Aking-rad lover aking.
+        facetsFor: () => ['aking'],
+        // GRATIS, som Lekeplass og Badeplass. Ikke en gjetning: en akebakke
+        // er en offentlig bakke med snø i, og det unntaket man kan tenke seg
+        // — en akebakke inne på et alpinanlegg med billett — faller uansett
+        // ut som `alpint-blandet` eller ligger i et Skianlegg-polygon.
+        //
+        // Merk at `true | null` her ikke stenger døra: [resolveIsFree] leser
+        // `fee=yes` på det enkelte stedet og setter false, så en bakke som
+        // FAKTISK koster penger kan si det selv i OSM. Kategorien påstår
+        // gratis, den påtvinger det ikke.
         isFree: true,
     },
     {

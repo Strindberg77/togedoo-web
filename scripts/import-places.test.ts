@@ -645,6 +645,10 @@ test('kategoriene som PÅSTÅR gratis er de som har grunnlag for det', async () 
     // folkebibliotek, som er gratis ved lov. Eksplisitt liste, så en ny
     // kategori ikke kan arve «gratis» ubemerket.
     assert.deepEqual(gratis.sort(), [
+        // Akebakke: offentlig bakke med snø i. Det ene tenkelige unntaket —
+        // en akebakke inne på et alpinanlegg med billett — avvises av
+        // akingVerdict som «alpint-blandet» eller ligger i et ski-polygon.
+        'aking',
         'ballbane',
         'badeplass',
         'bibliotek',
