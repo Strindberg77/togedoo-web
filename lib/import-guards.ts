@@ -77,6 +77,11 @@ export function claimMismatchStop(
  * Kartverket var nede, blir ikke bedre neste kjøring. Importen skriver samme
  * dårlige tittel igjen, og upserten angrer ingenting. Det er en av de få
  * feilene i denne rørledningen som faktisk fester seg.
+ *
+ * TERSKELEN ER KALIBRERT FOR BYKATEGORIER, og det er verdt å vite når den
+ * slår ut: for et alpinanlegg i fjellet er adresseløshet normalen, ikke et
+ * symptom. Den første nasjonale tørrkjøringen stanset på nettopp den
+ * forvekslingen. Rettingen var å telle riktig ting, ikke å heve terskelen.
  */
 export const GEOCODE_FAILURE_THRESHOLD = 0.2;
 
@@ -92,7 +97,15 @@ export const GEOCODE_MIN_SAMPLE = 10;
 export interface GeocodeTelling {
     /** Rader som faktisk forsøkte et oppslag (manglet brukbart OSM-navn). */
     forsok: number;
-    /** Av dem: ekte oppslagsfeil (nettverk/HTTP/timeout), ikke «fant ingen adresse». */
+    /**
+     * Av dem: EKTE oppslagsfeil — tjenesten svarte ikke.
+     *
+     * «Fant ingen adresse» hører IKKE hjemme her, og det var feilen i den
+     * første nasjonale tørrkjøringen (sep. 2026): 51 av 157 ble talt som feil
+     * mens alle 51 var Kartverket som svarte korrekt at det ikke finnes en
+     * adresse innen 200 m. Skillet håndheves nå av [GeocodeFailureKind] i
+     * lib/places.ts, og teller bare `kind: 'feil'`.
+     */
     feil: number;
 }
 
@@ -122,9 +135,15 @@ export function geocodeFailureStop(
  *
  * TALLET ER DEN DOMINERENDE TAGGEN, ikke et eksakt anslag for kategorien.
  * `ballbane` teller `leisure=pitch` (15 423), men selektoren siler også på
- * sport og access. `skianlegg` teller `landuse=winter_sports` (254), mens
- * selektoren har seks mønstre og den romlige testen forkaster noen. Tallene
- * er derfor et TAK for de fleste kategoriene.
+ * sport og access — der er tallet et TAK.
+ *
+ * FOR `skianlegg` ER DET MOTSATT, og det er verdt å vite før man leser et
+ * avvik som en feil. 254 er `landuse=winter_sports`, men selektoren har SEKS
+ * mønstre: også recreation_ground med piste:type, piste:lit eller
+ * piste:difficulty, recreation_ground med sport~ski, og sports_centre med
+ * sport~ski. Tallet er derfor et GULV. Den første nasjonale tørrkjøringen ga
+ * 305 rader, og 305 > 254 er i seg selv ikke bevis for noe — spørsmålet om
+ * duplikater må avgjøres på geometri, ikke på forholdstallet.
  *
  * Det er nettopp derfor gulvet er 20 % og ikke 80 %: sjekken skal fange en
  * selektor som har sluttet å treffe, ikke et unøyaktig anslag.

@@ -180,6 +180,69 @@ npx --yes tsx scripts/import-places.ts --national --work --resume --category=ski
 
 ---
 
+## Første nasjonale tørrkjøring (sep. 2026) — og hva den avdekket
+
+```
+Skianlegg  305 steder — 148 OSM-navn, 44 «ved gate», 62 «i område», 51 kun kategori
+Aking       13 steder — 13 OSM-navn
+=== STOPP (geokodingsfeil) === 51 av 157 (32 %, terskel 20 %)
+```
+
+**Stoppvilkåret utløste, og diagnosen var feil.** Alle 51 «feilene» var
+`ingen adresse innen 200 m` — Kartverket som svarer korrekt at det ikke finnes
+en adresse der. Et alpinanlegg i fjellet har ingen adresse innen 200 m.
+
+Rettet: `GeocodeFailureKind` skiller nå `'feil'` (tjenesten svarte ikke:
+nettverk, timeout, 5xx) fra `'tomt'` (tjenesten svarte «ingenting her»). Bare
+den første teller mot terskelen. Den andre rapporteres på egen linje:
+
+```
+  UTEN ADRESSE (51 steder) — Kartverket svarte at det ikke finnes en adresse
+  innen 200 m. Ikke en feil; tittelen kommer fra områdenavn eller bare kategorien.
+```
+
+**305 skianlegg er ikke nødvendigvis for mange.** 254 er `landuse=winter_sports`
+alene, men selektoren har seks mønstre — også `recreation_ground` med
+`piste:*` eller `sport~ski`, og `sports_centre` med `sport~ski`. For denne
+kategorien er 254 et **gulv**, ikke et tak. Spørsmålet om duplikater må
+avgjøres på geometri.
+
+**Duplikatene er ekte, men av en annen type enn ventet.** `way/55097596`,
+`55097597` og `55097598` het alle «Skianlegg i Fageråsen» — det er ikke et
+OSM-navn, men tre NAVNLØSE polygoner som fikk samme områdenavn fra Nominatim.
+`duplicateCandidates` så dem ikke (den sammenligner bare ekte OSM-navn, for at
+to «Lekeplass ved Storgata» ikke skal bli støy). `generatedTitleCollisions`
+fanger dem nå, med et strammere tak på 2 km.
+
+---
+
+## Å lese en kjøring som allerede er gjort
+
+Mellomleddet lagrer **dataene**, ikke **loggen**. Har utskriften rullet forbi,
+kan alt den sa regnes ut på nytt — berikelsen er ren, så verken klyngingen,
+den romlige testen eller kommuneoppslaget trenger nettverk.
+
+```bash
+npx --yes tsx scripts/work-report.ts --work=.import-work
+npx --yes tsx scripts/work-report.ts --work=.import-work --chunk=norge --near=500
+```
+
+Den skriver ut:
+
+| Blokk | Svarer på |
+|---|---|
+| `HENT` | hent-linjene: objekter per kategori og sett |
+| `GEOGRAFI` | hvor mange av de hentede som ligger utenfor Norge |
+| `BERIKELSE` | per-polygon-rapporten fra Skianlegg, klyngerapporten fra Aking |
+| `AKING` | hele domstellingen: godkjent, alpint-blandet, lekeplass, uten navn |
+| `RADER` | tittelkilder, ekte geokodingsfeil, uten adresse |
+| `DUPLIKATANALYSE` | delte titler (med kilde) og romlige klynger |
+
+**Neste gang: `| tee kjoring.log`.** Verktøyet er for kjøringen som allerede
+er gjort.
+
+---
+
 ## Stoppvilkårene er ikke utløst mot ekte data ennå
 
 Terskelen på 20 % geokodingsfeil og 20 % utbyttekollaps er **valgt, ikke
@@ -188,7 +251,11 @@ mock-data i test.
 
 **Det er forutsetningen for neste steg** (nattjobb/automatisering): et
 stoppvilkår som aldri er utløst mot ekte data, er en påstand og ikke en vakt.
-Tørrkjøringen over er første anledning til å se dem oppføre seg.
+
+Geokodingsvilkåret er nå utløst én gang, og det tok feil. Det er ikke en
+innvending mot vakter — det er nettopp derfor de skal utløses mot ekte data
+før de får lov til å kjøre om natten uten tilsyn. Utbyttevilkåret og
+claim-vilkåret er fortsatt bare sett mot mock-data.
 
 ---
 

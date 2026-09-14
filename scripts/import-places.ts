@@ -45,6 +45,7 @@ import {
     batchFingerprint,
     duplicateCandidates,
     formatApproval,
+    generatedTitleCollisions,
     type ForhandsDiff,
     type KategoriLinje,
 } from '../lib/import-approval';
@@ -2087,6 +2088,9 @@ export interface ImportRow {
     osmName: string | null;
     /** Hvilken tagg navnet kom fra. Satt kun når det IKKE er `name`. */
     nameTag?: string;
+    /** Kartverket svarte at det ikke finnes en adresse innen 200 m. Ikke en
+     *  feil — se [GeocodeFailureKind]. Rapporteres, teller ikke. */
+    addressMissing?: boolean;
 }
 
 /**
@@ -2315,6 +2319,7 @@ export async function buildRows(
             status: 'published',
             titleSource: titled.source,
             geocodeError: titled.geocodeError,
+            addressMissing: titled.addressMissing,
             // Det navnet som FAKTISK ble brukt, ikke bare `name`-taggen — ellers
             // ville rapportlinja for Sollibakken sagt «name=null -> Sollibakken».
             osmName: navnet?.value ?? tags.name ?? null,
@@ -2480,8 +2485,21 @@ export async function enrichChunk(
     if (errors.length) {
         const reasons = new Map<string, number>();
         errors.forEach((r) => reasons.set(r.geocodeError!, (reasons.get(r.geocodeError!) ?? 0) + 1));
-        console.log(`  GEOKODINGSFEIL (${errors.length} steder):`);
+        console.log(`  GEOKODINGSFEIL (${errors.length} steder) — tjenesten svarte IKKE:`);
         for (const [reason, n] of reasons) console.log(`    ${n} × ${reason}`);
+    }
+
+    // ADRESSELØSE steder er en egen linje, og med vilje ikke under
+    // «GEOKODINGSFEIL». Kartverket svarte; det finnes bare ingen adresse der.
+    // For ski nasjonalt er dette normalen, ikke et symptom — og det er denne
+    // tilstanden som gir titler som «Skianlegg i Fageråsen».
+    const utenAdresse = rows.filter((r) => r.addressMissing).length;
+    if (utenAdresse) {
+        console.log(
+            `  UTEN ADRESSE (${utenAdresse} steder) — Kartverket svarte at det ikke finnes ` +
+                `en adresse innen 200 m. Ikke en feil; tittelen kommer fra områdenavn eller ` +
+                `bare kategorien.`
+        );
     }
 
     // STOPPVILKÅR 2. En rad som fikk tittelen «Lekeplass» fordi Kartverket var
@@ -2489,6 +2507,13 @@ export async function enrichChunk(
     // Nevneren er FORSØK (rader uten brukbart OSM-navn), ikke alle rader —
     // ski er ~80 % navngitt, og en chunk uten geokodingsbehov skal ikke kunne
     // utløse noe.
+    //
+    // TELLEREN ER `geocodeError`, som etter sep. 2026 BARE er ekte
+    // oppslagsfeil. Den første nasjonale tørrkjøringen stanset på 51 av 157
+    // (32 %) der alle 51 var «ingen adresse innen 200 m» — Kartverket som
+    // svarte korrekt at det ikke finnes en adresse i fjellet. Terskelen er
+    // kalibrert for bykategorier; for ski nasjonalt er adresseløshet
+    // normalen. Se [GeocodeFailureKind].
     const forsok = rows.filter((r) => r.titleSource !== 'osm-navn').length;
     const stopp = geocodeFailureStop(chunk.label, { forsok, feil: errors.length });
     if (stopp) throw stopp;
@@ -2562,7 +2587,7 @@ async function writeChunk(
     for (let i = 0; i < writable.length; i += 500) {
         const bolk = writable
             .slice(i, i + 500)
-            .map(({ titleSource: _ts, geocodeError: _ge, osmName: _on, nameTag: _nt, ...row }) => ({
+            .map(({ titleSource: _ts, geocodeError: _ge, osmName: _on, nameTag: _nt, addressMissing: _am, ...row }) => ({
                 ...row,
                 source_id: source.id,
             }));
@@ -2891,16 +2916,18 @@ async function rapporterGodkjenning(
     const undertrykt = new Set(
         plan.flatMap((c) => [...(store.entries().get(`${c.id}/enrich`)?.seenClaims ?? [])])
     );
-    const duplikater = duplicateCandidates(
-        alle.map((r) => ({
-            external_id: r.external_id,
-            category: r.category,
-            title: r.title,
-            lat: r.lat,
-            lng: r.lng,
-            osmNavn: r.titleSource === 'osm-navn',
-        }))
-    );
+    const dupRader = alle.map((r) => ({
+        external_id: r.external_id,
+        category: r.category,
+        title: r.title,
+        lat: r.lat,
+        lng: r.lng,
+        osmNavn: r.titleSource === 'osm-navn',
+    }));
+    const duplikater = duplicateCandidates(dupRader);
+    // Blindsonen fra den første nasjonale tørrkjøringen: tre navnløse
+    // polygoner som alle fikk «Skianlegg i Fageråsen» fra Nominatim.
+    const genererteKollisjoner = generatedTitleCollisions(dupRader);
 
     const dom: 'GO' | 'STOPP' = utbytte ? 'STOPP' : 'GO';
     const flagg = [
@@ -2933,6 +2960,7 @@ async function rapporterGodkjenning(
             tommeSett,
             claims: { undertrykt: undertrykt.size, navneavvik: 0 },
             duplikatkandidater: duplikater,
+            delteGenererteTitler: genererteKollisjoner,
             dom,
             stoppGrunn: utbytte?.message,
             skrivKommando: `npx --yes tsx scripts/import-places.ts ${flagg.join(' ')}`,

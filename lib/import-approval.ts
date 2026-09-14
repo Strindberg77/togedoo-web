@@ -46,6 +46,8 @@ export interface GodkjenningsInput {
     tommeSett: readonly string[];
     claims: { undertrykt: number; navneavvik: number };
     duplikatkandidater: readonly string[];
+    /** Rader med delt GENERERT tittel nær hverandre. Se [generatedTitleCollisions]. */
+    delteGenererteTitler: readonly string[];
     dom: 'GO' | 'STOPP';
     stoppGrunn?: string;
     skrivKommando: string;
@@ -97,7 +99,12 @@ export function formatApproval(i: GodkjenningsInput): string {
         `  Claims ................. ${i.claims.undertrykt} objekter undertrykt, ` +
             `${i.claims.navneavvik} navneavvik${i.claims.navneavvik ? '  ADVARSEL' : ''}`
     );
-    L.push(`  Duplikatkandidater ..... ${i.duplikatkandidater.length}`);
+    L.push(
+        `  Duplikatkandidater ..... ${i.duplikatkandidater.length}` +
+            `  (+ ${i.delteGenererteTitler.length} med delt GENERERT tittel)` +
+            (i.delteGenererteTitler.length ? '  ADVARSEL' : '')
+    );
+    for (const d of i.delteGenererteTitler.slice(0, 5)) L.push(`      ${d}`);
     for (const d of i.duplikatkandidater.slice(0, 10)) L.push(`      ${d}`);
     if (i.duplikatkandidater.length > 10) {
         L.push(`      ... og ${i.duplikatkandidater.length - 10} til`);
@@ -173,6 +180,35 @@ export interface DupRad {
  * MERK at den er unødvendig for én nasjonal chunk: uten en områdegrense kan
  * en klynge ikke deles. Den finnes for planer med mange chunks.
  */
+/**
+ * DELT GENERERT TITTEL — den andre halvdelen av duplikatbildet.
+ *
+ * [duplicateCandidates] sammenligner bare rader med EKTE OSM-navn, med vilje:
+ * to «Lekeplass ved Storgata» er to lekeplasser. Den første nasjonale
+ * tørrkjøringen (sep. 2026) viste at den regelen har en blindsone.
+ *
+ * way/55097596, 55097597 og 55097598 het alle «Skianlegg i Fageråsen». Det er
+ * IKKE et OSM-navn — det er tre NAVNLØSE polygoner som alle fikk samme
+ * områdenavn fra Nominatim. duplicateCandidates så dem ikke, og tre rader for
+ * det som trolig er ett anlegg gikk rett gjennom.
+ *
+ * Derfor en egen teller, og et STRAMMERE avstandstak: et generert områdenavn
+ * gjentar seg legitimt over en hel bygd, så 2 km er grensen der «samme navn og
+ * nesten samme sted» begynner å bety noe.
+ *
+ * FORTSATT BARE EN RAPPORTLINJE. Om tre polygoner i Fageråsen er ett anlegg
+ * eller tre er et spørsmål om OSM-modellering, ikke noe en terskel kan avgjøre.
+ */
+export function generatedTitleCollisions(
+    rader: readonly DupRad[],
+    meters = 2000
+): string[] {
+    return duplicateCandidates(
+        rader.filter((r) => !r.osmNavn).map((r) => ({ ...r, osmNavn: true })),
+        meters
+    );
+}
+
 export function duplicateCandidates(rader: readonly DupRad[], meters = 5000): string[] {
     const perKategori = new Map<string, Map<string, DupRad[]>>();
     for (const r of rader) {

@@ -307,6 +307,7 @@ const input = (over: Partial<GodkjenningsInput> = {}): GodkjenningsInput => ({
     tommeSett: [],
     claims: { undertrykt: 5, navneavvik: 0 },
     duplikatkandidater: [],
+    delteGenererteTitler: [],
     dom: 'GO',
     skrivKommando: 'npx tsx scripts/import-places.ts --work --resume --approve=c46cedd8',
     naa: '2026-09-14 21:40',
@@ -347,4 +348,68 @@ test('omkamper og navneavvik merkes, null merkes ikke', () => {
         )
     );
     assert.match(formatApproval(input({ claims: { undertrykt: 5, navneavvik: 1 } })), /navneavvik {2}ADVARSEL/);
+});
+
+// ---------------------------------------------------------------------------
+// DELT GENERERT TITTEL — blindsonen fra den første nasjonale tørrkjøringen
+// ---------------------------------------------------------------------------
+
+test('tre navnløse polygoner med samme OMRÅDENAVN fanges nå', async () => {
+    // way/55097596, 55097597 og 55097598 het alle «Skianlegg i Fageråsen».
+    // Det er ikke et OSM-navn — det er tre navnløse polygoner som fikk samme
+    // områdenavn fra Nominatim. duplicateCandidates så dem ikke.
+    const { generatedTitleCollisions, duplicateCandidates } = await import('../lib/import-approval');
+    const rader = [55097596, 55097597, 55097598].map((id, i) => ({
+        external_id: `way/${id}`,
+        category: 'Skianlegg',
+        title: 'Skianlegg i Fageråsen',
+        lat: 61.0 + i * 0.0012,
+        lng: 9.0 + i * 0.002,
+        osmNavn: false,
+    }));
+    assert.deepEqual(duplicateCandidates(rader), [], 'blindsonen, som før');
+    const kollisjoner = generatedTitleCollisions(rader);
+    assert.equal(kollisjoner.length, 3, 'tre par blant tre rader');
+    assert.match(kollisjoner[0], /way\/55097596 og way\/55097597/);
+});
+
+test('et ekte OSM-navn telles ikke som generert kollisjon', async () => {
+    // De to tellerne skal ikke overlappe — ellers står samme sak to ganger i
+    // oppsummeringen.
+    const { generatedTitleCollisions } = await import('../lib/import-approval');
+    const rader = [1, 2].map((id, i) => ({
+        external_id: `way/${id}`,
+        category: 'Skianlegg',
+        title: 'Hafjell',
+        lat: 61.24 + i * 0.001,
+        lng: 10.44,
+        osmNavn: true,
+    }));
+    assert.deepEqual(generatedTitleCollisions(rader), []);
+});
+
+test('generert tittel langt unna er ikke en kollisjon', async () => {
+    // «Skianlegg i Fageråsen» kan gjenta seg i to bygder. Taket er 2 km,
+    // strammere enn for ekte navn, fordi et områdenavn dekker mer areal.
+    const { generatedTitleCollisions } = await import('../lib/import-approval');
+    const rader = [1, 2].map((id, i) => ({
+        external_id: `way/${id}`,
+        category: 'Skianlegg',
+        title: 'Skianlegg i Fageråsen',
+        lat: 61.0 + i * 0.5,
+        lng: 9.0,
+        osmNavn: false,
+    }));
+    assert.deepEqual(generatedTitleCollisions(rader), []);
+});
+
+test('oppsummeringen viser delte genererte titler som en ADVARSEL', async () => {
+    const { formatApproval } = await import('../lib/import-approval');
+    const t = formatApproval({
+        ...input(),
+        delteGenererteTitler: ['Skianlegg «Skianlegg i Fageråsen»: way/1 og way/2, 343 m fra hverandre'],
+    });
+    assert.match(t, /delt GENERERT tittel/);
+    assert.match(t, /ADVARSEL/);
+    assert.match(t, /way\/1 og way\/2/);
 });
