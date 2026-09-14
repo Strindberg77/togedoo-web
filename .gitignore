@@ -50,3 +50,6 @@ bergen_*.html
 # Artifacts
 next
 togedoo-web@*
+
+# import-sømmen: mellomresultater per chunk (--work). Aldri kildekode.
+/.import-work/

@@ -384,9 +384,23 @@ test('gratis er kategoriens påstand, men fee=yes vinner', async () => {
     assert.equal(resolveIsFree({ fee: 'yes' }, cat.isFree), false);
 });
 
-test('Aking har egen henter — standardveien gir ingen gruppering', async () => {
+test('Aking har egen henter OG egen berikelse', async () => {
+    // Sømmen (sep. 2026) skilte de to. Klyngingen er en BERIKELSE: den
+    // avgjør at 14 segmenter er én bakke, og det er tolkning av data vi
+    // allerede har. Lå den i henteren, ville et kildebytte i fase 3 tatt den
+    // med seg.
     const cat = await aking();
-    assert.equal(typeof cat.fetchElements, 'function');
+    assert.equal(typeof cat.fetchSets, 'function');
+    assert.equal(typeof cat.enrichSets, 'function');
+});
+
+test('berikelsen er ren — samme klynging, uten nettverk', async () => {
+    const { akingEnrich } = await load();
+    const { relasjon, segmenter } = korketrekkeren();
+    const ut = akingEnrich({ main: [...segmenter, relasjon] });
+    assert.equal(ut.elements.length, 1);
+    assert.equal(`${ut.elements[0].type}/${ut.elements[0].id}`, 'relation/1459739');
+    assert.ok(ut.summary?.includes('akebakker'));
 });
 
 test('kategoriverdien er «Aking» — databasenøkkelen appen slår opp på', async () => {
@@ -451,8 +465,9 @@ test('FEIL 1: spørringen sier `out geom`, ALDRI `out geom tags`', async (t) => 
         });
     }) as typeof fetch;
 
+    const { chunkForCity } = await import('../lib/import-chunks');
     const cat = await aking();
-    await cat.fetchElements!('Oslo');
+    await cat.fetchSets!(chunkForCity('Oslo'));
     assert.equal(sendt.length, 1);
     assert.match(sendt[0], /out geom;/);
     assert.ok(
