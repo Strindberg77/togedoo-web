@@ -160,7 +160,11 @@ test('14 segmenter + relasjonen gir ÉN rad, forankret i relasjonen', async () =
     assert.equal(anchors.length, 1, 'skal bli én akebakke, ikke 14 eller 15');
     assert.equal(anchors[0].type, 'relation');
     assert.equal(anchors[0].id, 1459739);
-    assert.equal(domTelling.aking, 15, 'alle 15 objektene er gyldige — de slås sammen');
+    // Tellingen skjer ETTER at relasjonsdekningen er trukket fra: rapporten
+    // skal si hvor mange BAKKER som står igjen, ikke hvor mange objekter
+    // Overpass sendte. 14 dekkede segmenter i «aking»-tallet ville sagt
+    // «15 akebakker» om én bakke.
+    assert.equal(domTelling.aking, 1, 'de 14 segmentene er dekket av relasjonen');
 });
 
 test('medlemmene ekskluderes EKSAKT på type/ref, ikke på navn eller avstand', async () => {
@@ -413,4 +417,241 @@ test('avstanden er cos-korrigert i lengderetningen', () => {
     const nord = distanceMeters({ lat: 60, lon: 10 }, { lat: 60.01, lon: 10 });
     const ost = distanceMeters({ lat: 60, lon: 10 }, { lat: 60, lon: 10.01 });
     assert.ok(ost < nord * 0.6 && ost > nord * 0.4, `${ost} vs ${nord}`);
+});
+
+// ---------------------------------------------------------------------------
+// REGRESJONER FRA TØRRKJØRINGEN MOT OSLO (sep. 2026)
+//
+//   34 objekter → 4 akebakker (2 alpint-blandet, 1 lekeplass, 15 uten navn)
+//     relation/1459739  Korketrekkeren  HOPPET OVER — ingen geometri
+//     way/26228807      Korketrekkeren  navnegruppe×10
+//     way/558688673     Sollibakken     (falt ut, havnet blant «uten navn»)
+//
+// To feil, én rotårsak hver. Begge er verifisert mot kilden, ikke gjettet.
+// ---------------------------------------------------------------------------
+
+test('FEIL 1: spørringen sier `out geom`, ALDRI `out geom tags`', async (t) => {
+    // ROTÅRSAKEN, verifisert i Overpass-kildekoden:
+    //   map_ql_parser.cc — `out` starter på mode="body"; ordet `tags`
+    //     OVERSKRIVER mode til "tags", mens `geom` bare setter geometry.
+    //   print.cc:80      — mode "tags" = ID | TAGS. Ingen MEMBERS.
+    //   output_json.cc:235 — hele members-blokka er portet på MEMBERS,
+    //     mens en WAY sin `geometry` (l. 187) og en NODE sin lat/lon (l. 126)
+    //     holder med GEOMETRY.
+    // Derfor fikk ways geometri, noden Griser'n koordinater — og relasjonen
+    // ingen medlemmer. Denne testen leser den EKTE spørringsteksten.
+    const realFetch = globalThis.fetch;
+    t.after(() => { globalThis.fetch = realFetch; });
+    const sendt: string[] = [];
+    globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+        sendt.push(decodeURIComponent(String(init?.body ?? '')));
+        return new Response(JSON.stringify({ elements: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }) as typeof fetch;
+
+    const cat = await aking();
+    await cat.fetchElements!('Oslo');
+    assert.equal(sendt.length, 1);
+    assert.match(sendt[0], /out geom;/);
+    assert.ok(
+        !/out geom tags/.test(sendt[0]),
+        'ordet «tags» slår av medlemslista — da kan ingen relasjon forankre noe'
+    );
+});
+
+test('FEIL 1: en relasjon MED medlemmer forankrer og ekskluderer dem', async () => {
+    // Etter rettingen: dette er formen `out geom` faktisk gir.
+    const { akingClusters } = await load();
+    const { relasjon, segmenter } = korketrekkeren();
+    const { anchors } = akingClusters([...segmenter, relasjon]);
+    assert.equal(anchors.length, 1);
+    assert.equal(`${anchors[0].type}/${anchors[0].id}`, 'relation/1459739');
+});
+
+test('FEIL 1: en relasjon UTEN medlemsliste blir fortsatt ankeret', async () => {
+    // NØYAKTIG formen tørrkjøringen fikk: tagger og bounds, ingen members.
+    // Før rettingen ga den «HOPPET OVER — ingen geometri», og external_id
+    // ble en vilkårlig way. Reserveveien forankrer på boksen OG dekker
+    // segmentene på navn + punkt-i-boks, så det fortsatt blir ÉN rad.
+    const { akingClusters } = await load();
+    const { segmenter } = korketrekkeren();
+    const utenMedlemmer = {
+        type: 'relation' as const,
+        id: 1459739,
+        tags: { 'piste:type': 'sled', name: 'Korketrekkeren', route: 'piste' },
+        bounds: { minlat: 59.969, minlon: 10.679, maxlat: 59.9836, maxlon: 10.6865 },
+    };
+    const { anchors, rapport } = akingClusters([...segmenter, utenMedlemmer]);
+    assert.equal(anchors.length, 1, 'ikke to nåler på samme bakke');
+    assert.equal(`${anchors[0].type}/${anchors[0].id}`, 'relation/1459739');
+    assert.ok(
+        rapport.some((r) => r.includes('bounds (grov)')),
+        'rapporten skal si at punktet er grovt'
+    );
+});
+
+test('FEIL 1: en rute-relasjon er en LINJE — ringsammensying ville kastet den', async () => {
+    // Hvorfor akingGeometry IKKE bruker polygonRings/assembleRings, slik
+    // Skianlegg gjør: de er skrevet for multipolygoner og forkaster alt som
+    // ikke lukker seg. Korketrekkeren er en åpen trasé fra Frognerseteren til
+    // Midtstuen.
+    const { akingGeometry, polygonRings } = await load();
+    const apenTrase = {
+        type: 'relation' as const,
+        id: 42,
+        tags: { 'piste:type': 'sled', name: 'Åpen trasé' },
+        members: [
+            { type: 'way' as const, ref: 1, geometry: [{ lat: 59.98, lon: 10.68 }, { lat: 59.978, lon: 10.681 }] },
+            { type: 'way' as const, ref: 2, geometry: [{ lat: 59.978, lon: 10.681 }, { lat: 59.976, lon: 10.682 }] },
+            { type: 'way' as const, ref: 3, geometry: [{ lat: 59.976, lon: 10.682 }, { lat: 59.974, lon: 10.683 }] },
+        ],
+    };
+    assert.deepEqual(polygonRings(apenTrase), [], 'polygonveien forkaster en åpen trasé');
+    const geo = akingGeometry([apenTrase]);
+    assert.ok(geo, 'punktskyen finnes selv om ringen ikke gjør det');
+    assert.equal(geo!.grunnlag, 'medlemsgeometri');
+    const alle = apenTrase.members.flatMap((m) => m.geometry);
+    assert.ok(
+        alle.some((p) => p.lat === geo!.punkt.lat && p.lon === geo!.punkt.lon),
+        'punktet skal ligge på traseen'
+    );
+});
+
+test('FEIL 2: piste:name teller som navn — Sollibakken falt ut på dette', async () => {
+    const { akingVerdict, akingClusters } = await load();
+    const tags = { 'piste:type': 'sled', 'piste:name': 'Sollibakken' };
+    assert.equal(akingVerdict(tags), 'aking');
+    const { anchors } = akingClusters([
+        { type: 'way', id: 558688673, tags, geometry: [{ lat: 59.95, lon: 10.75 }, { lat: 59.9505, lon: 10.7505 }] },
+    ]);
+    assert.equal(anchors.length, 1);
+});
+
+test('FEIL 2: første BRUKBARE navn vinner, ikke første som finnes', async () => {
+    // En akebakke lagt oppå en skogsvei har `name` = veiens navn.
+    // «Første som finnes» ville valgt veinavnet, fått det forkastet av
+    // isUsablePlaceName som rent gatenavn, og mistet bakken — med
+    // piste:name-taggen liggende rett ved siden av.
+    const { resolvePlaceName, AKING_NAME_TAGS } = await load();
+    assert.deepEqual(
+        resolvePlaceName(
+            { name: 'Frognerseterveien', 'piste:name': 'Sollibakken' },
+            AKING_NAME_TAGS
+        ),
+        { value: 'Sollibakken', tag: 'piste:name' }
+    );
+    // … men et brukbart `name` har fortsatt forrang.
+    assert.deepEqual(
+        resolvePlaceName({ name: 'Sollibakken', 'piste:name': 'Nedre løype' }, AKING_NAME_TAGS),
+        { value: 'Sollibakken', tag: 'name' }
+    );
+});
+
+test('FEIL 2: grupperingen leser SAMME kjede som tittelen', async () => {
+    // Ellers ville segmentet med piste:name fått tom nøkkel og gruppert seg
+    // med hvilket som helst annet navnløst objekt i nærheten.
+    const { akingClusters } = await load();
+    const { anchors } = akingClusters([
+        segment(1, 'Akebakken', 59.95, 10.75),
+        {
+            type: 'way',
+            id: 2,
+            tags: { 'piste:type': 'sled', 'piste:name': 'Akebakken' },
+            geometry: [{ lat: 59.9505, lon: 10.7505 }, { lat: 59.951, lon: 10.751 }],
+        },
+    ]);
+    assert.equal(anchors.length, 1, 'samme navn fra to tagger er samme bakke');
+});
+
+test('FEIL 2: mekanismen er opt-in — ingen annen kategori leser piste:name', async () => {
+    // Sjekket, ikke antatt: før sep. 2026 leste buildRows `tags.name` fire
+    // steder og ingenting annet. En GLOBAL fallback-kjede ville stille endret
+    // titlene på alle ~7800 eksisterende radene ved neste import.
+    const { PLACE_CATEGORIES } = await load();
+    const medNameTags = PLACE_CATEGORIES.filter((c) => c.nameTags).map((c) => c.key);
+    assert.deepEqual(medNameTags, ['aking']);
+});
+
+test('FEIL 2: default-kjeden oppfører seg bit for bit som før', async () => {
+    const { resolvePlaceName } = await load();
+    assert.deepEqual(resolvePlaceName({ name: 'Sofienbergparken' }), {
+        value: 'Sofienbergparken',
+        tag: 'name',
+    });
+    // Ubrukelig navn gir null — samme utfall som isUsablePlaceName ga før.
+    assert.equal(resolvePlaceName({ name: 'Håkavikveien' }), null);
+    assert.equal(resolvePlaceName({}), null);
+    // … og uten kategoriens liste ser den ALDRI piste:name.
+    assert.equal(resolvePlaceName({ 'piste:name': 'Sollibakken' }), null);
+});
+
+test('buildRows setter venue_name fra piste:name', async () => {
+    // Ende til ende: navnet må gå hele veien til raden, ikke bare til
+    // grupperingen. Et brukbart navn kortslutter geokodingen, så ingen
+    // nettverkskall skjer her.
+    const { buildRows, PLACE_CATEGORIES } = await load();
+    const cat = PLACE_CATEGORIES.find((c) => c.key === 'aking')!;
+    const rows = await buildRows(
+        'Oslo',
+        [
+            {
+                type: 'way',
+                id: 558688673,
+                tags: { 'piste:type': 'sled', 'piste:name': 'Sollibakken' },
+                center: { lat: 59.95, lon: 10.75 },
+                akingVerified: true,
+            },
+        ],
+        50,
+        [cat]
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'Sollibakken');
+    assert.equal(rows[0].venue_name, 'Sollibakken');
+    assert.equal(rows[0].titleSource, 'osm-navn');
+    assert.equal(rows[0].nameTag, 'piste:name');
+    // Rå tagger er urørt: ingen syntetisk `name` er skrevet inn i osm_tags.
+    assert.equal(rows[0].osm_tags.name, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Kartpunktet: advarsel i stedet for stillhet
+// ---------------------------------------------------------------------------
+
+test('bakker over terskelen merkes UPÅLITELIG i rapporten', async () => {
+    // Akebakken (950 m) og Korketrekkeren (1240 m) er nettopp de to der nåla
+    // står midt i løypa i stedet for der man starter.
+    const { akingClusters, AKING_DIAGONAL_WARN_M } = await load();
+    assert.equal(AKING_DIAGONAL_WARN_M, 500);
+    const { rapport } = akingClusters([
+        // To segmenter 557 m fra hverandre: innenfor grupperingstaket
+        // (1000 m), men med en samlet diagonal på ~670 m.
+        segment(1, 'Lang bakke', 59.95, 10.75),
+        segment(2, 'Lang bakke', 59.9555, 10.75),
+        // ~80 m diagonal
+        segment(3, 'Kort bakke', 59.93, 10.74),
+    ]);
+    const lang = rapport.find((r) => r.includes('Lang bakke'))!;
+    const kort = rapport.find((r) => r.includes('Kort bakke'))!;
+    assert.match(lang, /UPÅLITELIG KARTPUNKT/);
+    assert.ok(!/UPÅLITELIG/.test(kort), 'en vanlig akebakke skal ikke merkes');
+    assert.ok(
+        rapport.some((r) => r.includes('1 av 2')),
+        'oppsummeringslinja skal si hvor mange rader som er upålitelige'
+    );
+});
+
+test('rapporten sier hvilken tagg navnet kom fra', async () => {
+    const { akingClusters } = await load();
+    const { rapport } = akingClusters([
+        {
+            type: 'way',
+            id: 558688673,
+            tags: { 'piste:type': 'sled', 'piste:name': 'Sollibakken' },
+            geometry: [{ lat: 59.95, lon: 10.75 }, { lat: 59.9501, lon: 10.7501 }],
+        },
+    ]);
+    assert.match(rapport[0], /navn fra piste:name/);
 });

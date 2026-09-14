@@ -26,6 +26,7 @@ import {
     boundsOf,
     centerOfBounds,
     distanceMeters,
+    pointInBounds,
     type GeoBounds,
     type GeoPoint,
 } from '../lib/geo-polygon';
@@ -75,14 +76,21 @@ interface OsmElement {
     lon?: number;
     center?: { lat: number; lon: number };
     tags?: OsmTags;
-    // Fra `out geom` (kun Skianlegg-spørringen). Nodene i en way/relation.
+    // Fra `out geom` (Skianlegg og Aking). Nodene i en way/relation.
     // `out geom` legger geometri på WAYS her …
     geometry?: GeoPoint[];
+    // Boksen Overpass selv regner ut. Kommer med `out geom` for BÅDE ways og
+    // relasjoner, også når medlemslista mangler — derfor er den siste
+    // skanse i [akingGeometry] og i skianleggElements sin ringsammensying.
     bounds?: GeoBounds;
     // … men på RELASJONER ligger den per medlem, ikke på toppnivå. Å lese
-    // el.geometry på en relation gir undefined, og det var grunnen til at
-    // alle fire relasjonene i Oslo — Skimore Oslo med 11 heiser inkludert —
-    // falt ut før bevistesten i det hele tatt kjørte.
+    // el.geometry på en relation gir undefined.
+    //
+    // RETTET BESKRIVELSE (sep. 2026). Dette feltet sto lenge som eneste
+    // forklaring på at relasjonene i Oslo falt ut, og den forklaringen var
+    // ufullstendig: spørringene sa `out geom tags`, og ordet `tags` slår av
+    // medlemslista i det hele tatt. `members` var ikke bare uten geometri —
+    // nøkkelen fantes ikke i svaret. Se [OUT_GEOM_TAGS].
     members?: {
         type: 'node' | 'way' | 'relation';
         ref: number;
@@ -603,12 +611,21 @@ export function skiVerdict(
  * Kirkerudbakken (recreation_ground med heis) består.
  */
 async function skianleggElements(city: string): Promise<OsmElement[]> {
+    // `out geom`, IKKE `out geom tags`. Se [OUT_GEOM_TAGS] — ordet `tags`
+    // slår av medlemslista, og uten den har ingen relasjon her noen gang hatt
+    // medlemmer. [polygonRings] falt derfor alltid til `bounds (grov)`, og
+    // [assembleRings] — skrevet nettopp for disse relasjonene — har aldri
+    // kjørt mot ekte data. Rettingen kan bare gjøre ringen mer nøyaktig:
+    // lykkes ikke sammensyingen, faller koden tilbake til nøyaktig samme
+    // bounds som før. MERK at den likevel er en oppførselsendring på en
+    // kategori med grønn tørrkjøring — `grunnlag`-kolonnen i rapporten viser
+    // forskjellen, så kjør en ny tørrkjøring for Skianlegg før neste import.
     const q = (selector: string) => `[out:json][timeout:180];
 area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
 (
   ${selector}
 );
-out geom tags;`;
+out geom;`;
 
     const polygons = await fetchOverpass(q(SKI_AREA_SELECTOR), `${city}/skianlegg:omrade`);
     await sleep(OVERPASS_QUERY_PAUSE_MS);
@@ -695,6 +712,32 @@ out geom tags;`;
 // 43 med piste:type=playground (skileik), og to objekter med
 // «downhill;sled».
 
+/**
+ * [OUT_GEOM_TAGS] HVORFOR SPØRRINGENE SIER `out geom;` OG ALDRI `out geom tags;`
+ *
+ * Tørrkjøringen mot Oslo (sep. 2026) rapporterte «relation/1459739
+ * Korketrekkeren HOPPET OVER — ingen geometri», og forankringen falt tilbake
+ * på en vilkårlig av de 14 veiene. Årsaken er ikke i denne kodebasen, men i
+ * hvordan Overpass tolker `out`:
+ *
+ *   map_ql_parser.cc  — `out` starter på mode="body"; ordet `tags` OVERSKRIVER
+ *                       mode til "tags". `geom` setter bare geometry="full".
+ *   print.cc:80       — mode "tags" gir ID | TAGS. Ingen MEMBERS, ingen NDS.
+ *   print.cc:118      — geometry "full" legger til GEOMETRY | BOUNDS.
+ *   output_json.cc    — hele `members`-blokka er portet på MEMBERS (l. 235),
+ *                       mens `geometry` på en WAY bare krever GEOMETRY (l. 187)
+ *                       og lat/lon på en NODE holder med GEOMETRY (l. 126).
+ *
+ * `out geom tags;` gir altså ID | TAGS | GEOMETRY | BOUNDS: ways får full
+ * geometri, noder får koordinater — og relasjoner får INGEN medlemmer, bare
+ * en bounding box. Det forklarer nøyaktig hva tørrkjøringen viste: de ti
+ * veiene ble gruppert, noden Griser'n kom med, og relasjonen var tom.
+ *
+ * `out geom;` (mode = body) gir alt det samme PLUSS medlemmene, med geometri
+ * per medlem. Prisen er at ways også får sin `nodes`-liste, som ingen leser —
+ * noen prosent større svar, mot at relasjonsforankringen faktisk virker.
+ */
+
 /** Akebakke-selektoren. ÉN tagg, og det er med vilje.
  *
  *  `sport=toboggan` er BEVISST utelatt. Det eneste målte forekomsten i Oslo
@@ -778,7 +821,9 @@ export function akingVerdict(t: OsmTags): AkingVerdict {
     if (!hasSledPiste([t])) return 'ikke-aking';
     if (hasDownhillPiste([t])) return 'alpint-blandet';
     if (t.leisure === 'playground') return 'lekeplass';
-    if (!isUsablePlaceName(t.name)) return 'uten-navn';
+    // Leser HELE kjeden, ikke bare `name` — se [AKING_NAME_TAGS]. Sollibakken
+    // (way/558688673) falt ut her før sep. 2026.
+    if (!resolvePlaceName(t, AKING_NAME_TAGS)) return 'uten-navn';
     return 'aking';
 }
 
@@ -787,6 +832,64 @@ export function akingVerdict(t: OsmTags): AkingVerdict {
  *  navn, og importen har ingen kilde som sier at de er samme bakke. */
 export function akingNameKey(name: string | undefined): string {
     return (name ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Tagg-nøklene Aking leser navnet fra, i prioritert rekkefølge.
+ *
+ * `piste:name` KOM INN sep. 2026, etter at way/558688673 Sollibakken falt ut
+ * som «uten navn»: den bærer `piste:name=Sollibakken` og ingen `name`. Taggen
+ * er dokumentert i OSM-ens piste-skjema og brukes når en way har en rolle
+ * utover løypa (en skogsvei som også er akebakke, der `name` er veiens navn).
+ *
+ * AKING ER FØRSTE KATEGORI SOM LESER NOE ANNET ENN `name`. Ingen annen
+ * kategori har et slikt mønster i dag — det er sjekket, ikke antatt:
+ * [buildRows] leste `tags.name` fire steder og ingenting annet. Derfor er
+ * mekanismen OPT-IN per kategori ([PlaceCategoryDef.nameTags]) i stedet for
+ * en global fallback-kjede. En global kjede ville stille endret titlene på
+ * alle ~7800 eksisterende radene ved neste import.
+ *
+ * SAMME LISTE brukes av [akingVerdict], [akingClusters] og kategorien selv.
+ * Det er ikke pynt: grupperingen matcher på navn, og leste den et annet
+ * navn enn tittelen, ville to segmenter av samme bakke kunne havnet i hver
+ * sin gruppe med hvert sitt navn. Vakten står i scripts/aking.test.ts.
+ */
+export const AKING_NAME_TAGS = ['name', 'piste:name'] as const;
+
+/** Standarden for alle andre kategorier: bare `name`. */
+export const DEFAULT_NAME_TAGS = ['name'] as const;
+
+export interface ResolvedName {
+    /** Trimmet verdi, allerede godkjent av [isUsablePlaceName]. */
+    value: string;
+    /** Hvilken tagg den kom fra — kun til rapporten. */
+    tag: string;
+}
+
+/**
+ * Stedets navn, lest fra den FØRSTE taggen i [nameTags] som gir et BRUKBART
+ * navn.
+ *
+ * «Første brukbare», ikke «første som finnes», og det er den viktige
+ * detaljen: en akebakke lagt oppå en skogsvei har gjerne
+ * `name=Frognerseterveien` + `piste:name=Sollibakken`. Med «første som
+ * finnes» ville veinavnet vunnet, blitt forkastet av [isUsablePlaceName] som
+ * rent gatenavn, og bakken hadde falt ut som navnløs — med piste:name-taggen
+ * liggende rett ved siden av.
+ *
+ * Med default-lista (`['name']`) er oppførselen BIT FOR BIT som før: verdien
+ * er enten et brukbart `name` eller null, og [makePlaceTitleDetailed] kjører
+ * samme [isUsablePlaceName]-test selv.
+ */
+export function resolvePlaceName(
+    t: OsmTags,
+    nameTags: readonly string[] = DEFAULT_NAME_TAGS
+): ResolvedName | null {
+    for (const tag of nameTags) {
+        const raw = t[tag];
+        if (isUsablePlaceName(raw)) return { value: raw!.trim(), tag };
+    }
+    return null;
 }
 
 /**
@@ -808,6 +911,64 @@ export function akingNameKey(name: string | undefined): string {
  * punkt PÅ bakken og sier tydelig i rapporten hvor lang den er, så en
  * akebakke med stor utstrekning kan kvalitetssikres manuelt.
  */
+/** Over denne bbox-diagonalen er kartpunktet UPÅLITELIG og merkes i
+ *  rapporten.
+ *
+ *  500 m er valgt ut fra hva punktet skal brukes til: en forelder kjører dit
+ *  nåla står. En diagonal på 500 m betyr at nåla kan ligge 250 m fra begge
+ *  endene, og 250 m i skogsterreng uten sti er der «jeg står ved nåla, men
+ *  ser ingen bakke» begynner. En typisk akebakke er 100-300 m og havner godt
+ *  under. Av de fem målte i Oslo er det Akebakken (950 m) og Korketrekkeren
+ *  (1240 m) som slår ut — og begge er nettopp de to der punktet ligger midt
+ *  i løypa.
+ *
+ *  Terskelen fjerner ikke raden. Den er et flagg til den som leser
+ *  tørrkjøringen, til en høydekilde finnes (egen oppgave). Overstyrbar med
+ *  PLACES_AKING_WARN_M. */
+export const AKING_DIAGONAL_WARN_M =
+    Number(process.env.PLACES_AKING_WARN_M ?? 500) || 500;
+
+/**
+ * GEOMETRIEN for én klynge, med fallback — og uten ringsammensying.
+ *
+ * EN RUTE-RELASJON ER EN LINJE, IKKE ET POLYGON. [assembleRings] (og dermed
+ * [polygonRings]) er skrevet for multipolygoner: den syr medlemsveier sammen
+ * til LUKKEDE ringer og forkaster alt som forblir åpent. Korketrekkeren er en
+ * åpen trasé fra Frognerseteren til Midtstuen — sammensyingen ville forkastet
+ * hele bakken. Her trengs bare punktSKYEN, og [elementPoints] gir den
+ * allerede: den leser `members[].geometry` på relasjoner og `geometry` på
+ * ways, uten å bry seg om hvorvidt noe lukker seg.
+ *
+ * STIGEN, i rekkefølge:
+ *   1. medlemsgeometri — alle punkter i klyngen, snappet til nærmeste punkt.
+ *   2. bounds (grov)   — Overpass sin egen bounding box, som `out geom` gir
+ *                        også når medlemslista mangler. Da finnes det ingen
+ *                        geometri å snappe TIL, så senteret er det beste
+ *                        estimatet og punktet er ikke garantert å ligge på
+ *                        bakken. Rapporten sier hvilken av de to som ble
+ *                        brukt.
+ *   3. null            — hoppes over, med linje i rapporten.
+ *
+ * Trinn 2 er ikke teoretisk: den er nøyaktig det tørrkjøringen i sep. 2026
+ * manglet. Med `out geom tags` hadde relasjonen bounds og ingenting annet, og
+ * uten stigen ble den kastet framfor å bli forankret grovt.
+ */
+export function akingGeometry(
+    medlemmer: readonly OsmElement[]
+): { punkt: GeoPoint; bounds: GeoBounds; grunnlag: string } | null {
+    const punkter = medlemmer.flatMap((el) => elementPoints(el));
+    const b = boundsOf(punkter);
+    if (b) {
+        const punkt = akingAnchorPoint(punkter);
+        if (punkt) return { punkt, bounds: b, grunnlag: 'medlemsgeometri' };
+    }
+    // Hjørnene i hver medlemsboks gir unionen av boksene.
+    const hjorner = medlemmer.flatMap((el) => (el.bounds ? boundsRing(el.bounds) : []));
+    const bb = boundsOf(hjorner);
+    if (bb) return { punkt: centerOfBounds(bb), bounds: bb, grunnlag: 'bounds (grov)' };
+    return null;
+}
+
 export function akingAnchorPoint(points: readonly GeoPoint[]): GeoPoint | null {
     const b = boundsOf(points);
     if (!b) return null;
@@ -931,31 +1092,71 @@ export function akingClusters(elements: readonly OsmElement[]): AkingResult {
 
     // Pass 1: dommen per objekt.
     const dom = new Map<OsmElement, AkingVerdict>();
-    for (const el of elements) {
-        const d = akingVerdict(el.tags ?? {});
-        dom.set(el, d);
-        domTelling[d] += 1;
-    }
+    for (const el of elements) dom.set(el, akingVerdict(el.tags ?? {}));
 
-    // Pass 2: hvilke medlemmer er allerede dekket av en relasjon?
+    // Pass 2: hvilke objekter er allerede dekket av en relasjon?
+    //
+    // HOVEDVEIEN er eksakt: medlemslista, matchet på `type/ref`. Den krever at
+    // Overpass faktisk sendte medlemmene — se [OUT_GEOM_TAGS] for gangen da
+    // den ikke gjorde det.
+    //
+    // RESERVEVEIEN, for en relasjon UTEN medlemsliste: samme navn OG et punkt
+    // inne i relasjonens bounding box. Den finnes fordi et bounds-forankret
+    // anker uten noen form for dekning ville vært verre enn ingen forankring:
+    // relasjonen hadde blitt én rad og segmentene en ANNEN rad, altså to
+    // nåler på samme bakke der vi før hadde én. Boksen er regnet ut av
+    // Overpass fra nettopp de segmentene, så testen trenger ingen toleranse —
+    // et medlem kan per definisjon ikke ligge utenfor.
     const dekket = new Set<string>();
+    const boksDekning: { key: string; bounds: GeoBounds }[] = [];
     for (const el of elements) {
         if (el.type !== 'relation') continue;
         const d = dom.get(el);
         if (d !== 'aking' && d !== 'alpint-blandet') continue;
-        for (const m of el.members ?? []) dekket.add(`${m.type}/${m.ref}`);
+        if (el.members?.length) {
+            for (const m of el.members) dekket.add(`${m.type}/${m.ref}`);
+        } else if (el.bounds) {
+            boksDekning.push({
+                key: akingNameKey(resolvePlaceName(el.tags ?? {}, AKING_NAME_TAGS)?.value),
+                bounds: el.bounds,
+            });
+        }
+    }
+
+    /** Er objektet dekket av en relasjon — eksakt eller via reserveveien? */
+    const erDekket = (el: OsmElement): boolean => {
+        if (dekket.has(`${el.type}/${el.id}`)) return true;
+        if (!boksDekning.length) return false;
+        const key = akingNameKey(resolvePlaceName(el.tags ?? {}, AKING_NAME_TAGS)?.value);
+        if (!key) return false;
+        const punkter = elementPoints(el);
+        return boksDekning.some(
+            (b) => b.key === key && punkter.some((p) => pointInBounds(p, b.bounds))
+        );
+    };
+
+    // TELLINGEN kommer ETTER pass 2, ikke i pass 1, og det er en retting.
+    // Korketrekkerens 14 segmenter er dekket av relasjonen; teller vi dem,
+    // sier rapporten «15 aking» om én bakke, og de segmentene som mangler
+    // navn blåser opp «uten navn» med tall som ikke representerer data vi
+    // faktisk går glipp av. Rapporten skal telle det som står igjen å
+    // bestemme, ikke det Overpass sendte.
+    for (const el of elements) {
+        if (el.type !== 'relation' && erDekket(el)) continue;
+        domTelling[dom.get(el)!] += 1;
     }
 
     const godkjent = elements.filter((el) => dom.get(el) === 'aking');
     const relasjoner = godkjent.filter((el) => el.type === 'relation');
-    const frie = godkjent.filter(
-        (el) => el.type !== 'relation' && !dekket.has(`${el.type}/${el.id}`)
-    );
+    const frie = godkjent.filter((el) => el.type !== 'relation' && !erDekket(el));
 
     // Pass 3: grupper de frie på navn, så på avstand innenfor navnet.
     const perNavn = new Map<string, OsmElement[]>();
     for (const el of frie) {
-        const key = akingNameKey(el.tags?.name);
+        // SAMME kjede som dommen og tittelen. Leste denne bare `name`, ville
+        // Sollibakken-segmentet fått tom nøkkel og gruppert seg med et
+        // hvilket som helst annet navnløst — se [AKING_NAME_TAGS].
+        const key = akingNameKey(resolvePlaceName(el.tags ?? {}, AKING_NAME_TAGS)?.value);
         const liste = perNavn.get(key);
         if (liste) liste.push(el);
         else perNavn.set(key, [el]);
@@ -973,29 +1174,35 @@ export function akingClusters(elements: readonly OsmElement[]): AkingResult {
     }
 
     const anchors: OsmElement[] = [];
+    let upalitelige = 0;
     for (const { medlemmer, grunnlag } of grupper) {
         const anker = [...medlemmer].sort(akingAnchorOrder)[0];
-        const punkter = medlemmer.flatMap((el) => elementPoints(el));
-        const punkt = akingAnchorPoint(punkter);
+        const geo = akingGeometry(medlemmer);
         const id = `${anker.type}/${anker.id}`;
-        const navn = anker.tags?.name ?? '(uten navn)';
-        if (!punkt) {
+        const navnet = resolvePlaceName(anker.tags ?? {}, AKING_NAME_TAGS);
+        const navn = navnet?.value ?? '(uten navn)';
+        if (!geo) {
             rapport.push(`    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — ingen geometri`);
             continue;
         }
+        const { punkt, bounds: b } = geo;
         // Utstrekningen skrives ut fordi kartpunktet er et kompromiss: en
         // bakke på 2 km har en nål som ikke står ved starten, og da skal
         // tallet stå i rapporten framfor å oppdages på kartet.
-        const b = boundsOf(punkter)!;
         const lengde = Math.round(
             distanceMeters(
                 { lat: b.minlat, lon: b.minlon },
                 { lat: b.maxlat, lon: b.maxlon }
             )
         );
+        const upalitelig = lengde > AKING_DIAGONAL_WARN_M;
+        if (upalitelig) upalitelige += 1;
         rapport.push(
             `    ${id.padEnd(18)} ${navn.padEnd(32)} ${grunnlag.padEnd(16)} ` +
-                `[${medlemmer.length} objekt, bbox-diagonal ${lengde} m]`
+                `[${medlemmer.length} objekt, ${geo.grunnlag}, bbox-diagonal ${lengde} m` +
+                (navnet && navnet.tag !== 'name' ? `, navn fra ${navnet.tag}` : '') +
+                ']' +
+                (upalitelig ? `  ⚠ UPÅLITELIG KARTPUNKT (>${AKING_DIAGONAL_WARN_M} m)` : '')
         );
         anchors.push({
             ...anker,
@@ -1007,11 +1214,20 @@ export function akingClusters(elements: readonly OsmElement[]): AkingResult {
         });
     }
 
+    if (upalitelige) {
+        rapport.push(
+            `    ⚠ ${upalitelige} av ${anchors.length} har bbox-diagonal over ` +
+                `${AKING_DIAGONAL_WARN_M} m — nåla står midt i løypa, ikke der man starter. ` +
+                `Toppen krever en høydekilde (egen oppgave).`
+        );
+    }
+
     return { anchors, rapport, domTelling };
 }
 
 /** Henter Aking for én by. `out geom` fordi grupperingen og kartpunktet
- *  trenger geometrien; `out center` gir ingen av delene på en relasjon. */
+ *  trenger geometrien, og fordi relasjonsforankringen trenger MEDLEMMENE —
+ *  se [OUT_GEOM_TAGS] for hvorfor ordet `tags` ikke får stå der. */
 async function akingElements(city: string): Promise<OsmElement[]> {
     const raw = await fetchOverpass(
         `[out:json][timeout:180];
@@ -1019,7 +1235,7 @@ area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a;
 (
   ${AKING_SELECTOR}
 );
-out geom tags;`,
+out geom;`,
         `${city}/aking:objekter`
     );
     const { anchors, rapport, domTelling } = akingClusters(raw);
@@ -1085,6 +1301,12 @@ interface PlaceCategoryDef {
      * bevisspørring og et romlig filter.
      */
     fetchElements?: (city: string) => Promise<OsmElement[]>;
+    /**
+     * Tagg-nøklene stedets navn leses fra, i prioritert rekkefølge.
+     * Default [DEFAULT_NAME_TAGS] = kun `name`, som er det alle kategorier
+     * unntatt Aking bruker. Se [resolvePlaceName] og [AKING_NAME_TAGS].
+     */
+    nameTags?: readonly string[];
 }
 
 // Rekkefølgen er match-prioritet (et element kategoriseres av første treff).
@@ -1159,6 +1381,10 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         audience: 'For alle',
         selector: AKING_SELECTOR,
         fetchElements: akingElements,
+        // Første og eneste kategori som leser noe annet enn `name`.
+        // way/558688673 Sollibakken bærer piste:name og falt ut som «uten
+        // navn» i tørrkjøringen sep. 2026. Grupperingen leser SAMME liste.
+        nameTags: AKING_NAME_TAGS,
         // Taggene alene kan ikke avgjøre dette. Grupperingen i
         // [akingClusters] har allerede bestemt hvilket objekt som er ANKERET
         // for bakken; uten flagget ville hvert av Korketrekkerens 14 segmenter
@@ -1537,6 +1763,8 @@ export interface ImportRow {
     titleSource: TitleSource;
     geocodeError?: string;
     osmName: string | null;
+    /** Hvilken tagg navnet kom fra. Satt kun når det IKKE er `name`. */
+    nameTag?: string;
 }
 
 /**
@@ -1584,14 +1812,17 @@ export async function buildRows(
     let geocoded = 0;
     for (const { el, cat, pos } of selected) {
         const tags = el.tags ?? {};
-        const usableName = isUsablePlaceName(tags.name);
+        // Leser kategoriens egen navnekjede. For alle andre enn Aking er
+        // dette `['name']`, altså nøyaktig samme test som før.
+        const navnet = resolvePlaceName(tags, cat.nameTags);
+        const usableName = navnet !== null;
         if (!usableName) {
             geocoded += 1;
             console.log(`  geokoder ${el.type}/${el.id} (${geocoded}/${needGeocoding})...`);
         }
         // Tittel-prefikset kan være sport-spesifikt (ballbane), ellers kategoriens.
         const titleLabel = cat.titleLabelFor?.(tags) ?? cat.label;
-        const titled = await makePlaceTitleDetailed(titleLabel, tags.name ?? null, pos.lat, pos.lng);
+        const titled = await makePlaceTitleDetailed(titleLabel, navnet?.value ?? null, pos.lat, pos.lng);
         if (!usableName) await sleep(TITLE_PAUSE_MS); // punktsøk-høflighet ved cache-miss
 
         const addrStreet = tags['addr:street']
@@ -1605,7 +1836,7 @@ export async function buildRows(
             description: tags.description ?? '',
             category: cat.category,
             target_audience: cat.audience,
-            venue_name: usableName ? tags.name!.trim() : null,
+            venue_name: navnet?.value ?? null,
             address: addrStreet,
             municipality: city,
             lat: pos.lat,
@@ -1638,7 +1869,10 @@ export async function buildRows(
             status: 'published',
             titleSource: titled.source,
             geocodeError: titled.geocodeError,
-            osmName: tags.name ?? null,
+            // Det navnet som FAKTISK ble brukt, ikke bare `name`-taggen — ellers
+            // ville rapportlinja for Sollibakken sagt «name=null -> Sollibakken».
+            osmName: navnet?.value ?? tags.name ?? null,
+            nameTag: navnet?.tag,
         });
     }
     return rows;
@@ -1707,7 +1941,11 @@ async function importCity(
         }
         // Konkrete eksempler der name-taggen manglet/ble silt:
         for (const r of catRows.filter((x) => x.titleSource !== 'osm-navn').slice(0, 3)) {
-            console.log(`    ${r.external_id}: name=${JSON.stringify(r.osmName)} -> "${r.title}" [${r.titleSource}]`);
+            console.log(
+                `    ${r.external_id}: name=${JSON.stringify(r.osmName)}` +
+                    (r.nameTag && r.nameTag !== 'name' ? ` (fra ${r.nameTag})` : '') +
+                    ` -> "${r.title}" [${r.titleSource}]`
+            );
         }
     }
     const errors = rows.filter((r) => r.geocodeError);
@@ -1769,7 +2007,7 @@ async function importCity(
     for (let i = 0; i < writable.length; i += 500) {
         const chunk = writable
             .slice(i, i + 500)
-            .map(({ titleSource: _ts, geocodeError: _ge, osmName: _on, ...row }) => ({
+            .map(({ titleSource: _ts, geocodeError: _ge, osmName: _on, nameTag: _nt, ...row }) => ({
                 ...row,
                 source_id: source.id,
             }));

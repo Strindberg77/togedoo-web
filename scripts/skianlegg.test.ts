@@ -533,3 +533,37 @@ test('rowsMissingCityAnchor: en rad uten by er usynlig i by-modus', async () => 
     assert.equal(rowsMissingCityAnchor([rad({})]).length, 1);
     assert.equal(rowsMissingCityAnchor([rad({ municipality: '   ' })]).length, 1);
 });
+
+test('spørringen sier `out geom`, ALDRI `out geom tags`', async (t) => {
+    // FUNNET UNDER AKING-RETTINGEN (sep. 2026), verifisert i Overpass-kilden:
+    // ordet `tags` overskriver mode til "tags" (print.cc:80 = ID | TAGS), og
+    // hele members-blokka i output_json.cc:235 er portet på MEMBERS. Med
+    // `out geom tags` har derfor INGEN relasjon her noen gang hatt medlemmer:
+    // polygonRings() returnerte tom liste, og hvert eneste multipolygon —
+    // Skimore Oslo inkludert — falt til «bounds (grov)». assembleRings, som
+    // ble skrevet nettopp for dem, har aldri kjørt mot ekte data.
+    //
+    // Rettingen kan bare gjøre ringen mer nøyaktig: lykkes ikke
+    // sammensyingen, faller koden tilbake til samme bounds som før. Men det
+    // ER en oppførselsendring — `grunnlag`-kolonnen i rapporten viser den, og
+    // Skianlegg bør tørrkjøres på nytt før neste import.
+    const realFetch = globalThis.fetch;
+    t.after(() => { globalThis.fetch = realFetch; });
+    const sendt: string[] = [];
+    globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+        sendt.push(decodeURIComponent(String(init?.body ?? '')));
+        return new Response(JSON.stringify({ elements: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    }) as typeof fetch;
+
+    const cat = await ski();
+    await cat.fetchElements!('Oslo');
+    // To spørringer: områdene og bevisene. Begge må ha medlemmene med.
+    assert.equal(sendt.length, 2);
+    for (const q of sendt) {
+        assert.match(q, /out geom;/);
+        assert.ok(!/out geom tags/.test(q), 'ordet «tags» slår av medlemslista');
+    }
+});
