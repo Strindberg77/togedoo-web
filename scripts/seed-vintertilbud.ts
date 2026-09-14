@@ -41,7 +41,8 @@ const SPLIT: Record<
     string,
     { category: string; isIndoor: boolean; facets?: FacetToken[] }
 > = {
-    // Skianlegg (6): SNØ er innendørs, resten (alpint/akebakke) ute.
+    // Skianlegg (5): SNØ er innendørs, resten ute. Korketrekkeren lå her til
+    // sep. 2026 og er nå Aking (1) — se under.
     // SNØ Lørenskog er alpint selv om det er innendørs — fasetten sier hva du
     // GJØR der, is_indoor sier hvor. De to aksene er uavhengige.
     'sno-lorenskog': { category: 'Skianlegg', isIndoor: true, facets: ['alpint'] },
@@ -49,9 +50,13 @@ const SPLIT: Record<
     'kirkerudbakken-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     'eikedalen-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     'vassfjellet-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
-    // Korketrekkeren er en akebakke, ikke et alpinanlegg. Eneste rad med
-    // 'aking' i dag.
-    'korketrekkeren-aking': { category: 'Skianlegg', isIndoor: false, facets: ['aking'] },
+    // Korketrekkeren er en akebakke, ikke et alpinanlegg — og fra sep. 2026
+    // er det en EGEN kategori, ikke bare en fasett på Skianlegg. Raden lå
+    // under Skianlegg med «(akebakke)» skrevet inn i tittelen, som er en
+    // omskriving av at kategorien var feil. Fasetten står igjen fordi
+    // kategorien og fasetten svarer på hvert sitt spørsmål: hva stedet ER, og
+    // hva du GJØR der. Importen setter den samme fasetten på alle Aking-rader.
+    'korketrekkeren-aking': { category: 'Aking', isIndoor: false, facets: ['aking'] },
     // Badeland (8): alle inne.
     'risenga-svommehall': { category: 'Badeland', isIndoor: true },
     'bolgen-bad-drobak': { category: 'Badeland', isIndoor: true },
@@ -212,7 +217,9 @@ const SEED: VinterSeed[] = [
     },
     {
         externalId: 'korketrekkeren-aking',
-        title: 'Korketrekkeren (akebakke)',
+        // «(akebakke)» er borte: den sto der fordi kategorien var Skianlegg
+        // og tittelen måtte bære motsigelsen. Nå sier kategorien det.
+        title: 'Korketrekkeren',
         description: 'Oslos mest kjente akebakke — ca. 2 km fra Frognerseteren til Midtstuen. Gratis å ake; kjelke kan leies. Åpen når det er nok snø.',
         municipality: 'Oslo',
         // Akebakke uten gateadresse — manuelt verifisert startpunkt ved
@@ -578,7 +585,7 @@ async function main() {
         .update({ last_synced_at: new Date().toISOString(), last_sync_status: `ok: ${rows.length} vinter/innendørs-steder (${verifiedCount} geokodet)` })
         .eq('id', source.id);
 
-    console.log(`\nFerdig: upsertet ${rows.length} steder (vinter-splitt: Skianlegg/Badeland/Trampolinepark/Innendørs lekeland/Skøyter).`);
+    console.log(`\nFerdig: upsertet ${rows.length} steder (vinter-splitt: Skianlegg/Aking/Badeland/Trampolinepark/Innendørs lekeland/Skøyter).`);
 }
 
 main().catch((e) => {

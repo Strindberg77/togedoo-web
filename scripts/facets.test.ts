@@ -160,14 +160,23 @@ test('lekeplass-taggen playground forveksles ikke med piste:type=playground', as
     assert.deepEqual(osmFacetTokens({ 'piste:type': 'playground' }), ['skileik']);
 });
 
-test('kun Skianlegg er koblet på facetsFor', async () => {
+test('kun Aking og Skianlegg er koblet på facetsFor', async () => {
     // Standardregelen er kategoriuavhengig, så kroken skal stå ubrukt med
-    // mindre kategorien trenger noe annet. Skianlegg gjør det: fasettene
-    // ligger på MEDLEMMENE (nedfartene, akebakken, sykkelløypene), ikke på
-    // polygonet. Kobles en til på, skal den også ha egne tester.
+    // mindre kategorien trenger noe annet. To gjør det, av motsatte grunner:
+    //
+    //   skianlegg — UTVIDER. Fasettene ligger på MEDLEMMENE (nedfartene,
+    //     akebakken, sykkelløypene), ikke på polygonet, så standardregelen
+    //     over polygonets egne tagger ville gitt tom liste.
+    //   aking — BEGRENSER. Standardregelen over medlemstaggene kunne plukket
+    //     opp `alpint` fra ett segment som også er tagget downhill, og skrevet
+    //     «alpint» på en akebakke. Kategorien finnes nettopp for å skille de
+    //     to, så fasetten er låst til ['aking'].
+    //
+    // Kobles en tredje på, skal den også ha egne tester. Rekkefølgen følger
+    // PLACE_CATEGORIES, der aking står rett etter lekeplass.
     const { PLACE_CATEGORIES } = await load();
     const koblet = PLACE_CATEGORIES.filter((c) => c.facetsFor).map((c) => c.key);
-    assert.deepEqual(koblet, ['skianlegg']);
+    assert.deepEqual(koblet, ['aking', 'skianlegg']);
 });
 
 test('osmFacetTokensFrom unionerer flere tagg-sett', async () => {
