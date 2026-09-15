@@ -41,17 +41,52 @@
 // etter oppryddingen sagt «ferdig» om en base som fortsatt har par i seg.
 import { distanceMeters } from './geo-polygon';
 
-/** Hvor nær to objekter i samme kategori må ligge for å regnes som samme sted.
+/**
+ * Hvor nær to objekter i samme kategori må ligge for å regnes som samme sted.
  *
- *  10 m er MÅLT: det er terskelen de 263 parene i basen er talt under, og
- *  den samme Geofabrik-målingen brukte. Om 5 m er tryggere er FORTSATT
- *  UBESVART — histogrammet 0–10 m er ikke kjørt. Begge kallerne leser denne
- *  konstanten, så de kan ikke komme i utakt når svaret finnes.
+ * ─────────────────────────────────────────────────────────────────────────
+ * 5 m, OG DET ER MÅLT (sep. 2026, fire byer, publiserte rader, samme
+ * kategori, haversine):
  *
- *  Overstyrbar av samme grunn som ski-tolleransen: to kjøringer med ulik
- *  verdi skiller «for få par» fra «feil sammenslått», uten en kodeendring
- *  imellom. */
-export const DEDUP_RADIUS_M = Number(process.env.PLACES_DEDUP_M ?? 10) || 10;
+ *   ≤  5 m   191 par
+ *   ≤ 10 m   263 par
+ *   ─────────────────
+ *   5–10 m    72 par   (27 % av totalen)
+ *
+ * Tallet var 10 til de to tellingene ble sammenlignet. De ble lest som «72
+ * par forsvant», men radiusen var ulik i de to spørringene — ingenting
+ * forsvant, og differansen ER båndet.
+ *
+ * HVORFOR 5 OG IKKE 10, gitt at begge tallene finnes: feilen er ikke
+ * symmetrisk.
+ *
+ *   for stor radius  → to ekte nabosteder slås sammen, og det ene forsvinner
+ *                      fra appen. Stille, og raden blir `locked` slik at
+ *                      importen ikke henter den tilbake.
+ *   for liten radius → en dublett blir stående. Synlig for brukeren, og
+ *                      rettes med én kjøring til.
+ *
+ * 27 % i båndet 5–10 m er for stort til å avfeie som utsmøring rundt
+ * terskelen — det er en egen bestand, og vi vet ikke hvor mange av dem som
+ * er ekte naboer. Under 5 m er to objekter i samme kategori i praksis samme
+ * sted, tegnet av to personer fra samme flyfoto: alle de 50 nærmeste parene
+ * i basen ligger under 4 m.
+ *
+ * `PLACES_DEDUP_M=10` gir den gamle oppførselen. Oppryddingsskriptet skriver
+ * ut hvor mange par til som ville blitt funnet ved 10 m, så valget kan
+ * etterprøves fra hver kjøring i stedet for å hvile på denne kommentaren.
+ *
+ * BEGGE KALLERNE LESER DENNE KONSTANTEN, så importen og oppryddingen kan
+ * ikke komme i utakt.
+ */
+export const DEDUP_RADIUS_M = Number(process.env.PLACES_DEDUP_M ?? 5) || 5;
+
+/**
+ * Radiusen oppryddingen SAMMENLIGNER med, for å vise hva en løsere terskel
+ * ville tatt. Ikke en terskel i seg selv — bare et tall i rapporten, så
+ * valget over ikke blir en beslutning ingen ser igjen.
+ */
+export const DEDUP_SAMMENLIGNING_M = 10;
 
 /**
  * Slingringsmonn på selve sammenligningen. Én mikrometer.

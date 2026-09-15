@@ -5,9 +5,21 @@ kjørt** — ikke importen, ikke oppryddingen, ikke SQL-en.
 
 ## Hva problemet er
 
-**263 par i basen** (målt sep. 2026: fire byer, publiserte rader, samme
-kategori, under 10 m, faktisk avstand). Det er 263 steder der en forelder ser
-to kort for samme sted.
+**191 par i basen under 5 m, 263 under 10** (målt sep. 2026: fire byer,
+publiserte rader, samme kategori, haversine). Det er like mange steder der en
+forelder ser to kort for samme sted.
+
+De to tallene ble en stund lest som «72 par forsvant mellom to tellinger».
+Det gjorde de ikke — spørringene brukte ulik radius, og differansen ER båndet
+5–10 m.
+
+**Terskelen er 5 m.** Se «Hvorfor 5 og ikke 10» under.
+
+**Nesten alle er fra samme kjøring.** Av parene under 5 m: 182 skrevet
+innenfor samme time, 0 samme døgn, 9 fra ulike kjøringer. Oppryddingen er i
+hovedsak en ENGANGSJOBB — dedupen i importen ville stoppet nesten alle. De 9
+viser at OSM får nye dubletter over tid, men raten er lav nok til at dette
+ikke trenger å være en fast jobb.
 
 Problemet har to halvdeler, og begge må gjøres:
 
@@ -25,6 +37,29 @@ Var den kopiert, kunne de to blitt uenige — og da tar oppryddingen ned rad A
 mens neste import bygger A og fjerner B. En test kjører samme scenario
 gjennom begge kodeveiene og krever samme svar
 (`scripts/dedup-kallere.test.ts`).
+
+## Hvorfor 5 og ikke 10
+
+| ≤ 5 m | ≤ 10 m | i båndet 5–10 |
+|---|---|---|
+| 191 par | 263 par | **72 par (27 %)** |
+
+Feilen er ikke symmetrisk:
+
+- **for stor radius** → to ekte nabosteder slås sammen, og det ene forsvinner
+  fra appen. Stille, og raden blir `locked` slik at importen ikke henter den
+  tilbake.
+- **for liten radius** → en dublett blir stående. Synlig for brukeren, og
+  rettes med én kjøring til.
+
+27 % i båndet er for stort til å avfeie som utsmøring rundt terskelen — det er
+en egen bestand, og ingenting i dataene sier hvor mange av dem som er ekte
+naboer. Under 5 m er to objekter i samme kategori i praksis samme sted tegnet
+to ganger: alle de 50 nærmeste parene i basen ligger under 4 m.
+
+**`PLACES_DEDUP_M=10` gir den andre oppførselen**, og skriptet skriver ut hvor
+mange par til det ville funnet — så valget kan etterprøves fra hver kjøring i
+stedet for å hvile på dette avsnittet.
 
 ## Hvem vinner
 
@@ -123,6 +158,12 @@ kun serverer `published`), og låsen hindrer at importen skriver den igjen.
 
 **Kjør kontrollspørringen først.** Er svaret tomt, fantes radene aldri.
 
+Utskriften viser også hvor mange par en løsere terskel ville funnet:
+
+```
+  Ved 10 m ville 72 par TIL blitt funnet. De tas IKKE ned nå.
+```
+
 Angre: `POST /api/admin/moderate {"id": "<uuid>", "action": "publish"}`.
 
 ### 3. Kjør importen, så de ikke kommer tilbake
@@ -143,13 +184,10 @@ ta ned ulike rader.
 
 ## Hva du bør vite om tallene
 
-**Terskelen er 10 m, og om 5 m er tryggere er ubesvart.** Utvalget på 50 par
-var sortert stigende og avkortet, så «alle 50 er under 4 m» sier at det finnes
-minst 50 par under 4 m — ikke hvor mange som ligger mellom 4 og 10.
-Histogrammet i `scripts/osm-kvalitet.py` (terskler 2/3/5/10/20/30/50/100)
-svarer. **Begge kallerne leser `DEDUP_RADIUS_M`**, så de kan ikke komme i
-utakt når svaret finnes. `PLACES_DEDUP_M=5` prøver et annet tall uten en
-kodeendring.
+**Terskelen er målt, ikke valgt** — se «Hvorfor 5 og ikke 10» over. **Begge
+kallerne leser `DEDUP_RADIUS_M`**, så importen og oppryddingen kan ikke komme
+i utakt. `PLACES_DEDUP_M=10` prøver det andre tallet uten en kodeendring, og
+skriptet viser differansen i hver kjøring.
 
 **Avstanden måles ulikt i basen og i koden.** Tellingen som ga 263 bruker
 PostGIS-geografi; `distanceMeters` er en plan tilnærming. De er ~0,1 % fra

@@ -126,9 +126,22 @@ test('navnereglene gjelder også node mot node', () => {
 // ---------------------------------------------------------------------------
 
 test('nøyaktig på radiusen er innenfor, litt over er utenfor', () => {
-    assert.equal(DEDUP_RADIUS_M, 10, 'terskelen er MÅLT — 263 par i basen');
+    // 5 m er MÅLT: 191 par i basen under 5 m, 263 under 10. De 72 i båndet
+    // 5–10 er 27 % av totalen, altså en egen bestand og ikke utsmøring rundt
+    // terskelen — og vi vet ikke hvor mange av dem som er ekte naboer.
+    assert.equal(DEDUP_RADIUS_M, 5);
     assert.deepEqual(tapere(k('node/1', DEDUP_RADIUS_M), k('way/2')), ['node/1']);
     assert.deepEqual(tapere(k('node/1', DEDUP_RADIUS_M + 0.5), k('way/2')), []);
+});
+
+test('feilretningen er valgt: 5 m lar heller en dublett stå enn å slå sammen', () => {
+    // Et par på 7 m ligger i båndet 5–10. Det tas IKKE ned med standarden,
+    // og BLIR tatt ned hvis noen setter PLACES_DEDUP_M=10. Begge er lovlige
+    // valg; testen låser hvilket som er standard, og at det andre er én
+    // parameter unna.
+    const par = [k('node/1', 7), k('way/2')];
+    assert.deepEqual(tapere(...par), [], 'standarden lar det stå');
+    assert.deepEqual([...dedupPairs(par, 10).tapere], ['node/1'], 'løsere terskel tar det');
 });
 
 // ---------------------------------------------------------------------------
@@ -187,9 +200,9 @@ test('«taper mot» er asyklisk — ingen to objekter kan ta hverandre', () => {
 
 test('en kjede tas ut selv om ytterpunktene ikke ble sammenlignet', () => {
     // Dokumentert følge av «tas ut hvis og bare hvis den taper minst ett
-    // par». node/30 og node/50 ligger 12 m fra hverandre, altså utenfor
-    // radiusen — men begge taper mot node/10 i midten.
-    const ut = dedupPairs([k('node/50', 0), k('node/10', 6), k('node/30', 12)]);
+    // par». node/30 og node/50 ligger 6 m fra hverandre, altså utenfor
+    // radiusen på 5 — men begge taper mot node/10 i midten.
+    const ut = dedupPairs([k('node/50', 0), k('node/10', 3), k('node/30', 6)]);
     assert.deepEqual([...ut.tapere].sort(), ['node/30', 'node/50']);
 });
 

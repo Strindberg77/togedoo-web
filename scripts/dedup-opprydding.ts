@@ -35,6 +35,7 @@
 import { isDatahubConfigured, supabaseAdmin } from '../lib/supabase';
 import {
     DEDUP_RADIUS_M,
+    DEDUP_SAMMENLIGNING_M,
     dedupPairs,
     nedtakingsSql,
     osmType,
@@ -64,6 +65,15 @@ export interface Oppryddingsplan {
     readonly tapere: string[];
     /** Rader som ble sett bort fra, med årsak. */
     readonly hoppetOver: { readonly ikkeOsm: number; readonly utenPunkt: number };
+    /**
+     * Hvor mange PAR TIL en løsere terskel ville funnet.
+     *
+     * Terskelen er 5 m, valgt fordi 27 % av parene i basen ligger i båndet
+     * 5–10 m og vi ikke vet hvor mange av dem som er ekte naboer. Tallet står
+     * her så valget kan etterprøves fra hver kjøring — ellers er det en
+     * beslutning ingen ser igjen.
+     */
+    readonly vedLosereTerskel: { readonly radius: number; readonly ekstraPar: number };
 }
 
 /**
@@ -74,7 +84,11 @@ export interface Oppryddingsplan {
  * OSM-elementer, og krever samme svar. Uten en ren inngang her ville den
  * testen ikke vært mulig å skrive, og «samme regel» ville vært en påstand.
  */
-export function oppryddingsplan(rader: readonly BaseRad[]): Oppryddingsplan {
+export function oppryddingsplan(
+    rader: readonly BaseRad[],
+    radius = DEDUP_RADIUS_M,
+    sammenligning = DEDUP_SAMMENLIGNING_M
+): Oppryddingsplan {
     const perKategoriKandidater = new Map<string, DedupKandidat[]>();
     let ikkeOsm = 0;
     let utenPunkt = 0;
@@ -107,14 +121,30 @@ export function oppryddingsplan(rader: readonly BaseRad[]): Oppryddingsplan {
 
     const perKategori = new Map<string, DedupPar[]>();
     const tapere = new Set<string>();
+    let antall = 0;
+    let antallLosere = 0;
     for (const [kategori, kandidater] of [...perKategoriKandidater].sort()) {
-        const { par, tapere: t } = dedupPairs(kandidater);
+        const { par, tapere: t } = dedupPairs(kandidater, radius);
+        antall += par.length;
+        // Samme regel, løsere terskel. Kun til rapporten — ingenting av det
+        // den finner brukes til å ta ned rader.
+        if (sammenligning > radius) {
+            antallLosere += dedupPairs(kandidater, sammenligning).par.length;
+        }
         if (par.length === 0) continue;
         perKategori.set(kategori, par);
         for (const id of t) tapere.add(id);
     }
 
-    return { perKategori, tapere: [...tapere].sort(), hoppetOver: { ikkeOsm, utenPunkt } };
+    return {
+        perKategori,
+        tapere: [...tapere].sort(),
+        hoppetOver: { ikkeOsm, utenPunkt },
+        vedLosereTerskel: {
+            radius: sammenligning,
+            ekstraPar: Math.max(0, antallLosere - antall),
+        },
+    };
 }
 
 /** Tabellen per kategori: de [vis] første parene, og hele resten oppsummert. */
@@ -174,6 +204,22 @@ export function formatPlan(plan: Oppryddingsplan, vis = 10): string {
             `sted.`
     );
     L.push(`    De to siste er OSM-data som bør rettes, ikke rader som bør fjernes.`);
+    if (plan.vedLosereTerskel.ekstraPar > 0) {
+        L.push('');
+        L.push(
+            `  Ved ${plan.vedLosereTerskel.radius} m ville ${plan.vedLosereTerskel.ekstraPar} ` +
+                `par TIL blitt funnet. De tas IKKE ned nå.`
+        );
+        L.push(
+            `  Terskelen er ${DEDUP_RADIUS_M} m fordi feilen ikke er symmetrisk: en for stor`
+        );
+        L.push(
+            `  radius slår sammen to ekte nabosteder, og det ene forsvinner stille. En for`
+        );
+        L.push(
+            `  liten lar en dublett stå, og det er synlig. PLACES_DEDUP_M=${plan.vedLosereTerskel.radius} prøver det andre.`
+        );
+    }
     if (plan.hoppetOver.ikkeOsm || plan.hoppetOver.utenPunkt) {
         L.push('');
         L.push(
