@@ -27,7 +27,7 @@ const nasjonalChunk: ImportChunk = {
     label: 'Norge',
     cityAnchor: null,
     overpassArea: '',
-    overpassScope: '(57.5,4.0,71.5,31.5)',
+    overpassScopes: ['(57.5,4.0,71.5,31.5)'],
     overpassTimeout: 300,
 };
 

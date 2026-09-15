@@ -45,7 +45,7 @@ test('--national gir ÉN chunk, uten by-anker', async () => {
     assert.equal(c.id, 'norge');
     assert.equal(c.cityAnchor, null, 'municipality utledes per rad');
     assert.equal(c.overpassArea, '', 'en bbox trenger ingen area-setning');
-    assert.equal(c.overpassScope, NATIONAL_BBOX);
+    assert.deepEqual(c.overpassScopes, [NATIONAL_BBOX]);
     assert.equal(c.overpassTimeout, 300, 'samme timeout som målingen brukte');
 });
 

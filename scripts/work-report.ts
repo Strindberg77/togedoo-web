@@ -14,6 +14,7 @@
 //
 //   npx --yes tsx scripts/work-report.ts --work=.import-work
 //   npx --yes tsx scripts/work-report.ts --work=.import-work --chunk=norge --near=500
+//   npx --yes tsx scripts/work-report.ts --work=.import-work --lines=1000
 //
 // NESTE GANG: `| tee kjoring.log`. Dette verktøyet er for kjøringen som
 // allerede er gjort.
@@ -24,6 +25,7 @@ import { distanceMeters } from '../lib/geo-polygon';
 import { parseNdjson } from './work-store';
 import {
     akingClusters,
+    akingVerdict,
     elementPoints,
     groupFetchRecords,
     PLACE_CATEGORIES,
@@ -38,6 +40,7 @@ const arg = (navn: string, standard?: string): string | undefined =>
 const workDir = arg('work', '.import-work')!;
 const bareChunk = arg('chunk');
 const naerMeter = Number(arg('near', '500'));
+const maxLinjer = Number(arg('lines', '40')) || 40;
 
 if (!fs.existsSync(workDir)) {
     console.error(`Fant ingen arbeidskatalog: ${workDir}`);
@@ -122,9 +125,24 @@ for (const chunkId of chunkIds) {
             if (!sets || !cat.enrichSets) continue;
             const ut = cat.enrichSets(sets);
             console.log(`    ${cat.key}: ${ut.summary ?? `${ut.elements.length} elementer`}`);
-            for (const linje of ut.rapport.slice(0, 40)) console.log(`  ${linje}`);
-            if (ut.rapport.length > 40) {
-                console.log(`      … ${ut.rapport.length - 40} linjer til`);
+            // TELLINGEN STÅR I `summary`, ikke her. Den lages av den samme
+            // funksjonen som feller dommene, så den kan ikke komme i utakt
+            // med linjene under. En egen opptelling i rapportverktøyet ville
+            // måttet gjette dommen ut av en formatert tekstlinje, og ville
+            // vært en ANDRE sannhet om det samme tallet.
+            for (const linje of ut.rapport.slice(0, maxLinjer)) console.log(`  ${linje}`);
+            if (ut.rapport.length > maxLinjer) {
+                // ORDLYDEN ER EN RETTING. Den sa «… 774 linjer til», og det
+                // ble lest som «774 objekter hoppet over» i diagnosen etter
+                // den første nasjonale tørrkjøringen. Tallet var antallet
+                // SKJULTE linjer av 814, ikke antallet hoppet over — og de
+                // 40 som VAR synlige var alle noder, fordi Overpass svarer
+                // noder før ways og relasjoner. Nå står nevneren i linja, og
+                // det finnes et flagg for å se resten.
+                console.log(
+                    `      … ${ut.rapport.length - maxLinjer} av ${ut.rapport.length} linjer ` +
+                        `skjult — --lines=${ut.rapport.length} viser alle`
+                );
             }
         }
 
@@ -148,6 +166,23 @@ for (const chunkId of chunkIds) {
                     : false;
             }).length;
             console.log(`    …av dem i Norge ....... ${iNorge}`);
+
+            // HVOR STOR ER «uten navn» EGENTLIG? Totalen er dominert av
+            // naboland (91 av 313 objekter lå i Norge i første nasjonale
+            // tørrkjøring), så 203 avviste sier ingenting om hvor mye som
+            // faktisk er tapt her hjemme. Dette tallet er taket for hva en
+            // romlig klynging av navnløse akebakker kunne lagt til — og det
+            // er OBJEKTER, ikke rader: en klynging ville slått flere av dem
+            // sammen. Se docs/runbooks/nasjonal-ski.md, funn 3.
+            const navnloseINorge = akingSets.main.filter((el) => {
+                if (akingVerdict(el.tags ?? {}) !== 'uten-navn') return false;
+                const p = elementPoints(el)[0];
+                return p ? Boolean(idx.lookup(p.lat, p.lon)) : false;
+            }).length;
+            console.log(
+                `    uten navn, i Norge .... ${navnloseINorge} objekter ` +
+                    `(taket for romlig klynging — se funn 3)`
+            );
         }
     }
 

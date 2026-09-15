@@ -25,6 +25,7 @@ import {
     boundsGapMeters,
     boundsOf,
     boundsOverlap,
+    padBounds,
     rejectBoundsFor,
     centerOfBounds,
     distanceMeters,
@@ -526,6 +527,43 @@ const SKI_EVIDENCE_TOLERANCE_M = Number(
     process.env.PLACES_SKI_TOLERANCE_M ?? 50
 ) || 50;
 
+/**
+ * [SKI_NODE_RADIUS_M] RADIUSEN ET PUNKTOBJEKT FÅR I STEDET FOR EN FLATE.
+ *
+ * FUNNET (work-report, sep. 2026): minst 774 objekter i områdesettet ble
+ * meldt «HOPPET OVER — ingen geometri», og alle var NODER. En node har ingen
+ * ring, så «heis eller nedfart INNENFOR polygonet» er ikke et spørsmål som
+ * kan stilles — og de falt derfor ut uten dom. Blant dem lå Surnadal
+ * alpinsenter, altså et ekte anlegg, ved siden av Hovden Langrennsarena og
+ * Skaret Skistadion, som IKKE skal inn.
+ *
+ * Testen for en node er derfor «bevis innenfor X meter fra punktet», med
+ * nøyaktig samme [skiVerdict] etterpå: bare en UTFORløype eller en heis gjør
+ * objektet til et alpinanlegg. Langrennsstadionene faller fortsatt ut, men nå
+ * på bevis i stedet for på geometri — og det er hele forskjellen.
+ *
+ * X = 250 m ER EN VURDERING, IKKE EN MÅLING. Jeg har ikke datagrunnlag til å
+ * utlede den: avstanden fra en anleggs-node til nærmeste heis eller nedfart
+ * er ikke målt, og kan ikke måles uten å hente dataene på nytt. Tallet er
+ * valgt som fem ganger polygontolleransen, ut fra to antakelser som begge
+ * kan være feil:
+ *
+ *   - En anleggs-node settes ofte ved parkeringen eller bunnstasjonen, ikke
+ *     i midten. Nærmeste PUNKT på en heis eller nedfart er da nær, selv om
+ *     anlegget er en kilometer langt. 50 m ville vært for stramt.
+ *   - Et langrennsstadion og et alpinanlegg i samme dal ligger sjelden
+ *     nærmere enn 250 m. 1000 m ville begynt å blande dem.
+ *
+ * DERFOR MÅLER RAPPORTEN AVSTANDEN. Hvert punktobjekt får «nærmeste bevis
+ * NNN m» uansett dom, også de som faller utenfor radiusen. Én tørrkjøring gir
+ * dermed hele fordelingen, og tallet kan velges på data i stedet for på
+ * denne begrunnelsen. Variabelen finnes for at det skal kunne gjøres uten en
+ * kodeendring imellom:
+ *
+ *   PLACES_SKI_NODE_RADIUS_M=120 npx tsx scripts/work-report.ts --work=.import-work
+ */
+const SKI_NODE_RADIUS_M = Number(process.env.PLACES_SKI_NODE_RADIUS_M ?? 250) || 250;
+
 /** Vakt mot nedlagte anlegg på en ellers aktiv nøkkel. */
 const NOT_DISUSED = '["disused"!~"."]["abandoned"!~"."]';
 
@@ -769,6 +807,13 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
     const verified: OsmElement[] = [];
     const rapport: string[] = [];
 
+    // PUNKTOBJEKTENE tas i en ANDRE runde, etter flatene. Grunnen er
+    // duplikatene: en node og et polygon kan beskrive samme anlegg, og da må
+    // flatene være kjent før noden kan avvises som en dublett av en av dem.
+    const punktObjekter: OsmElement[] = [];
+    const flateRinger: GeoPoint[][][] = [];
+    let utenGeometri = 0;
+
     for (const poly of polygons) {
         const id = `${poly.type}/${poly.id}`;
         const navn = poly.tags?.name ?? '(uten navn)';
@@ -783,9 +828,19 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
             grunnlag = 'bounds (grov)';
         }
         if (rings.length === 0) {
-            rapport.push(`    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — ingen geometri`);
+            // ET PUNKT ER IKKE INGEN GEOMETRI. Fram til sep. 2026 endte alt
+            // uten ring her, og det var 774 noder i den nasjonale hentingen.
+            if (elementPoints(poly).length) {
+                punktObjekter.push(poly);
+            } else {
+                utenGeometri += 1;
+                rapport.push(
+                    `    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — verken flate eller punkt`
+                );
+            }
             continue;
         }
+        flateRinger.push(rings);
 
         // FORKASTNINGSFILTER FØRST. Uten det er testen O(polygoner × bevis ×
         // punkter × ringlengde): 445 polygoner mot 7 555 bevisobjekter er
@@ -838,15 +893,132 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
         });
     }
 
+    // ── PUNKTOBJEKTENE ──────────────────────────────────────────────────
+    const punkt = verifyPointFacilities(punktObjekter, withPoints, flateRinger);
+    verified.push(...punkt.verified);
+    if (punkt.rapport.length) {
+        rapport.push(`    — ${punktObjekter.length} punktobjekter (node uten flate) —`);
+        rapport.push(...punkt.rapport);
+    }
+
     const usikre = rapport.filter((r) => r.includes('usikker-heis')).length;
     return {
         elements: verified,
         rapport,
         summary:
-            `${String(polygons.length).padStart(4)} polygoner, ` +
+            `${String(polygons.length).padStart(4)} objekter, ` +
             `${evidence.length} bevisobjekter → ${verified.length} alpinanlegg` +
-            (usikre ? `, ${usikre} med heis uten utforløype (se under)` : ''),
+            (usikre ? `, ${usikre} med heis uten utforløype (se under)` : '') +
+            `\n         punktobjekter: ${punktObjekter.length} ` +
+            `(${punkt.telling.alpint} alpint, ${punkt.telling.dublett} i en flate, ` +
+            `${punkt.telling.ikkeAlpint} ikke-alpint` +
+            (punkt.telling.usikker ? `, ${punkt.telling.usikker} heis uten utforløype` : '') +
+            `)` +
+            (utenGeometri ? `\n         ${utenGeometri} objekter uten geometri i det hele tatt` : ''),
     };
+}
+
+interface BevisMedPunkter {
+    readonly el: OsmElement;
+    readonly points: GeoPoint[];
+    readonly bounds: GeoBounds | null;
+}
+
+/**
+ * DOMMEN FOR ET PUNKTOBJEKT — en node tagget som anlegg, uten flate.
+ *
+ * Se [SKI_NODE_RADIUS_M] for hvorfor de ikke lenger bare hoppes over, og for
+ * hvorfor radiusen er en vurdering og ikke en måling.
+ *
+ * TRE UTFALL, og alle tre står i rapporten med sitt eget tall:
+ *
+ *   dublett     — punktet ligger i en av flatene som allerede er vurdert.
+ *                 Da beskriver de samme anlegg, og flaten er den bedre
+ *                 kilden (den har utstrekning). Uten dette ville nasjonal
+ *                 import fått to rader for hvert anlegg som er kartlagt
+ *                 både som node og som polygon, og de to ville hatt ULIKE
+ *                 external_id — altså ikke fanget av upsert-nøkkelen.
+ *   alpint      — utforløype eller heis innen radiusen.
+ *   ikke-alpint — ingen bevis, eller bare bevis som ikke er alpint.
+ *                 Langrennsstadionene havner her, som de skal.
+ */
+export function verifyPointFacilities(
+    punktObjekter: readonly OsmElement[],
+    withPoints: readonly BevisMedPunkter[],
+    flateRinger: readonly GeoPoint[][][],
+    radius = SKI_NODE_RADIUS_M
+): {
+    verified: OsmElement[];
+    rapport: string[];
+    telling: { alpint: number; dublett: number; ikkeAlpint: number; usikker: number };
+} {
+    const verified: OsmElement[] = [];
+    const rapport: string[] = [];
+    const telling = { alpint: 0, dublett: 0, ikkeAlpint: 0, usikker: 0 };
+
+    for (const el of punktObjekter) {
+        const id = `${el.type}/${el.id}`;
+        const navn = el.tags?.name ?? '(uten navn)';
+        const p = elementPoints(el)[0];
+        if (!p) continue;
+
+        // DUBLETT FØRST. En node inne i en winter_sports-flate er samme
+        // anlegg som flaten, uansett hva bevisene sier.
+        const iFlate = flateRinger.some((ringer) =>
+            anyInsideOrNearAny([p], ringer, SKI_EVIDENCE_TOLERANCE_M)
+        );
+        if (iFlate) {
+            telling.dublett += 1;
+            rapport.push(
+                `    ${id.padEnd(18)} ${navn.padEnd(32)} dublett      [ligger i en flate]`
+            );
+            continue;
+        }
+
+        // Samme forkastningsfilter som for flatene: boksen rundt punktet,
+        // utvidet med radiusen, mot bevisobjektets egen boks.
+        const boks = padBounds(
+            { minlat: p.lat, minlon: p.lon, maxlat: p.lat, maxlon: p.lon },
+            radius
+        );
+        const naere: { el: OsmElement; meter: number }[] = [];
+        let naermest = Infinity;
+        for (const w of withPoints) {
+            if (!w.bounds || !boundsOverlap(w.bounds, boks)) continue;
+            let m = Infinity;
+            for (const q of w.points) {
+                const d = distanceMeters(p, q);
+                if (d < m) m = d;
+            }
+            if (m < naermest) naermest = m;
+            if (m <= radius) naere.push({ el: w.el, meter: m });
+        }
+        // Nærmeste bevis UTENFOR boksen er ikke regnet ut — forkastnings-
+        // filteret stopper det. Derfor «> radius» og ikke et tall: å måle
+        // avstanden til alle 12 000 bevisene for hvert av 774 punkter ville
+        // vært 9,6 millioner avstander, og opplysningen er bare interessant
+        // i nærområdet.
+        const avstand = naermest === Infinity ? `> ${radius} m` : `${Math.round(naermest)} m`;
+
+        const memberTags = naere.map((n) => n.el.tags ?? {});
+        const verdict = skiVerdict(el.tags ?? {}, memberTags);
+        if (verdict === 'usikker-heis') telling.usikker += 1;
+        if (verdict === 'ikke-alpint') telling.ikkeAlpint += 1;
+        rapport.push(
+            `    ${id.padEnd(18)} ${navn.padEnd(32)} ${verdict.padEnd(13)} ` +
+                `[punkt, ${naere.length} bevis innen ${radius} m, nærmeste ${avstand}]`
+        );
+        if (verdict !== 'alpint') continue;
+
+        telling.alpint += 1;
+        verified.push({
+            ...el,
+            center: { lat: p.lat, lon: p.lon },
+            memberTags,
+            skiVerified: true,
+        });
+    }
+    return { verified, rapport, telling };
 }
 
 // ─────────────────────────────────── AKING ───────────────────────────────────
@@ -2211,19 +2383,6 @@ export async function buildRows(
     // filtreres det bare — også når buildRows kalles direkte fra en test.
     const { kept } = applyOsmClaims(elements);
 
-    // Første pass: velg elementer (kategori + koordinater + limit), så vi
-    // vet totalt geokodingsbehov før vi starter — gir ekte fremdriftslinje.
-    const selected: { el: OsmElement; cat: (typeof PLACE_CATEGORIES)[number]; pos: { lat: number; lng: number } }[] = [];
-    const perCategory = new Map<string, number>();
-    for (const el of kept) {
-        const tags = el.tags ?? {};
-        const cat = cats.find((c) => c.matches(tags, el));
-        const pos = coords(el);
-        if (!cat || !pos) continue;
-        if ((perCategory.get(cat.key) ?? 0) >= limit) continue;
-        perCategory.set(cat.key, (perCategory.get(cat.key) ?? 0) + 1);
-        selected.push({ el, cat, pos });
-    }
     // KOMMUNEN PER RAD når chunken ikke har ett svar. Slås opp i
     // grensefila (lib/municipality.ts), ikke over nett.
     const kommuneFor = (pos: { lat: number; lng: number }): string => {
@@ -2237,22 +2396,49 @@ export async function buildRows(
         return resolveMunicipality(pos.lat, pos.lng) ?? '';
     };
 
-    // UTENFOR NORGE. En nasjonal henting med bbox tar med naboland, og de
-    // radene er ikke våre. De utelates HER, ikke ved å la
-    // rowsMissingCityAnchor kaste før upsert — en enkelt svensk alpinbakke
-    // skal ikke velte hele chunken.
-    if (city === null) {
-        const utenfor = selected.filter(({ pos }) => kommuneFor(pos) === '');
-        if (utenfor.length) {
-            console.log(
-                `  ${utenfor.length} objekter utelatt — punktet ligger utenfor norske ` +
-                    `kommunegrenser (f.eks. ${utenfor[0].el.type}/${utenfor[0].el.id})`
-            );
-            for (const u of utenfor) {
-                const i = selected.indexOf(u);
-                if (i >= 0) selected.splice(i, 1);
-            }
+    // Første pass: velg elementer (kategori + koordinater + Norge + limit), så
+    // vi vet totalt geokodingsbehov før vi starter — gir ekte fremdriftslinje.
+    const selected: {
+        el: OsmElement;
+        cat: (typeof PLACE_CATEGORIES)[number];
+        pos: { lat: number; lng: number };
+        kommune: string;
+    }[] = [];
+    const perCategory = new Map<string, number>();
+    const utenfor: OsmElement[] = [];
+    for (const el of kept) {
+        const tags = el.tags ?? {};
+        const cat = cats.find((c) => c.matches(tags, el));
+        const pos = coords(el);
+        if (!cat || !pos) continue;
+
+        // UTENFOR NORGE — OG DET SKJER FØR --limit. En nasjonal henting med
+        // bbox tar med naboland, og de radene er ikke våre. De utelates HER,
+        // ikke ved å la rowsMissingCityAnchor kaste før upsert — en enkelt
+        // svensk alpinbakke skal ikke velte hele chunken.
+        //
+        // REKKEFØLGEN ER EN RETTING (sep. 2026). Fram til nå ble --limit talt
+        // FØR Norge-filteret, og med 63–71 % utenlandske objekter i den
+        // nasjonale hentingen betydde det at de utenlandske spiste kvoten:
+        // `--limit=25` mot aking ga ~7 norske rader i stedet for 25, uten et
+        // eneste varsel. Med standardkjøringens `--limit=Infinity` var
+        // feilen usynlig, og det er nettopp derfor den måtte rettes før noen
+        // brukte flagget nasjonalt.
+        const kommune = kommuneFor(pos);
+        if (city === null && kommune === '') {
+            utenfor.push(el);
+            continue;
         }
+
+        if ((perCategory.get(cat.key) ?? 0) >= limit) continue;
+        perCategory.set(cat.key, (perCategory.get(cat.key) ?? 0) + 1);
+        selected.push({ el, cat, pos, kommune });
+    }
+    if (utenfor.length) {
+        console.log(
+            `  ${utenfor.length} objekter utelatt — punktet ligger utenfor norske ` +
+                `kommunegrenser (f.eks. ${utenfor[0].type}/${utenfor[0].id})`
+        );
     }
 
     const needGeocoding = selected.filter(({ el }) => !isUsablePlaceName(el.tags?.name)).length;
@@ -2260,7 +2446,7 @@ export async function buildRows(
 
     const rows: ImportRow[] = [];
     let geocoded = 0;
-    for (const { el, cat, pos } of selected) {
+    for (const { el, cat, pos, kommune } of selected) {
         const tags = el.tags ?? {};
         // Leser kategoriens egen navnekjede. For alle andre enn Aking er
         // dette `['name']`, altså nøyaktig samme test som før.
@@ -2288,7 +2474,7 @@ export async function buildRows(
             target_audience: cat.audience,
             venue_name: navnet?.value ?? null,
             address: addrStreet,
-            municipality: kommuneFor(pos),
+            municipality: kommune,
             lat: pos.lat,
             lng: pos.lng,
             opening_hours: tags.opening_hours ?? null,
@@ -2619,8 +2805,15 @@ function stageFingerprints(
     limit: number
 ): { fetch: string; enrich: string } {
     const fetchFp = fingerprint({
-        v: 1,
+        // v: 2 fordi AVGRENSNINGEN kom inn. Fram til sep. 2026 hashet
+        // hentesteget bare `overpassArea`, og den er TOM STRENG for den
+        // nasjonale chunken — altså lå bboksen ikke i fingeravtrykket i det
+        // hele tatt. En kjøring med --resume og en ny boks ville stille
+        // gjenbrukt gårsdagens objekter, som er nøyaktig den feilen
+        // fingeravtrykket finnes for å hindre.
+        v: 2,
         area: chunk.overpassArea,
+        scopes: [...chunk.overpassScopes],
         cats: cats.map((c) => [c.key, c.selector, Boolean(c.fetchSets)]),
     });
     return {

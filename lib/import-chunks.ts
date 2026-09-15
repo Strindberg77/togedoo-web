@@ -80,7 +80,7 @@ export interface ImportChunk {
      */
     readonly overpassArea: string;
     /**
-     * KILDESPESIFIKK. Filteret som settes på HVER selektorlinje: `(area.a)`
+     * KILDESPESIFIKK. Filtrene som settes på HVER selektorlinje: `(area.a)`
      * for en kommune, `(57.5,4.0,71.5,31.5)` for en bbox.
      *
      * Selektorene i [PLACE_CATEGORIES] er skrevet med `(area.a)` som
@@ -88,8 +88,19 @@ export interface ImportChunk {
      * avgrensningen er et EGET felt og ikke bakt inn i selektorene: elleve
      * selektorer måtte ellers kjenne til hvordan chunken er avgrenset, og da
      * ville et kildebytte rørt dem alle.
+     *
+     * HVORFOR EN LISTE. Ett filter holder for en kommune og for én bbox, men
+     * ikke for Norge: landet er 13 breddegrader langt og 27 lengdegrader
+     * bredt, så ÉN boks rundt det rommer også Stockholm, Helsingfors, Riga og
+     * St. Petersburg. Flere, strammere bokser er den samme mekanismen brukt
+     * flere ganger — [scopedSelector] gjentar da hver selektorlinje én gang
+     * per boks, og Overpass sin union fjerner duplikatene i overlappen.
+     *
+     * Rekkefølgen betyr ingenting for svaret, men den er en del av
+     * hentestegets fingeravtrykk: endres boksene, blir et lagret hentesteg
+     * IKKE gjenbrukt ved --resume.
      */
-    readonly overpassScope: string;
+    readonly overpassScopes: readonly string[];
     /**
      * KILDESPESIFIKK. Sekundene Overpass får bruke.
      *
@@ -131,7 +142,7 @@ export function chunkForCity(city: string): ImportChunk {
         label: city,
         cityAnchor: city,
         overpassArea: `area["boundary"="administrative"]["admin_level"="7"]["name"="${city}"]->.a`,
-        overpassScope: '(area.a)',
+        overpassScopes: ['(area.a)'],
         overpassTimeout: 180,
     };
 }
@@ -317,6 +328,80 @@ export function nationalCoverage(plan: readonly ImportChunk[]): number | null {
 export const NATIONAL_BBOX = '(57.5,4.0,71.5,31.5)';
 
 /**
+ * NORGE SOM FIRE BÅND, alternativet til [NATIONAL_BBOX].
+ *
+ * HVORFOR: work-report etter første nasjonale tørrkjøring (sep. 2026) viste at
+ * 63–71 % av de hentede objektene lå utenfor Norge. Årsaken er formen: Norge
+ * er 13 breddegrader langt, og ÉN boks som rommer både Lindesnes (4,5°Ø) og
+ * Vardø (31,2°Ø) rommer også Stockholm, Helsingfors, Riga og St. Petersburg.
+ *
+ * Boksene er REGNET UT, ikke valgt for hånd: lib/norway-boxes.ts finner de k
+ * båndene som gir minst samlet areal ved dynamisk programmering, mot alle
+ * 266 619 punktene i data/kommuner.geojson, og legger [BOX_MARGIN_M] på hver.
+ * Kjør `npx tsx scripts/bbox-candidates.ts` for å regne dem ut på nytt;
+ * lib/norway-boxes.test.ts feiler hvis tallene her har kommet i utakt med
+ * grensefila.
+ *
+ * MARGINEN (2 km) er ikke pynt. Bevisspørringen skal finne heiser og
+ * nedfarter som ligger inntil 50 m UTENFOR et polygon. Klipper boksen på
+ * riksgrensa, mister et grenseanlegg beviset sitt og faller stille fra
+ * «alpint» til «ikke-alpint».
+ *
+ * AREALET ER 32 % AV DAGENS BOKS. Det er en PROXY og ikke et løfte om antall
+ * objekter — mye av det som fjernes er hav. Den ekte målingen er `out count;`
+ * per kandidat, og den må gjøres før dette settet tas i bruk. Derfor er
+ * [nationalChunk] fortsatt på [NATIONAL_BBOX] som standard.
+ */
+export const NORWAY_BANDS_4: readonly string[] = [
+    '(57.94,4.46,63.98,12.91)',
+    '(63.94,8.77,66.13,14.67)',
+    '(66.09,11.64,68.33,18.20)',
+    '(68.29,13.60,71.20,31.22)',
+];
+
+/** Samme, med fem bånd. 31 % av dagens areal — ett prosentpoeng bedre enn
+ *  fire, mot en ekstra setning per selektorlinje. Med i målingen for at
+ *  valget skal kunne gjøres på tall og ikke på magefølelse. */
+export const NORWAY_BANDS_5: readonly string[] = [
+    '(57.94,4.46,63.98,12.91)',
+    '(63.94,8.77,66.13,14.67)',
+    '(66.09,11.64,68.33,18.20)',
+    '(68.29,13.61,69.38,29.73)',
+    '(69.34,16.81,71.20,31.22)',
+];
+
+/**
+ * Boksene den nasjonale chunken skal bruke.
+ *
+ * STANDARD ER DAGENS ÉNE BOKS, og det er med vilje: den er MÅLT (445
+ * polygoner, 7 555 bevisobjekter, 40 s, uten remark). Båndene er regnet ut,
+ * ikke målt mot Overpass. Å bytte en målt mekanisme mot en uprøvd uten tall
+ * er nøyaktig den handelen som ble avvist for `area[ISO3166-1=NO]`.
+ *
+ *   PLACES_NATIONAL_BANDS=4   fire bånd
+ *   PLACES_NATIONAL_BANDS=5   fem bånd
+ *   (usatt)                   dagens boks
+ *
+ * Variabelen finnes for at tørrkjøringen skal kunne gjøres uten en
+ * kodeendring imellom, slik [SKI_EVIDENCE_TOLERANCE_M] allerede kan. Boksene
+ * inngår i hentestegets fingeravtrykk, så en kjøring med --resume og et annet
+ * bokssett henter på nytt i stedet for å gjenbruke gårsdagens objekter.
+ */
+export function nationalBoxes(
+    env: string | undefined = process.env.PLACES_NATIONAL_BANDS
+): readonly string[] {
+    if (env === '4') return NORWAY_BANDS_4;
+    if (env === '5') return NORWAY_BANDS_5;
+    if (env !== undefined && env !== '') {
+        throw new Error(
+            `PLACES_NATIONAL_BANDS må være «4» eller «5», fikk «${env}». ` +
+                `Utelat variabelen for dagens ene boks.`
+        );
+    }
+    return [NATIONAL_BBOX];
+}
+
+/**
  * HELE NORGE SOM ÉN CHUNK.
  *
  * MÅLINGEN SOM GJØR DEN MULIG (overpass-api.de, ved midnatt):
@@ -342,7 +427,7 @@ export const NATIONAL_BBOX = '(57.5,4.0,71.5,31.5)';
  *  − Ingen delvis gjenopptagelse: feiler chunken, kjøres hele på nytt.
  *    Hentesteget er 40 sekunder, så det er en billig pris.
  */
-export function nationalChunk(): ImportChunk {
+export function nationalChunk(boxes: readonly string[] = nationalBoxes()): ImportChunk {
     return {
         id: 'norge',
         label: 'Norge',
@@ -351,7 +436,7 @@ export function nationalChunk(): ImportChunk {
         cityAnchor: null,
         // En bbox trenger ingen area-setning.
         overpassArea: '',
-        overpassScope: NATIONAL_BBOX,
+        overpassScopes: boxes,
         overpassTimeout: 300,
     };
 }
@@ -365,5 +450,22 @@ export function nationalChunk(): ImportChunk {
  * som glemte konvensjonen blitt hentet for hele planeten uten at noe feilet.
  */
 export function scopedSelector(selector: string, chunk: ImportChunk): string {
-    return selector.split('(area.a)').join(chunk.overpassScope);
+    const scopes = chunk.overpassScopes;
+    if (scopes.length === 1) return selector.split('(area.a)').join(scopes[0]);
+    // FLERE BOKSER: hver selektorLINJE gjentas én gang per boks. Å sette flere
+    // filtre på samme setning ville gitt SNITTET av boksene (Overpass
+    // OG-er filtre på samme statement), altså tomt — og tomt ser ut som et
+    // land uten alpinanlegg. Derfor gjentas linja i stedet, slik at unionen
+    // rundt dem gir summen.
+    //
+    // Linjedelingen er trygg fordi hver selektorlinje er én komplett setning
+    // som ender på «;» — det er låst av vakten i scripts/nasjonal-chunk.test.ts.
+    return selector
+        .split('\n')
+        .map((linje) => {
+            const t = linje.trim();
+            if (!t.includes('(area.a)')) return linje;
+            return scopes.map((s) => linje.split('(area.a)').join(s)).join('\n  ');
+        })
+        .join('\n');
 }
