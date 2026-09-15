@@ -67,6 +67,13 @@ export interface WorkStore {
         rows: readonly T[],
         extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets'>
     ): void;
+    /**
+     * Skriver en SIDEFIL som ikke er et steg: den havner ikke i manifestet og
+     * påvirker ikke [isDone]. Brukes til `<chunk>.before.ndjson`, settet av
+     * external_id-er som fantes FØR bolken — data for en eventuell angring,
+     * ikke et resultat noen skal gjenoppta fra.
+     */
+    writeSidecar<T>(chunk: ImportChunk, name: string, rows: readonly T[]): void;
     /** Hele manifestet, siste oppføring per (chunk, steg). */
     entries(): ReadonlyMap<string, ManifestEntry>;
     /** Menneskelig beskrivelse til logg. */
@@ -91,6 +98,9 @@ export class NullStore implements WorkStore {
         );
     }
     write(): void {
+        /* med vilje tom */
+    }
+    writeSidecar(): void {
         /* med vilje tom */
     }
     entries(): ReadonlyMap<string, ManifestEntry> {
@@ -155,6 +165,13 @@ export class FileStore implements WorkStore {
         // gjør at en manifestlinje aldri kan peke på en halv fil.
         fs.appendFileSync(path.join(this.dir, MANIFEST_FILE), JSON.stringify(entry) + '\n');
         this.latest.set(`${chunk.id}/${stage}`, entry);
+    }
+
+    writeSidecar<T>(chunk: ImportChunk, name: string, rows: readonly T[]): void {
+        const final = path.join(this.dir, `${chunk.id}.${name}.ndjson`);
+        const tmp = `${final}.tmp`;
+        fs.writeFileSync(tmp, rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''));
+        fs.renameSync(tmp, final);
     }
 
     entries(): ReadonlyMap<string, ManifestEntry> {

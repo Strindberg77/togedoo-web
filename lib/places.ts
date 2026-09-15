@@ -91,9 +91,33 @@ async function saveCache(key: string, result: ReverseGeocodeResult | null): Prom
         );
 }
 
+/**
+ * HVORFOR ET OPPSLAG IKKE GA NOE.
+ *
+ * SKILLET ER IKKE KOSMETISK. Den første nasjonale tørrkjøringen (sep. 2026)
+ * stanset på stoppvilkåret for geokodingsfeil: «51 av 157 revers-oppslag
+ * feilet (32 %)». Alle 51 var samme melding — «ingen adresse innen 200 m» —
+ * og det er ikke en feil. Det er Kartverket som svarer korrekt at det ikke
+ * finnes en adresse der. Et alpinanlegg i fjellet HAR ingen adresse innen
+ * 200 m.
+ *
+ *   'feil'  — tjenesten svarte ikke: nettverk, timeout, 5xx, HTTP-feil.
+ *             Et SYMPTOM. Teller mot stoppvilkåret.
+ *   'tomt'  — tjenesten svarte, og svaret var «ingenting her».
+ *             GEOGRAFI. Teller ikke, men rapporteres — det er dette som gir
+ *             titler som «Skianlegg i Fageråsen».
+ *
+ * Kommentaren over [PlaceTitle.geocodeError] sa allerede at feltet skulle
+ * bety «ekte oppslagsfeil (nettverk/HTTP/timeout), ikke bare fant ingenting».
+ * Intensjonen var skrevet ned, men ikke implementert: koden sendte
+ * `outcome.reason` videre uansett årsak. Diskriminanten her er det som gjør
+ * intensjonen etterprøvbar.
+ */
+export type GeocodeFailureKind = 'feil' | 'tomt';
+
 export type ReverseOutcome =
     | { ok: true; result: ReverseGeocodeResult }
-    | { ok: false; reason: string };
+    | { ok: false; kind: GeocodeFailureKind; reason: string };
 
 /**
  * Nærmeste adresse for et punkt (Kartverket punktsøk), med cache i
@@ -103,7 +127,8 @@ export type ReverseOutcome =
 export async function reverseGeocodeDetailed(lat: number, lng: number): Promise<ReverseOutcome> {
     const key = `rev:${lat.toFixed(5)},${lng.toFixed(5)}`;
     const cached = await fromCache(key);
-    if (cached === null) return { ok: false, reason: 'cachet negativt treff' };
+    // Cachet negativt treff: Kartverket svarte «ingenting her» en gang før.
+    if (cached === null) return { ok: false, kind: 'tomt', reason: 'cachet negativt treff' };
     if (cached !== undefined) return { ok: true, result: cached };
 
     try {
@@ -145,7 +170,7 @@ export async function reverseGeocodeDetailed(lat: number, lng: number): Promise<
                 if (res.ok) break;
                 if (![429, 500, 502, 503].includes(res.status)) {
                     const body = (await res.text()).slice(0, 120);
-                    return { ok: false, reason: `HTTP ${res.status}: ${body}` };
+                    return { ok: false, kind: 'feil', reason: `HTTP ${res.status}: ${body}` };
                 }
                 transient = `HTTP ${res.status}`;
             }
@@ -155,6 +180,7 @@ export async function reverseGeocodeDetailed(lat: number, lng: number): Promise<
             if (wouldExceedBudget) {
                 return {
                     ok: false,
+                    kind: 'feil',
                     reason: `${transient} (ga opp etter ${attempt + 1} forsøk, ${Math.round((Date.now() - started) / 1000)} s)`,
                 };
             }
@@ -164,7 +190,9 @@ export async function reverseGeocodeDetailed(lat: number, lng: number): Promise<
         const hit = data?.adresser?.[0];
         if (!hit?.adressetekst) {
             await saveCache(key, null);
-            return { ok: false, reason: 'ingen adresse innen 200 m' };
+            // Tjenesten SVARTE. Det finnes bare ingen adresse der — normalen
+            // for et alpinanlegg i fjellet, ikke et symptom på noe.
+            return { ok: false, kind: 'tomt', reason: 'ingen adresse innen 200 m' };
         }
         const street = stripHouseNumber(hit.adressetekst);
         const result: ReverseGeocodeResult = {
@@ -177,7 +205,7 @@ export async function reverseGeocodeDetailed(lat: number, lng: number): Promise<
         return { ok: true, result };
     } catch (err) {
         // Nettverksfeil: ikke cache, prøv igjen neste import.
-        return { ok: false, reason: `nettverksfeil: ${err instanceof Error ? err.message : String(err)}` };
+        return { ok: false, kind: 'feil', reason: `nettverksfeil: ${err instanceof Error ? err.message : String(err)}` };
     }
 }
 
@@ -200,7 +228,9 @@ export interface AreaResult {
     area: string | null;
 }
 
-export type AreaOutcome = { ok: true; result: AreaResult } | { ok: false; reason: string };
+export type AreaOutcome =
+    | { ok: true; result: AreaResult }
+    | { ok: false; kind: GeocodeFailureKind; reason: string };
 
 // Egen cache-nøkkel (`revarea:`), atskilt fra adresse-punktsøkets `rev:` — et
 // cachet negativt adressetreff skal IKKE hindre et område-oppslag i å kjøre.
@@ -240,7 +270,7 @@ async function saveAreaCache(key: string, result: AreaResult | null): Promise<vo
 export async function reverseAreaDetailed(lat: number, lng: number): Promise<AreaOutcome> {
     const key = `revarea:${lat.toFixed(5)},${lng.toFixed(5)}`;
     const cached = await fromAreaCache(key);
-    if (cached === null) return { ok: false, reason: 'cachet negativt treff (område)' };
+    if (cached === null) return { ok: false, kind: 'tomt', reason: 'cachet negativt treff (område)' };
     if (cached !== undefined) return { ok: true, result: cached };
 
     try {
@@ -255,7 +285,7 @@ export async function reverseAreaDetailed(lat: number, lng: number): Promise<Are
             headers: { 'User-Agent': USER_AGENT },
             signal: AbortSignal.timeout(AREA_TIMEOUT_MS),
         });
-        if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+        if (!res.ok) return { ok: false, kind: 'feil', reason: `HTTP ${res.status}` };
         const data = await res.json();
         const addr = (data?.address ?? {}) as Record<string, string | undefined>;
         // Prioritert fra mest til minst presist bydel-/områdebegrep.
@@ -268,11 +298,11 @@ export async function reverseAreaDetailed(lat: number, lng: number): Promise<Are
             null;
         const area = typeof raw === 'string' && raw.trim() ? raw.trim() : null;
         await saveAreaCache(key, area ? { area } : null);
-        if (!area) return { ok: false, reason: 'ingen bydel/nabolag' };
+        if (!area) return { ok: false, kind: 'tomt', reason: 'ingen bydel/nabolag' };
         return { ok: true, result: { area } };
     } catch (err) {
         // Nettverksfeil: ikke cache, prøv igjen neste import.
-        return { ok: false, reason: `nettverksfeil: ${err instanceof Error ? err.message : String(err)}` };
+        return { ok: false, kind: 'feil', reason: `nettverksfeil: ${err instanceof Error ? err.message : String(err)}` };
     }
 }
 
@@ -286,8 +316,22 @@ export type TitleSource = 'osm-navn' | 'ved-gate' | 'i-poststed' | 'i-omraade' |
 export interface PlaceTitle {
     title: string;
     source: TitleSource;
-    /** Satt når fallback til kategoritekst skyldes geokodingsfeil, ikke ekte mangel. */
+    /**
+     * EKTE OPPSLAGSFEIL: tjenesten svarte ikke. Nettverk, timeout, 5xx,
+     * HTTP-feil. Dette er det eneste som teller mot stoppvilkåret — se
+     * [GeocodeFailureKind].
+     */
     geocodeError?: string;
+    /**
+     * Kartverket SVARTE at det ikke finnes en adresse innen 200 m.
+     *
+     * Ikke en feil, men verdt å telle: det er denne tilstanden som gir titler
+     * som «Skianlegg i Fageråsen» (Nominatims områdenavn) eller bare
+     * «Skianlegg». Settes UAVHENGIG av hvilken tittel raden endte med, så
+     * rapporten kan si hvor mange steder som er adresseløse — ikke bare hvor
+     * mange som mistet tittelen sin.
+     */
+    addressMissing?: boolean;
 }
 
 /**
@@ -304,6 +348,10 @@ export async function makePlaceTitleDetailed(
 ): Promise<PlaceTitle> {
     if (isUsablePlaceName(osmName)) return { title: osmName!.trim(), source: 'osm-navn' };
     const outcome = await reverseGeocodeDetailed(lat, lng);
+    // Settes så snart ADRESSEoppslaget kom tomt tilbake, uansett hvilken
+    // tittel raden ender med. Et alpinanlegg som får «i Fageråsen» fra
+    // Nominatim er like adresseløst som ett som bare får «Skianlegg».
+    const addressMissing = !outcome.ok && outcome.kind === 'tomt' ? true : undefined;
     if (outcome.ok && outcome.result.street) {
         return { title: `${categoryLabel} ved ${outcome.result.street}`, source: 'ved-gate' };
     }
@@ -313,17 +361,23 @@ export async function makePlaceTitleDetailed(
     // som grovere fallback når Nominatim IKKE gir bydel men Kartverket ga poststed.
     const area = await reverseAreaDetailed(lat, lng);
     if (area.ok && area.result.area) {
-        return { title: `${categoryLabel} i ${area.result.area}`, source: 'i-omraade' };
+        return { title: `${categoryLabel} i ${area.result.area}`, source: 'i-omraade', addressMissing };
     }
     if (outcome.ok && outcome.result.postalPlace) {
         return { title: `${categoryLabel} i ${outcome.result.postalPlace}`, source: 'i-poststed' };
     }
+    // KUN EKTE FEIL havner i geocodeError. Et tomt, gyldig svar er geografi:
+    // det finnes ikke en adresse der, og det er hele forklaringen. Se
+    // [GeocodeFailureKind] for gangen som gjorde skillet nødvendig.
+    const ekteFeil = [outcome, area].find(
+        (o): o is { ok: false; kind: GeocodeFailureKind; reason: string } =>
+            !o.ok && o.kind === 'feil'
+    );
     return {
         title: categoryLabel,
         source: 'kun-kategori',
-        // geocodeError = ekte oppslagsfeil (nettverk/HTTP/timeout), ikke bare
-        // «fant ingenting». Adressefeilen har forrang; ellers områdefeilen.
-        geocodeError: !outcome.ok ? outcome.reason : !area.ok ? area.reason : undefined,
+        geocodeError: ekteFeil?.reason,
+        addressMissing,
     };
 }
 

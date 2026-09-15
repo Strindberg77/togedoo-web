@@ -199,6 +199,65 @@ export function anyInsideOrNear(
 }
 
 /** Som [anyInsideOrNear], men mot FLERE ringer — et multipolygon. */
+/** Boksen som rommer alle boksene. null når lista er tom. */
+export function boundsUnion(boxes: readonly (GeoBounds | null)[]): GeoBounds | null {
+    let ut: GeoBounds | null = null;
+    for (const b of boxes) {
+        if (!b) continue;
+        if (!ut) {
+            ut = { ...b };
+            continue;
+        }
+        ut = {
+            minlat: Math.min(ut.minlat, b.minlat),
+            minlon: Math.min(ut.minlon, b.minlon),
+            maxlat: Math.max(ut.maxlat, b.maxlat),
+            maxlon: Math.max(ut.maxlon, b.maxlon),
+        };
+    }
+    return ut;
+}
+
+/** Overlapper de to boksene, eller tangerer de? */
+export function boundsOverlap(a: GeoBounds, b: GeoBounds): boolean {
+    return (
+        a.minlat <= b.maxlat &&
+        b.minlat <= a.maxlat &&
+        a.minlon <= b.maxlon &&
+        b.minlon <= a.maxlon
+    );
+}
+
+/**
+ * BOKSEN ET OBJEKT MÅ RØRE for at [anyInsideOrNearAny] kan være sann.
+ *
+ * FORKASTNINGSFILTERET for den romlige testen, og grunnen til at den skalerer
+ * nasjonalt. [insideOrNear] er sann hvis punktet ligger i ringen ELLER i
+ * ringens boks utvidet med toleransen — og et punkt inne i ringen ligger per
+ * definisjon også inne i ringens boks. Begge grenene innebærer derfor at
+ * punktet ligger i den UTVIDEDE boksen, og et objekt som ikke rører den kan
+ * umulig treffe.
+ *
+ * UNIONEN AV HVER RINGS EGEN UTVIDEDE BOKS, ikke den utvidede unionen.
+ * Forskjellen er ikke kosmetisk: [padBounds] regner om meter til lengdegrader
+ * med boksens EGEN midtbreddegrad, og en union fra Lindesnes til Nordkapp har
+ * en annen midtbreddegrad enn en ring i Finnmark. Utvidet etter unionen ville
+ * padding i øst/vest blitt smalere enn den ringen faktisk krever, og filteret
+ * kunne forkastet et ekte treff. Slik det står er boksen et OVERSETT av det
+ * [anyInsideOrNearAny] tester, og filteret kan bare forkaste sanne negativer.
+ */
+export function rejectBoundsFor(
+    rings: readonly (readonly GeoPoint[])[],
+    toleranceMeters: number
+): GeoBounds | null {
+    return boundsUnion(
+        rings.map((r) => {
+            const b = boundsOf(r);
+            return b ? padBounds(b, toleranceMeters) : null;
+        })
+    );
+}
+
 export function anyInsideOrNearAny(
     points: readonly GeoPoint[],
     rings: readonly (readonly GeoPoint[])[],

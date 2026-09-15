@@ -132,6 +132,8 @@ test('vilkåret er uttrykt i PLANEN, ikke i bynavn', () => {
         label: `flis ${i}`,
         cityAnchor: null,
         overpassArea: '',
+        overpassScopes: ['(57.5,4.0,71.5,31.5)'],
+        overpassTimeout: 300,
     }));
     assert.equal(runCoversEverything(fliser, fliser, 10, 10), true);
     assert.equal(runCoversEverything(fliser.slice(0, 4), fliser, 10, 10), false);

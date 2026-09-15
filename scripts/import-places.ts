@@ -24,6 +24,9 @@ import {
     assembleRings,
     boundsGapMeters,
     boundsOf,
+    boundsOverlap,
+    padBounds,
+    rejectBoundsFor,
     centerOfBounds,
     distanceMeters,
     pointInBounds,
@@ -32,11 +35,31 @@ import {
 } from '../lib/geo-polygon';
 import {
     fingerprint,
+    nationalChunk,
+    nationalCoverage,
     planForCities,
     runCoversEverything,
+    scopedSelector,
     type ImportChunk,
 } from '../lib/import-chunks';
 import {
+    batchFingerprint,
+    duplicateCandidates,
+    formatApproval,
+    generatedTitleCollisions,
+    type ForhandsDiff,
+    type KategoriLinje,
+} from '../lib/import-approval';
+import {
+    claimMismatchStop,
+    geocodeFailureStop,
+    ImportStop,
+    NATIONAL_EXPECTATION,
+    yieldCollapseStop,
+} from '../lib/import-guards';
+import { municipalityIndex } from './municipality-index';
+import {
+    awakenedClaims,
     claimNameMatches,
     claimsByOsmId,
     OSM_CLAIMS,
@@ -80,7 +103,7 @@ const OVERPASS_QUERY_PAUSE_MS = Number(process.env.PLACES_OVERPASS_QUERY_PAUSE_M
 // Overstyr med PLACES_PAUSE_MS. Egen pause, uavhengig av Overpass.
 const TITLE_PAUSE_MS = Number(process.env.PLACES_PAUSE_MS ?? 1100);
 const SOURCE_SLUG = 'osm-steder';
-const DEFAULT_CITIES = ['Oslo', 'Bergen', 'Trondheim', 'Stavanger'];
+export const DEFAULT_CITIES = ['Oslo', 'Bergen', 'Trondheim', 'Stavanger'];
 
 interface OsmTags {
     [key: string]: string | undefined;
@@ -148,6 +171,24 @@ export interface EnrichOutput {
     rapport: string[];
     /** Én oppsummeringslinje, uten innrykk og uten kategoriprefiks. */
     summary?: string;
+    /**
+     * KORT LISTE SOM ALLTID SKRIVES UT I SIN HELHET, i motsetning til
+     * [rapport], som er én linje per objekt og avkortes av
+     * scripts/work-report.ts.
+     *
+     * HVORFOR SKILLET FINNES. Den nasjonale tørrkjøringen ga 815
+     * rapportlinjer for Skianlegg. Fire av dem var norske alpinanlegg som
+     * fikk dommen `usikker-heis` — de har heis i OSM, men ingen
+     * `piste:type=downhill` innenfor polygonet, og nedfartskravet slipper dem
+     * derfor ikke gjennom. Kravet er riktig og skal stå (uten det kommer
+     * Holmenkollen, Granåsen og Linderudkollen inn som alpinanlegg), men
+     * kostnaden er noen ekte anlegg, og de må SEEDES. Da kan de ikke ligge
+     * spredt blant 815 linjer bare synlige med --lines=815.
+     *
+     * Merknadene er derfor de tilfellene et MENNESKE må se på, ikke en
+     * gjentakelse av dommene. Er lista tom, er det ingenting å gjøre.
+     */
+    merknader?: string[];
 }
 
 /**
@@ -447,6 +488,31 @@ export function resolveIsFree(tags: OsmTags, categoryDefault: true | null): bool
 }
 
 /**
+ * ÉN spørring, bygget av chunken.
+ *
+ * Alt som er kildespesifikt samles her: områdesetningen, avgrensningen på
+ * hver selektorlinje og timeouten. Det er dette stedet fase 3 bytter ut, og
+ * grunnen til at selektorene i [PLACE_CATEGORIES] slipper å vite om de kjøres
+ * mot en kommune eller mot hele landet.
+ *
+ * Områdesetningen utelates når den er tom — en bbox-chunk har ingen
+ * `area[...]->.a` å definere, og en tom linje med semikolon ville vært en
+ * syntaksfeil.
+ */
+export function overpassQuery(
+    chunk: ImportChunk,
+    selector: string,
+    outStatement: string
+): string {
+    const area = chunk.overpassArea ? `${chunk.overpassArea};\n` : '';
+    return `[out:json][timeout:${chunk.overpassTimeout}];
+${area}(
+  ${scopedSelector(selector, chunk)}
+);
+${outStatement};`;
+}
+
+/**
  * HEISVERDIENE som teller som bevis på et alpinanlegg.
  *
  * Eksportert for test — samme presedens som [resolveIsFree] og [sportTokens]:
@@ -480,6 +546,43 @@ const SKI_EVIDENCE_TOLERANCE_M = Number(
     process.env.PLACES_SKI_TOLERANCE_M ?? 50
 ) || 50;
 
+/**
+ * [SKI_NODE_RADIUS_M] RADIUSEN ET PUNKTOBJEKT FÅR I STEDET FOR EN FLATE.
+ *
+ * FUNNET (work-report, sep. 2026): minst 774 objekter i områdesettet ble
+ * meldt «HOPPET OVER — ingen geometri», og alle var NODER. En node har ingen
+ * ring, så «heis eller nedfart INNENFOR polygonet» er ikke et spørsmål som
+ * kan stilles — og de falt derfor ut uten dom. Blant dem lå Surnadal
+ * alpinsenter, altså et ekte anlegg, ved siden av Hovden Langrennsarena og
+ * Skaret Skistadion, som IKKE skal inn.
+ *
+ * Testen for en node er derfor «bevis innenfor X meter fra punktet», med
+ * nøyaktig samme [skiVerdict] etterpå: bare en UTFORløype eller en heis gjør
+ * objektet til et alpinanlegg. Langrennsstadionene faller fortsatt ut, men nå
+ * på bevis i stedet for på geometri — og det er hele forskjellen.
+ *
+ * X = 250 m ER EN VURDERING, IKKE EN MÅLING. Jeg har ikke datagrunnlag til å
+ * utlede den: avstanden fra en anleggs-node til nærmeste heis eller nedfart
+ * er ikke målt, og kan ikke måles uten å hente dataene på nytt. Tallet er
+ * valgt som fem ganger polygontolleransen, ut fra to antakelser som begge
+ * kan være feil:
+ *
+ *   - En anleggs-node settes ofte ved parkeringen eller bunnstasjonen, ikke
+ *     i midten. Nærmeste PUNKT på en heis eller nedfart er da nær, selv om
+ *     anlegget er en kilometer langt. 50 m ville vært for stramt.
+ *   - Et langrennsstadion og et alpinanlegg i samme dal ligger sjelden
+ *     nærmere enn 250 m. 1000 m ville begynt å blande dem.
+ *
+ * DERFOR MÅLER RAPPORTEN AVSTANDEN. Hvert punktobjekt får «nærmeste bevis
+ * NNN m» uansett dom, også de som faller utenfor radiusen. Én tørrkjøring gir
+ * dermed hele fordelingen, og tallet kan velges på data i stedet for på
+ * denne begrunnelsen. Variabelen finnes for at det skal kunne gjøres uten en
+ * kodeendring imellom:
+ *
+ *   PLACES_SKI_NODE_RADIUS_M=120 npx tsx scripts/work-report.ts --work=.import-work
+ */
+const SKI_NODE_RADIUS_M = Number(process.env.PLACES_SKI_NODE_RADIUS_M ?? 250) || 250;
+
 /** Vakt mot nedlagte anlegg på en ellers aktiv nøkkel. */
 const NOT_DISUSED = '["disused"!~"."]["abandoned"!~"."]';
 
@@ -497,13 +600,47 @@ export const SKI_AREA_SELECTOR = [
     `nwr["leisure"="sports_centre"]["sport"~"ski",i]${NOT_DISUSED}(area.a);`,
 ].join('\n  ');
 
-/** BEVISENE. Hentes én gang per by og brukes til to ting:
+/**
+ * `piste:type`-VERDIENE KODEN FAKTISK LESER. Én kilde, brukt både av
+ * bevisselektoren under og av vakten i scripts/piste-filter.test.ts.
+ *
+ * Leserne, uttømmende:
+ *   downhill    → [skiVerdict] (eneste som gjør et polygon til alpinanlegg)
+ *                 og fasetten `alpint` i [osmFacetTokens]
+ *   sled        → fasetten `aking`
+ *   playground  → fasetten `skileik`
+ *
+ * `nordic` leses INGEN steder, og det er 47 988 segmenter nasjonalt (osmium
+ * mot Geofabrik-fila, sep. 2026) mot 3 108 utforløyper og 89 akebakker. Uten
+ * filteret hentet bevisspørringen alle sammen, med `out geom`, og den var
+ * den enkeltspørringen som først ville drept en nasjonal kjøring.
+ *
+ * Legges en ny verdi til her, utvides spørringen automatisk. Leses en ny
+ * verdi UTEN å legge den til her, feiler vakten — ellers ville en fasett
+ * forsvunnet i stillhet fordi objektene aldri ble hentet.
+ */
+export const READ_PISTE_TYPES = ['downhill', 'sled', 'playground'] as const;
+
+/**
+ * BEVISENE. Hentes én gang per chunk og brukes til to ting:
  *   - kategoritesten: heis ELLER piste:type=downhill i/inntil polygonet
- *   - fasettene: ALT som ligger inne, inkludert sled, playground og mtb
- *  Derfor er settet bredere enn testen krever. */
+ *   - fasettene: sled, playground og mtb
+ *
+ * VERDIFILTERET ER BEVISST USTRENGT (understreng, ikke ankret). Overpass sin
+ * `~` matcher understreng, så `~"downhill|sled|playground"` slipper gjennom
+ * «downhill», «nordic;downhill» og «downhill;sled» uten at regexen må kunne
+ * semikolonlister. Den kan derfor bare over-matche, aldri under-matche.
+ *
+ * Over-matching er ufarlig HER, og det er hele begrunnelsen: bevissettet er
+ * inndata til predikater som uansett sjekker verdien eksakt med
+ * [sportTokens] ([hasDownhillPiste], [osmFacetTokens]). Filteret er en
+ * HENTE-optimalisering, ikke en korrekthetsregel — korrektheten ligger
+ * nedstrøms. Under-matching ville derimot mistet data i stillhet, så feilen
+ * tas bevisst i den retningen som ikke koster noe.
+ */
 export const SKI_EVIDENCE_SELECTOR = [
     `nwr["aerialway"~"^(${SKI_LIFT_VALUES})$"]${NOT_DISUSED}(area.a);`,
-    `nwr["piste:type"]${NOT_DISUSED}(area.a);`,
+    `nwr["piste:type"~"${READ_PISTE_TYPES.join('|')}"]${NOT_DISUSED}(area.a);`,
     `nwr["mtb:type"]${NOT_DISUSED}(area.a);`,
     `nwr["route"="mtb"]${NOT_DISUSED}(area.a);`,
 ].join('\n  ');
@@ -656,12 +793,7 @@ async function skianleggFetch(chunk: ImportChunk): Promise<FetchSets> {
     // bounds som før. MERK at den likevel er en oppførselsendring på en
     // kategori med grønn tørrkjøring — `grunnlag`-kolonnen i rapporten viser
     // forskjellen, så kjør en ny tørrkjøring for Skianlegg før neste import.
-    const q = (selector: string) => `[out:json][timeout:180];
-${chunk.overpassArea};
-(
-  ${selector}
-);
-out geom;`;
+    const q = (selector: string) => overpassQuery(chunk, selector, 'out geom');
 
     const omrade = await fetchOverpass(q(SKI_AREA_SELECTOR), `${chunk.label}/skianlegg:omrade`);
     await sleep(OVERPASS_QUERY_PAUSE_MS);
@@ -681,12 +813,64 @@ out geom;`;
  * Skillet er det som gjør at fase 3 kan bytte kilde uten å røre denne
  * funksjonen, og at den kan testes uten Overpass.
  */
+/**
+ * ÉN MERKNADSLINJE for et objekt med heis, men uten utforløype.
+ *
+ * Alt som trengs for å avgjøre saken uten å åpne kodebasen: id, navn,
+ * koordinat, hvilke heistyper som ble funnet, og lenka kuratoren uansett
+ * ville klikket seg til.
+ *
+ * HOPPANLEGG-MERKET er det som gjør lista brukbar. Holmenkollen, Granåsen og
+ * Linderudkollen får nøyaktig samme dom som Kolsås og Finse — heis, ingen
+ * utforløype — og det er hele grunnen til at nedfartskravet ikke kan mykes
+ * opp. Med merket kan de to gruppene skilles på ett blikk i stedet for ett
+ * oppslag hver.
+ */
+export function usikkerHeisLinje(
+    el: OsmElement,
+    punkt: GeoPoint | null,
+    memberTags: readonly OsmTags[]
+): string {
+    const id = `${el.type}/${el.id}`;
+    const heiser = memberTags
+        .map((t) => t.aerialway)
+        .filter((v): v is string => Boolean(v));
+    const typer = [...new Set(heiser)].sort();
+    const antall = new Map<string, number>();
+    for (const h of heiser) antall.set(h, (antall.get(h) ?? 0) + 1);
+    const heisTekst = typer.length
+        ? typer.map((t) => `${t}${(antall.get(t) ?? 0) > 1 ? `×${antall.get(t)}` : ''}`).join(', ')
+        : 'ingen heis i medlemmene';
+    const koord = punkt ? `${punkt.lat.toFixed(5)},${punkt.lon.toFixed(5)}` : 'uten punkt';
+    const hopp = hasSkiJump([el.tags ?? {}, ...memberTags]);
+    return (
+        `    ${id.padEnd(18)} ${(el.tags?.name ?? '(uten navn)').padEnd(32)} ` +
+        `${koord.padEnd(19)} ${heisTekst}` +
+        (hopp ? '  ⚠ HOPPANLEGG — skal trolig IKKE seedes' : '') +
+        `\n      https://www.openstreetmap.org/${id}`
+    );
+}
+
 export function skianleggVerify(sets: FetchSets): EnrichOutput {
     const polygons = sets.omrade ?? [];
     const evidence = sets.bevis ?? [];
-    const withPoints = evidence.map((el) => ({ el, points: elementPoints(el) }));
+    // Bevisobjektets egen boks regnes ut ÉN gang, ikke per polygon. Se
+    // [rejectBoundsFor]: sammen utgjør de forkastningsfilteret som gjør den
+    // romlige testen brukbar nasjonalt.
+    const withPoints = evidence.map((el) => {
+        const points = elementPoints(el);
+        return { el, points, bounds: boundsOf(points) };
+    });
     const verified: OsmElement[] = [];
     const rapport: string[] = [];
+    const merknader: string[] = [];
+
+    // PUNKTOBJEKTENE tas i en ANDRE runde, etter flatene. Grunnen er
+    // duplikatene: en node og et polygon kan beskrive samme anlegg, og da må
+    // flatene være kjent før noden kan avvises som en dublett av en av dem.
+    const punktObjekter: OsmElement[] = [];
+    const flateRinger: GeoPoint[][][] = [];
+    let utenGeometri = 0;
 
     for (const poly of polygons) {
         const id = `${poly.type}/${poly.id}`;
@@ -702,11 +886,36 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
             grunnlag = 'bounds (grov)';
         }
         if (rings.length === 0) {
-            rapport.push(`    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — ingen geometri`);
+            // ET PUNKT ER IKKE INGEN GEOMETRI. Fram til sep. 2026 endte alt
+            // uten ring her, og det var 774 noder i den nasjonale hentingen.
+            if (elementPoints(poly).length) {
+                punktObjekter.push(poly);
+            } else {
+                utenGeometri += 1;
+                rapport.push(
+                    `    ${id.padEnd(18)} ${navn.padEnd(32)} HOPPET OVER — verken flate eller punkt`
+                );
+            }
             continue;
         }
+        flateRinger.push(rings);
 
-        const inside = withPoints.filter(({ points }) =>
+        // FORKASTNINGSFILTER FØRST. Uten det er testen O(polygoner × bevis ×
+        // punkter × ringlengde): 445 polygoner mot 7 555 bevisobjekter er
+        // 3,4 millioner par, og hvert par gikk gjennom hvert punkt i beviset
+        // mot hele ringen — [insideOrNear] regnet til og med ut ringens boks
+        // på nytt for hvert eneste punkt.
+        //
+        // Boks-mot-boks er O(1) og forkaster de aller fleste parene, fordi to
+        // tilfeldige anlegg i Norge ikke ligger oppå hverandre. Filteret er et
+        // OVERSETT av det den ekte testen godtar (se [rejectBoundsFor]), så
+        // dommene er uendret — det er låst av en egenskapstest mot den
+        // ufiltrerte varianten.
+        const reject = rejectBoundsFor(rings, SKI_EVIDENCE_TOLERANCE_M);
+        const kandidater = reject
+            ? withPoints.filter((w) => w.bounds && boundsOverlap(w.bounds, reject))
+            : [];
+        const inside = kandidater.filter(({ points }) =>
             anyInsideOrNearAny(points, rings, SKI_EVIDENCE_TOLERANCE_M)
         );
         const memberTags = inside.map(({ el }) => el.tags ?? {});
@@ -729,6 +938,9 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
             `    ${id.padEnd(18)} ${navn.padEnd(32)} ${verdict.padEnd(13)} ` +
                 `[${grunnlag}, ${hvorfor}]`
         );
+        if (verdict === 'usikker-heis') {
+            merknader.push(usikkerHeisLinje(poly, centerOfBounds(b), memberTags));
+        }
 
         if (verdict !== 'alpint') continue;
         const c = centerOfBounds(b);
@@ -742,15 +954,147 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
         });
     }
 
-    const usikre = rapport.filter((r) => r.includes('usikker-heis')).length;
+    // ── PUNKTOBJEKTENE ──────────────────────────────────────────────────
+    const punkt = verifyPointFacilities(punktObjekter, withPoints, flateRinger);
+    verified.push(...punkt.verified);
+    if (punkt.rapport.length) {
+        rapport.push(`    — ${punktObjekter.length} punktobjekter (node uten flate) —`);
+        rapport.push(...punkt.rapport);
+    }
+    merknader.push(...punkt.merknader);
+
+    const usikre = merknader.length;
     return {
         elements: verified,
         rapport,
+        merknader: merknader.length
+            ? [
+                  `  HEIS UTEN UTFORLØYPE (${merknader.length}) — hvert av disse er ENTEN et`,
+                  `  ekte alpinanlegg som mangler piste:type=downhill i OSM og må SEEDES,`,
+                  `  ELLER et hoppanlegg som skal forbli utenfor. Nedfartskravet skilles`,
+                  `  ikke automatisk; se docs/runbooks/alpin-usikker-heis.md.`,
+                  ...merknader,
+              ]
+            : undefined,
         summary:
-            `${String(polygons.length).padStart(4)} polygoner, ` +
+            `${String(polygons.length).padStart(4)} objekter, ` +
             `${evidence.length} bevisobjekter → ${verified.length} alpinanlegg` +
-            (usikre ? `, ${usikre} med heis uten utforløype (se under)` : ''),
+            (usikre ? `, ${usikre} med heis uten utforløype (egen liste under)` : '') +
+            `\n         punktobjekter: ${punktObjekter.length} ` +
+            `(${punkt.telling.alpint} alpint, ${punkt.telling.dublett} i en flate, ` +
+            `${punkt.telling.ikkeAlpint} ikke-alpint` +
+            (punkt.telling.usikker ? `, ${punkt.telling.usikker} heis uten utforløype` : '') +
+            `)` +
+            (utenGeometri ? `\n         ${utenGeometri} objekter uten geometri i det hele tatt` : ''),
     };
+}
+
+interface BevisMedPunkter {
+    readonly el: OsmElement;
+    readonly points: GeoPoint[];
+    readonly bounds: GeoBounds | null;
+}
+
+/**
+ * DOMMEN FOR ET PUNKTOBJEKT — en node tagget som anlegg, uten flate.
+ *
+ * Se [SKI_NODE_RADIUS_M] for hvorfor de ikke lenger bare hoppes over, og for
+ * hvorfor radiusen er en vurdering og ikke en måling.
+ *
+ * TRE UTFALL, og alle tre står i rapporten med sitt eget tall:
+ *
+ *   dublett     — punktet ligger i en av flatene som allerede er vurdert.
+ *                 Da beskriver de samme anlegg, og flaten er den bedre
+ *                 kilden (den har utstrekning). Uten dette ville nasjonal
+ *                 import fått to rader for hvert anlegg som er kartlagt
+ *                 både som node og som polygon, og de to ville hatt ULIKE
+ *                 external_id — altså ikke fanget av upsert-nøkkelen.
+ *   alpint      — utforløype eller heis innen radiusen.
+ *   ikke-alpint — ingen bevis, eller bare bevis som ikke er alpint.
+ *                 Langrennsstadionene havner her, som de skal.
+ */
+export function verifyPointFacilities(
+    punktObjekter: readonly OsmElement[],
+    withPoints: readonly BevisMedPunkter[],
+    flateRinger: readonly GeoPoint[][][],
+    radius = SKI_NODE_RADIUS_M
+): {
+    verified: OsmElement[];
+    rapport: string[];
+    merknader: string[];
+    telling: { alpint: number; dublett: number; ikkeAlpint: number; usikker: number };
+} {
+    const verified: OsmElement[] = [];
+    const rapport: string[] = [];
+    const merknader: string[] = [];
+    const telling = { alpint: 0, dublett: 0, ikkeAlpint: 0, usikker: 0 };
+
+    for (const el of punktObjekter) {
+        const id = `${el.type}/${el.id}`;
+        const navn = el.tags?.name ?? '(uten navn)';
+        const p = elementPoints(el)[0];
+        if (!p) continue;
+
+        // DUBLETT FØRST. En node inne i en winter_sports-flate er samme
+        // anlegg som flaten, uansett hva bevisene sier.
+        const iFlate = flateRinger.some((ringer) =>
+            anyInsideOrNearAny([p], ringer, SKI_EVIDENCE_TOLERANCE_M)
+        );
+        if (iFlate) {
+            telling.dublett += 1;
+            rapport.push(
+                `    ${id.padEnd(18)} ${navn.padEnd(32)} dublett      [ligger i en flate]`
+            );
+            continue;
+        }
+
+        // Samme forkastningsfilter som for flatene: boksen rundt punktet,
+        // utvidet med radiusen, mot bevisobjektets egen boks.
+        const boks = padBounds(
+            { minlat: p.lat, minlon: p.lon, maxlat: p.lat, maxlon: p.lon },
+            radius
+        );
+        const naere: { el: OsmElement; meter: number }[] = [];
+        let naermest = Infinity;
+        for (const w of withPoints) {
+            if (!w.bounds || !boundsOverlap(w.bounds, boks)) continue;
+            let m = Infinity;
+            for (const q of w.points) {
+                const d = distanceMeters(p, q);
+                if (d < m) m = d;
+            }
+            if (m < naermest) naermest = m;
+            if (m <= radius) naere.push({ el: w.el, meter: m });
+        }
+        // Nærmeste bevis UTENFOR boksen er ikke regnet ut — forkastnings-
+        // filteret stopper det. Derfor «> radius» og ikke et tall: å måle
+        // avstanden til alle 12 000 bevisene for hvert av 774 punkter ville
+        // vært 9,6 millioner avstander, og opplysningen er bare interessant
+        // i nærområdet.
+        const avstand = naermest === Infinity ? `> ${radius} m` : `${Math.round(naermest)} m`;
+
+        const memberTags = naere.map((n) => n.el.tags ?? {});
+        const verdict = skiVerdict(el.tags ?? {}, memberTags);
+        if (verdict === 'usikker-heis') {
+            telling.usikker += 1;
+            merknader.push(usikkerHeisLinje(el, p, memberTags));
+        }
+        if (verdict === 'ikke-alpint') telling.ikkeAlpint += 1;
+        rapport.push(
+            `    ${id.padEnd(18)} ${navn.padEnd(32)} ${verdict.padEnd(13)} ` +
+                `[punkt, ${naere.length} bevis innen ${radius} m, nærmeste ${avstand}]`
+        );
+        if (verdict !== 'alpint') continue;
+
+        telling.alpint += 1;
+        verified.push({
+            ...el,
+            center: { lat: p.lat, lon: p.lon },
+            memberTags,
+            skiVerified: true,
+        });
+    }
+    return { verified, rapport, merknader, telling };
 }
 
 // ─────────────────────────────────── AKING ───────────────────────────────────
@@ -1284,12 +1628,7 @@ export function akingClusters(elements: readonly OsmElement[]): AkingResult {
  *  se [OUT_GEOM_TAGS] for hvorfor ordet `tags` ikke får stå der. */
 async function akingFetch(chunk: ImportChunk): Promise<FetchSets> {
     const main = await fetchOverpass(
-        `[out:json][timeout:180];
-${chunk.overpassArea};
-(
-  ${AKING_SELECTOR}
-);
-out geom;`,
+        overpassQuery(chunk, AKING_SELECTOR, 'out geom'),
         `${chunk.label}/aking:objekter`
     );
     return { main };
@@ -1701,7 +2040,19 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /// [OVERPASS_RETRY_STATUS], et HTTP 200 med `remark` (stille kjøretidsfeil)
 /// og nettverks-/parse-feil er retrybare; annen HTTP-status (typisk 4xx)
 /// kastes umiddelbart — det er en spørringsfeil retry ikke løser.
+/**
+ * Teller spørringer og omkamper, for godkjenningsoppsummeringen.
+ *
+ * En høy omkampandel betyr at dataene KAN være degradert selv når kjøringen
+ * lykkes: et 504 etterfulgt av et tomt 200 er allerede observert (se
+ * docs/import-sommen.md). Tallet står i oppsummeringen så det kan veies inn i
+ * et ja eller nei, framfor å ligge spredt i loggen.
+ */
+export const overpassTelling = { sporringer: 0, medOmkamp: 0 };
+
 export async function fetchOverpass(query: string, label: string): Promise<OsmElement[]> {
+    overpassTelling.sporringer += 1;
+    let omkamp = false;
     const attempts = Array.from(
         { length: OVERPASS_ENDPOINTS.length * OVERPASS_ROUNDS },
         (_, i) => OVERPASS_ENDPOINTS[i % OVERPASS_ENDPOINTS.length]
@@ -1762,6 +2113,13 @@ export async function fetchOverpass(query: string, label: string): Promise<OsmEl
             if (err instanceof Error && err.message.startsWith('Overpass HTTP')) throw err;
             console.log(`    ${label}: ${endpoint} feilet (${err instanceof Error ? err.message : err}) (forsøk ${i + 1}/${attempts.length})`);
         }
+        // Vi kom hit uten å returnere, altså feilet forsøket. Telles ÉN gang
+        // per spørring, ikke per forsøk: tallet skal si «hvor mange spørringer
+        // gikk ikke rett gjennom», ikke «hvor mange kall ble gjort».
+        if (!omkamp) {
+            omkamp = true;
+            overpassTelling.medOmkamp += 1;
+        }
         if (!isLast) {
             await sleep(OVERPASS_BACKOFF_MS[Math.min(i, OVERPASS_BACKOFF_MS.length - 1)]);
         }
@@ -1814,12 +2172,7 @@ export async function fetchChunk(
     const emptySets: string[] = [];
     for (const cat of cats) {
         const hent = async (): Promise<FetchSets> => {
-            const query = `[out:json][timeout:180];
-${chunk.overpassArea};
-(
-  ${cat.selector}
-);
-out center tags;`;
+            const query = overpassQuery(chunk, cat.selector, 'out center tags');
             // Skianlegg og Aking har egne hentere: de trenger `out geom`, og
             // Skianlegg i tillegg en ekstra bevisspørring.
             return cat.fetchSets
@@ -1983,6 +2336,9 @@ export interface ImportRow {
     osmName: string | null;
     /** Hvilken tagg navnet kom fra. Satt kun når det IKKE er `name`. */
     nameTag?: string;
+    /** Kartverket svarte at det ikke finnes en adresse innen 200 m. Ikke en
+     *  feil — se [GeocodeFailureKind]. Rapporteres, teller ikke. */
+    addressMissing?: boolean;
 }
 
 /**
@@ -2074,11 +2430,26 @@ export function writableRows(
     return rows.filter((r) => !locked.has(r.external_id));
 }
 
+/**
+ * Hvor `municipality` kommer fra når chunken ikke har ett svar.
+ *
+ * Returnerer null for et punkt UTENFOR Norge. Det er ikke en feil, men et
+ * signal: en nasjonal henting med bbox tar med naboland, og de radene er ikke
+ * våre. [buildRows] utelater dem og teller dem i rapporten.
+ */
+export type MunicipalityResolver = (lat: number, lng: number) => string | null;
+
 export async function buildRows(
-    city: string,
+    /**
+     * Kommunen alle radene får. `null` betyr «chunken dekker mer enn én
+     * kommune» — da MÅ [resolveMunicipality] være oppgitt, og hver rad får
+     * sin egen kommune fra koordinatet.
+     */
+    city: string | null,
     elements: OsmElement[],
     limit: number,
-    cats: PlaceCategory[] = PLACE_CATEGORIES
+    cats: PlaceCategory[] = PLACE_CATEGORIES,
+    resolveMunicipality?: MunicipalityResolver
 ): Promise<ImportRow[]> {
     // NULLTE pass: fjern objekter en kuratert rad allerede eier. Må skje FØR
     // kategorivalget, ellers teller et claimet objekt mot kategoriens `limit`
@@ -2088,25 +2459,70 @@ export async function buildRows(
     // filtreres det bare — også når buildRows kalles direkte fra en test.
     const { kept } = applyOsmClaims(elements);
 
-    // Første pass: velg elementer (kategori + koordinater + limit), så vi
-    // vet totalt geokodingsbehov før vi starter — gir ekte fremdriftslinje.
-    const selected: { el: OsmElement; cat: (typeof PLACE_CATEGORIES)[number]; pos: { lat: number; lng: number } }[] = [];
+    // KOMMUNEN PER RAD når chunken ikke har ett svar. Slås opp i
+    // grensefila (lib/municipality.ts), ikke over nett.
+    const kommuneFor = (pos: { lat: number; lng: number }): string => {
+        if (city !== null) return city;
+        if (!resolveMunicipality) {
+            throw new Error(
+                'buildRows fikk city=null uten resolveMunicipality. En chunk som dekker ' +
+                    'mer enn én kommune må utlede municipality per rad — se ImportChunk.'
+            );
+        }
+        return resolveMunicipality(pos.lat, pos.lng) ?? '';
+    };
+
+    // Første pass: velg elementer (kategori + koordinater + Norge + limit), så
+    // vi vet totalt geokodingsbehov før vi starter — gir ekte fremdriftslinje.
+    const selected: {
+        el: OsmElement;
+        cat: (typeof PLACE_CATEGORIES)[number];
+        pos: { lat: number; lng: number };
+        kommune: string;
+    }[] = [];
     const perCategory = new Map<string, number>();
+    const utenfor: OsmElement[] = [];
     for (const el of kept) {
         const tags = el.tags ?? {};
         const cat = cats.find((c) => c.matches(tags, el));
         const pos = coords(el);
         if (!cat || !pos) continue;
+
+        // UTENFOR NORGE — OG DET SKJER FØR --limit. En nasjonal henting med
+        // bbox tar med naboland, og de radene er ikke våre. De utelates HER,
+        // ikke ved å la rowsMissingCityAnchor kaste før upsert — en enkelt
+        // svensk alpinbakke skal ikke velte hele chunken.
+        //
+        // REKKEFØLGEN ER EN RETTING (sep. 2026). Fram til nå ble --limit talt
+        // FØR Norge-filteret, og med 63–71 % utenlandske objekter i den
+        // nasjonale hentingen betydde det at de utenlandske spiste kvoten:
+        // `--limit=25` mot aking ga ~7 norske rader i stedet for 25, uten et
+        // eneste varsel. Med standardkjøringens `--limit=Infinity` var
+        // feilen usynlig, og det er nettopp derfor den måtte rettes før noen
+        // brukte flagget nasjonalt.
+        const kommune = kommuneFor(pos);
+        if (city === null && kommune === '') {
+            utenfor.push(el);
+            continue;
+        }
+
         if ((perCategory.get(cat.key) ?? 0) >= limit) continue;
         perCategory.set(cat.key, (perCategory.get(cat.key) ?? 0) + 1);
-        selected.push({ el, cat, pos });
+        selected.push({ el, cat, pos, kommune });
     }
+    if (utenfor.length) {
+        console.log(
+            `  ${utenfor.length} objekter utelatt — punktet ligger utenfor norske ` +
+                `kommunegrenser (f.eks. ${utenfor[0].type}/${utenfor[0].id})`
+        );
+    }
+
     const needGeocoding = selected.filter(({ el }) => !isUsablePlaceName(el.tags?.name)).length;
     console.log(`  ${selected.length} steder valgt, ${needGeocoding} trenger geokodet tittel`);
 
     const rows: ImportRow[] = [];
     let geocoded = 0;
-    for (const { el, cat, pos } of selected) {
+    for (const { el, cat, pos, kommune } of selected) {
         const tags = el.tags ?? {};
         // Leser kategoriens egen navnekjede. For alle andre enn Aking er
         // dette `['name']`, altså nøyaktig samme test som før.
@@ -2134,7 +2550,7 @@ export async function buildRows(
             target_audience: cat.audience,
             venue_name: navnet?.value ?? null,
             address: addrStreet,
-            municipality: city,
+            municipality: kommune,
             lat: pos.lat,
             lng: pos.lng,
             opening_hours: tags.opening_hours ?? null,
@@ -2165,6 +2581,7 @@ export async function buildRows(
             status: 'published',
             titleSource: titled.source,
             geocodeError: titled.geocodeError,
+            addressMissing: titled.addressMissing,
             // Det navnet som FAKTISK ble brukt, ikke bare `name`-taggen — ellers
             // ville rapportlinja for Sollibakken sagt «name=null -> Sollibakken».
             osmName: navnet?.value ?? tags.name ?? null,
@@ -2197,7 +2614,7 @@ export interface EnrichedChunk {
  * verdt å lagre: `geocode_cache` gjør et gjenkall billig per koordinat, men
  * bare mellomleddet gjør hele chunken gratis.
  */
-async function enrichChunk(
+export async function enrichChunk(
     chunk: ImportChunk,
     fetched: readonly FetchRecord[],
     limit: number,
@@ -2213,6 +2630,14 @@ async function enrichChunk(
         beriket.push({ cat, elements: ut.elements });
         if (ut.summary) console.log(`  ${chunk.label}/${cat.key.padEnd(11)} ${ut.summary}`);
         for (const linje of ut.rapport) console.log(linje);
+        // MERKNADENE SIST, så de er det siste kategorien etterlater på
+        // skjermen. De er de tilfellene et menneske må se på; rapporten over
+        // er én linje per objekt og ruller forbi.
+        if (ut.merknader?.length) {
+            console.log('');
+            for (const linje of ut.merknader) console.log(linje);
+            console.log('');
+        }
     }
 
     const { merged: elements, addedPerCategory } = mergeEnriched(beriket);
@@ -2241,19 +2666,31 @@ async function enrichChunk(
                 (s.claims.length > 1 ? ` (${s.claims.length} kuraterte rader, én relasjon)` : '')
         );
         if (s.navnAvvik) {
-            console.log(
-                `    ⚠ NAVNEAVVIK: OSM sier «${s.el.tags?.name ?? '(uten navn)'}», claimen ` +
-                    `ventet «${s.claims.map((c) => c.expectName ?? '(uten navn)').join('» / «')}». ` +
-                    `Feil id i en claim undertrykker FEIL sted — sjekk lib/osm-claims.ts.`
+            // STOPPVILKÅR 1. Ikke en advarsel lenger: en claim med feil id
+            // undertrykker FEIL sted OG slipper det rette gjennom som
+            // duplikat, og begge deler er stille. Feilen ligger i koden, ikke
+            // i dataene, så den gjentar seg i hver eneste chunk.
+            throw claimMismatchStop(
+                `${s.el.type}/${s.el.id}`,
+                s.el.tags?.name,
+                s.claims.map((c) => c.expectName)
             );
         }
     }
     const seenClaims = skipped.map((s) => `${s.el.type}/${s.el.id}`);
 
-    // cityAnchor er chunkens ene kommune. Er den null (en flis), blir
-    // municipality tom og [rowsMissingCityAnchor] kaster før upsert — se
-    // ImportChunk. Det er fase 2 sin oppgave, ikke denne.
-    const rows = await buildRows(chunk.cityAnchor ?? '', elements, limit, cats);
+    // cityAnchor er chunkens ene kommune. Er den null — en flis, et fylke,
+    // hele landet — utledes municipality per rad fra grensefila, og rader
+    // utenfor Norge utelates. Se lib/municipality.ts.
+    const rows = await buildRows(
+        chunk.cityAnchor,
+        elements,
+        limit,
+        cats,
+        chunk.cityAnchor === null
+            ? (lat, lng) => municipalityIndex().lookup(lat, lng)
+            : undefined
+    );
 
     // Vaktbikkje + tittelkilde-fordeling per kategori. 'kun-kategori' med
     // geocodeError betyr at revers-geokodingen FEILET — ikke at adressen mangler.
@@ -2318,9 +2755,38 @@ async function enrichChunk(
     if (errors.length) {
         const reasons = new Map<string, number>();
         errors.forEach((r) => reasons.set(r.geocodeError!, (reasons.get(r.geocodeError!) ?? 0) + 1));
-        console.log(`  GEOKODINGSFEIL (${errors.length} steder):`);
+        console.log(`  GEOKODINGSFEIL (${errors.length} steder) — tjenesten svarte IKKE:`);
         for (const [reason, n] of reasons) console.log(`    ${n} × ${reason}`);
     }
+
+    // ADRESSELØSE steder er en egen linje, og med vilje ikke under
+    // «GEOKODINGSFEIL». Kartverket svarte; det finnes bare ingen adresse der.
+    // For ski nasjonalt er dette normalen, ikke et symptom — og det er denne
+    // tilstanden som gir titler som «Skianlegg i Fageråsen».
+    const utenAdresse = rows.filter((r) => r.addressMissing).length;
+    if (utenAdresse) {
+        console.log(
+            `  UTEN ADRESSE (${utenAdresse} steder) — Kartverket svarte at det ikke finnes ` +
+                `en adresse innen 200 m. Ikke en feil; tittelen kommer fra områdenavn eller ` +
+                `bare kategorien.`
+        );
+    }
+
+    // STOPPVILKÅR 2. En rad som fikk tittelen «Lekeplass» fordi Kartverket var
+    // nede, blir ikke bedre neste kjøring: upserten skriver samme tittel igjen.
+    // Nevneren er FORSØK (rader uten brukbart OSM-navn), ikke alle rader —
+    // ski er ~80 % navngitt, og en chunk uten geokodingsbehov skal ikke kunne
+    // utløse noe.
+    //
+    // TELLEREN ER `geocodeError`, som etter sep. 2026 BARE er ekte
+    // oppslagsfeil. Den første nasjonale tørrkjøringen stanset på 51 av 157
+    // (32 %) der alle 51 var «ingen adresse innen 200 m» — Kartverket som
+    // svarte korrekt at det ikke finnes en adresse i fjellet. Terskelen er
+    // kalibrert for bykategorier; for ski nasjonalt er adresseløshet
+    // normalen. Se [GeocodeFailureKind].
+    const forsok = rows.filter((r) => r.titleSource !== 'osm-navn').length;
+    const stopp = geocodeFailureStop(chunk.label, { forsok, feil: errors.length });
+    if (stopp) throw stopp;
 
     return { rows, seenClaims };
 }
@@ -2391,7 +2857,7 @@ async function writeChunk(
     for (let i = 0; i < writable.length; i += 500) {
         const bolk = writable
             .slice(i, i + 500)
-            .map(({ titleSource: _ts, geocodeError: _ge, osmName: _on, nameTag: _nt, ...row }) => ({
+            .map(({ titleSource: _ts, geocodeError: _ge, osmName: _on, nameTag: _nt, addressMissing: _am, ...row }) => ({
                 ...row,
                 source_id: source.id,
             }));
@@ -2423,8 +2889,15 @@ function stageFingerprints(
     limit: number
 ): { fetch: string; enrich: string } {
     const fetchFp = fingerprint({
-        v: 1,
+        // v: 2 fordi AVGRENSNINGEN kom inn. Fram til sep. 2026 hashet
+        // hentesteget bare `overpassArea`, og den er TOM STRENG for den
+        // nasjonale chunken — altså lå bboksen ikke i fingeravtrykket i det
+        // hele tatt. En kjøring med --resume og en ny boks ville stille
+        // gjenbrukt gårsdagens objekter, som er nøyaktig den feilen
+        // fingeravtrykket finnes for å hindre.
+        v: 2,
         area: chunk.overpassArea,
+        scopes: [...chunk.overpassScopes],
         cats: cats.map((c) => [c.key, c.selector, Boolean(c.fetchSets)]),
     });
     return {
@@ -2493,6 +2966,10 @@ export interface ImportArgs {
     workDir: string | null;
     /** Hopp over steg som allerede er ferdige med samme forutsetninger. */
     resume: boolean;
+    /** Bolk-fingeravtrykket som godkjennes. Kreves for å skrive med --work. */
+    approve: string | null;
+    /** Hele Norge som ÉN chunk, i stedet for fire by-chunks. */
+    national: boolean;
 }
 
 /** Standard arbeidskatalog når --work eller --resume er gitt uten verdi.
@@ -2506,7 +2983,7 @@ export const DEFAULT_WORK_DIR = '.import-work';
 // ville «--worksheet» sluppet gjennom som gyldig. Strammingen gjelder også de
 // gamle flaggene — «--dry-runx» ble før akseptert og ignorert i stillhet,
 // nøyaktig den klassen feil denne parseren finnes for å stoppe.
-const KNOWN_FLAGS = ['--dry-run', '--city=', '--limit=', '--category=', '--work', '--work=', '--resume'];
+const KNOWN_FLAGS = ['--dry-run', '--city=', '--limit=', '--category=', '--work', '--work=', '--resume', '--approve=', '--national'];
 
 function isKnownFlag(arg: string): boolean {
     return KNOWN_FLAGS.some((f) => (f.endsWith('=') ? arg.startsWith(f) : arg === f));
@@ -2542,6 +3019,20 @@ export function parseArgs(args: string[]): ImportArgs {
         ? cityArg.split(',').map((c) => c.trim()).filter(Boolean)
         : DEFAULT_CITIES;
     if (cityArg && !cities.length) throw new Error('--city= er tom.');
+
+    // NASJONAL MODUS KREVER ET EGET FLAGG. Den nærliggende varianten — la
+    // FRAVÆR av --city bety «hele landet» — ble forkastet, og det er den
+    // samme avveiningen som strammingen av argumentparseren: i dag betyr
+    // fravær av --city de fire byene, og å endre det i stillhet ville gjort
+    // at en kommando noen har kjørt i et år plutselig henter 55 000 objekter
+    // fra fire land. Et nytt flagg kan ikke overraske noen.
+    const national = args.includes('--national');
+    if (national && cityArg) {
+        throw new Error(
+            '--national og --city= utelukker hverandre. --national er hele Norge som ÉN ' +
+                'chunk; --city= er én chunk per kommune.'
+        );
+    }
 
     // --category=<key>[,<key>] kjører kun de valgte kategoriene, så et enkelt
     // feilende punkt (f.eks. den tunge «lekeplass»-selektoren) kan fylles inn
@@ -2582,7 +3073,178 @@ export function parseArgs(args: string[]): ImportArgs {
               ? DEFAULT_WORK_DIR
               : null;
 
-    return { dryRun, cities, limit, cats, catArg, workDir, resume };
+    // --approve binder godkjenningen til ARTEFAKTET. Se [batchFingerprint]:
+    // verdien er en hash over (chunk, berikelsens fingeravtrykk) for hele
+    // planen, og den endres i det øyeblikket en selektor, en kategoriliste,
+    // --limit eller claim-lista endres. Da nekter skrivingen.
+    const approve = args.find((a) => a.startsWith('--approve='))?.slice('--approve='.length) ?? null;
+
+    return { dryRun, cities, limit, cats, catArg, workDir, resume, approve, national };
+}
+
+
+/**
+ * external_id-ene som ALLEREDE finnes i basen, blant dem kjøringen vil skrive.
+ *
+ * Leser, skriver ikke. Sendes i bolker på 500 fordi PostgREST har en
+ * URL-lengdegrense, og en nasjonal kjøring har titusenvis av id-er.
+ */
+async function existingExternalIds(ider: readonly string[]): Promise<Set<string> | null> {
+    if (!isDatahubConfigured()) return null;
+    const db = supabaseAdmin();
+    const { data: source } = await db.from('sources').select('id').eq('slug', SOURCE_SLUG).maybeSingle();
+    if (!source) return null;
+    const funnet = new Set<string>();
+    for (let i = 0; i < ider.length; i += 500) {
+        const { data, error } = await db
+            .from('activities')
+            .select('external_id')
+            .eq('source_id', source.id)
+            .in('external_id', ider.slice(i, i + 500));
+        if (error) throw new Error(`Forhåndsdiff feilet: ${error.message}`);
+        for (const r of data ?? []) funnet.add(r.external_id as string);
+    }
+    return funnet;
+}
+
+/**
+ * FORHÅNDSDIFFEN + GODKJENNINGSOPPSUMMERINGEN.
+ *
+ * Berikelsesfilene ER radene, så en sammenligning mot `activities` svarer
+ * eksakt på hva som kommer til å endre seg. Én lesning per 500 id-er, null
+ * skriving — den billigste forsikringen mot at en feil selektor skriver
+ * tusenvis av rader ingen har sett.
+ *
+ * SETTET AV EKSISTERENDE id-er LAGRES per chunk (`<chunk>.before.ndjson`). Da
+ * er angringen eksakt for NYE rader: alt som finnes etterpå og ikke sto i
+ * fila, kan avpubliseres i én setning.
+ *
+ * DEN ÆRLIGE BEGRENSNINGEN: OPPDATERTE RADER KAN IKKE GJENOPPRETTES. Importen
+ * har ingen historikk, og upserten overskriver feltene. En rad som lå riktig
+ * og blir skrevet feil, er feil til noen retter den for hånd. Det er grunnen
+ * til at «nye vs. oppdaterer» står øverst i oppsummeringen, og til at den
+ * første nasjonale kjøringen for en kategori helst skal treffe en kategori
+ * som er tom fra før.
+ */
+async function rapporterGodkjenning(
+    plan: readonly ImportChunk[],
+    store: WorkStore,
+    cats: PlaceCategory[],
+    opts: { workDir: string; dryRun: boolean; limit: number; catArg?: string; national: boolean }
+): Promise<{ dom: 'GO' | 'STOPP'; fingerprint: string | null; stoppGrunn?: string }> {
+    const fp = batchFingerprint(
+        plan.map((c) => c.id),
+        (id) => store.entries().get(`${id}/enrich`)?.fingerprint
+    );
+    if (!fp) return { dom: 'STOPP', fingerprint: null, stoppGrunn: 'ikke alle chunks er beriket' };
+
+    const perChunk = new Map<string, ImportRow[]>();
+    for (const c of plan) perChunk.set(c.id, store.read<ImportRow>(c, 'enrich'));
+    const alle = [...perChunk.values()].flat();
+
+    // Forhåndsdiff + før-settet per chunk.
+    let eksisterende: Set<string> | null = null;
+    try {
+        eksisterende = await existingExternalIds(alle.map((r) => r.external_id));
+    } catch (err) {
+        console.log(`  (forhåndsdiff hoppet over: ${err instanceof Error ? err.message : err})`);
+    }
+    let diff: ForhandsDiff | null = null;
+    if (eksisterende) {
+        diff = { nye: 0, oppdaterer: 0 };
+        for (const r of alle) {
+            if (eksisterende.has(r.external_id)) diff.oppdaterer += 1;
+            else diff.nye += 1;
+        }
+        for (const c of plan) {
+            const fantes = (perChunk.get(c.id) ?? [])
+                .map((r) => r.external_id)
+                .filter((id) => eksisterende!.has(id))
+                .map((external_id) => ({ external_id }));
+            store.writeSidecar(c, 'before', fantes);
+        }
+    }
+
+    // Andelen av NORGE planen dekker, eller null når den ikke er kjent.
+    // En per-kommune-plan får null, og da hoppes utbyttesjekken over — fire
+    // byer er ikke en brøkdel av landet man kan regne ut fra antall chunks.
+    // Se [nationalCoverage].
+    const andel = nationalCoverage(plan);
+
+    const radPerKategori = new Map<string, number>();
+    for (const cat of cats) {
+        radPerKategori.set(cat.key, alle.filter((r) => r.category === cat.category).length);
+    }
+    const kategorier: KategoriLinje[] = cats.map((cat) => {
+        const rader = alle.filter((r) => r.category === cat.category);
+        const nasjonalt = NATIONAL_EXPECTATION[cat.key];
+        return {
+            key: cat.key,
+            rader: rader.length,
+            forventet: nasjonalt === undefined || andel === null ? null : nasjonalt * andel,
+            utenNavn: rader.filter((r) => r.titleSource !== 'osm-navn').length,
+        };
+    });
+
+    const utbytte = andel === null ? null : yieldCollapseStop(radPerKategori, andel);
+    const tommeSett = plan.flatMap((c) =>
+        (store.entries().get(`${c.id}/fetch`)?.emptySets ?? []).map((sett) => `${c.id} ${sett}`)
+    );
+    const undertrykt = new Set(
+        plan.flatMap((c) => [...(store.entries().get(`${c.id}/enrich`)?.seenClaims ?? [])])
+    );
+    const dupRader = alle.map((r) => ({
+        external_id: r.external_id,
+        category: r.category,
+        title: r.title,
+        lat: r.lat,
+        lng: r.lng,
+        osmNavn: r.titleSource === 'osm-navn',
+    }));
+    const duplikater = duplicateCandidates(dupRader);
+    // Blindsonen fra den første nasjonale tørrkjøringen: tre navnløse
+    // polygoner som alle fikk «Skianlegg i Fageråsen» fra Nominatim.
+    const genererteKollisjoner = generatedTitleCollisions(dupRader);
+
+    const dom: 'GO' | 'STOPP' = utbytte ? 'STOPP' : 'GO';
+    const flagg = [
+        opts.national ? '--national' : null,
+        `--work=${opts.workDir}`,
+        '--resume',
+        opts.limit !== Infinity ? `--limit=${opts.limit}` : null,
+        opts.catArg ? `--category=${opts.catArg}` : null,
+        `--approve=${fp}`,
+    ].filter(Boolean);
+
+    if (andel === null) {
+        console.log(
+            '  (forventningskolonnen er tom: planen er per kommune, og andelen av Norge ' +
+                'er ukjent. Utbyttesjekken gjelder den nasjonale planen.)'
+        );
+    }
+    console.log(
+        formatApproval({
+            fingerprint: fp,
+            chunks: plan.length,
+            raderTotalt: alle.length,
+            diff,
+            kategorier,
+            geokoding: {
+                forsok: alle.filter((r) => r.titleSource !== 'osm-navn').length,
+                feil: alle.filter((r) => r.geocodeError).length,
+            },
+            overpass: { ...overpassTelling },
+            tommeSett,
+            claims: { undertrykt: undertrykt.size, navneavvik: 0 },
+            duplikatkandidater: duplikater,
+            delteGenererteTitler: genererteKollisjoner,
+            dom,
+            stoppGrunn: utbytte?.message,
+            skrivKommando: `npx --yes tsx scripts/import-places.ts ${flagg.join(' ')}`,
+            naa: new Date().toISOString().slice(0, 16).replace('T', ' '),
+        })
+    );
+    return { dom, fingerprint: fp, stoppGrunn: utbytte?.message };
 }
 
 async function main() {
@@ -2593,12 +3255,12 @@ async function main() {
         console.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
     }
-    const { dryRun, cities, limit, cats, catArg, workDir, resume } = parsed;
+    const { dryRun, cities, limit, cats, catArg, workDir, resume, approve, national } = parsed;
 
-    const plan = planForCities(cities);
+    const plan = national ? [nationalChunk()] : planForCities(cities);
     const store: WorkStore = workDir ? new FileStore(workDir) : new NullStore();
 
-    console.log(`Import av faste steder: ${cities.join(', ')}${dryRun ? ' [DRY-RUN]' : ''}${limit !== Infinity ? ` [limit=${limit}/kategori]` : ''}${catArg ? ` [kategori=${cats.map((c) => c.key).join(',')}]` : ''}`);
+    console.log(`Import av faste steder: ${national ? 'HELE NORGE (én chunk)' : cities.join(', ')}${dryRun ? ' [DRY-RUN]' : ''}${limit !== Infinity ? ` [limit=${limit}/kategori]` : ''}${catArg ? ` [kategori=${cats.map((c) => c.key).join(',')}]` : ''}`);
     console.log(`Arbeidskatalog: ${store.describe()}${resume ? ' [--resume]' : ''}`);
 
     // GJENOPPTAGELSE ER EKSPLISITT. Å hoppe over ferdige steg i stillhet er
@@ -2621,6 +3283,72 @@ async function main() {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // GODKJENNINGSPORTEN.
+    //
+    // Å SKRIVE MED --work KREVER --approve. Uten den er «ja» et ja til en
+    // logg noen leste, og mellom lesingen og skrivingen ligger en ny prosess
+    // som kan ha fått en annen selektor. Med den er «ja» bundet til
+    // BERIKELSESFILENE — se [batchFingerprint].
+    //
+    // Den GAMLE veien (uten --work) er uendret: `--city=Oslo` skriver som før,
+    // uten port. Porten hører til bolkeflyten, ikke til en enkelt by.
+    let godkjent: { dom: 'GO' | 'STOPP'; fingerprint: string | null } | null = null;
+    if (workDir) {
+        // FERDIG BERIKET MED DENNE KJØRINGENS FORUTSETNINGER, ikke bare
+        // «det ligger en manifestlinje der». Forskjellen er ikke teoretisk:
+        // med --limit=1 mot en katalog beriket uten limit ville den løse
+        // varianten skrevet ut en oppsummering av GÅRSDAGENS rader, med et
+        // fingeravtrykk som ikke lenger gjaldt. Funnet ved en tørrkjøring.
+        const ferdigBeriket = plan.every((c) =>
+            store.isDone(c, 'enrich', stageFingerprints(c, cats, limit).enrich)
+        );
+        if (ferdigBeriket) {
+            // Alt er beriket fra før: da kan forhåndsdiffen og oppsummeringen
+            // regnes ut NÅ, før noe skrives.
+            godkjent = await rapporterGodkjenning(plan, store, cats, {
+                workDir,
+                dryRun,
+                limit,
+                catArg,
+                national,
+            });
+        }
+        if (!dryRun) {
+            if (!approve) {
+                console.error(
+                    ferdigBeriket
+                        ? `\nSkriving med --work krever --approve. Fingeravtrykket står i ` +
+                              `oppsummeringen over.`
+                        : `\nSkriving med --work krever --approve, og ikke alle chunks er ` +
+                              `beriket ennå. Kjør først:\n` +
+                              `  npx --yes tsx scripts/import-places.ts --dry-run --work=${workDir}` +
+                              `${resume ? ' --resume' : ''}`
+                );
+                process.exit(1);
+            }
+            if (!godkjent?.fingerprint) {
+                console.error('\nIngen bolk å godkjenne: ikke alle chunks er beriket.');
+                process.exit(1);
+            }
+            if (approve !== godkjent.fingerprint) {
+                console.error(
+                    `\nFINGERAVTRYKKET STEMMER IKKE.\n` +
+                        `  godkjent: ${approve}\n` +
+                        `  faktisk:  ${godkjent.fingerprint}\n` +
+                        `Noe har endret seg siden godkjenningen — en selektor, en ` +
+                        `kategoriliste, --limit eller claim-lista. Kjør tørrkjøringen på nytt ` +
+                        `og les oppsummeringen før du godkjenner igjen.`
+                );
+                process.exit(1);
+            }
+            if (godkjent.dom === 'STOPP') {
+                console.error('\nDommen er STOPP. Se oppsummeringen over. Ingenting skrives.');
+                process.exit(1);
+            }
+        }
+    }
+
     let total = 0;
     // Feiltoleranse per chunk: én chunks feil (f.eks. konsekvent Overpass-504
     // for Trondheim) skal IKKE avbryte hele kjøringen — de øvrige fullføres
@@ -2633,6 +3361,19 @@ async function main() {
             total += res.rows;
             for (const id of res.seenClaims) seenClaims.add(id);
         } catch (err) {
+            // ET STOPPVILKÅR AVBRYTER HELE KJØRINGEN, ikke bare chunken.
+            // Skillet er poenget: en Overpass-504 for Trondheim skal ikke
+            // stanse Bergen, men en claim med feil id eller et Kartverket som
+            // er nede ville gjort samme feil i de neste 300 chunkene.
+            if (err instanceof ImportStop) {
+                console.error(`\n=== STOPP (${err.vilkaar}) ===`);
+                console.error(err.message);
+                console.error(
+                    `\nKjøringen er avbrutt etter ${total} rader. Ingenting mer skrives. ` +
+                        (workDir ? `Ferdige steg ligger i ${workDir} og gjenbrukes med --resume.` : '')
+                );
+                process.exit(1);
+            }
             const msg = err instanceof Error ? err.message : String(err);
             console.error(`  ✗ ${chunk.label} FEILET — hoppes over, fortsetter til neste: ${msg}`);
             failed.push({ city: chunk.label, error: msg });
@@ -2654,6 +3395,7 @@ async function main() {
         // gjenbrukes, så en gjenkjøring med --resume koster bare det som
         // faktisk feilet.
         const rerunFlags = [
+            national ? '--national' : null,
             dryRun ? '--dry-run' : null,
             limit !== Infinity ? `--limit=${limit}` : null,
             catArg ? `--category=${catArg}` : null,
@@ -2662,13 +3404,25 @@ async function main() {
         console.log('\nKjør de feilede på nytt, én om gangen (trygt — upsert er idempotent):');
         for (const f of failed) {
             console.log(
-                `  npx --yes tsx scripts/import-places.ts --city=${f.city} ${rerunFlags.join(' ')}`.trimEnd()
+                (national
+                    ? `  npx --yes tsx scripts/import-places.ts ${rerunFlags.join(' ')}`
+                    : `  npx --yes tsx scripts/import-places.ts --city=${f.city} ${rerunFlags.filter((x) => x !== '--national').join(' ')}`
+                ).trimEnd()
             );
         }
         // Delvis feil: de vellykkede byene er skrevet, men signaliser til
         // operatør/CI at minst én by mangler ved å avslutte med kode 1.
         process.exitCode = 1;
     }
+    // GODKJENNINGSOPPSUMMERINGEN, når den ikke allerede ble skrevet ut før
+    // løkka. Det er tilfellet ved den FØRSTE tørrkjøringen, der ingenting var
+    // beriket på forhånd. Ingen skriving har skjedd: porten over slipper
+    // ingen gjennom uten et fingeravtrykk, og et fingeravtrykk finnes ikke før
+    // alt er beriket.
+    if (workDir && !godkjent) {
+        await rapporterGodkjenning(plan, store, cats, { workDir, dryRun, limit, catArg, national });
+    }
+
     // TOMME SETT, samlet til slutt og lest fra MANIFESTET.
     //
     // Midt i utskriften er en tom kategori synlig for én chunk og usynlig for
@@ -2741,6 +3495,25 @@ async function main() {
                 : `  Kjøringen dekket bare ${plan.map((c) => c.label).join(', ')}${catArg ? ` og kategori ${catArg}` : ''} — ` +
                       'en claim utenfor rekkevidden er IKKE død. Kjør uten --city og ' +
                       '--category før du fjerner noe.'
+        );
+    }
+
+    // FOREBYGGENDE CLAIMS SOM VÅKNET. Motstykket til lista over: disse fire
+    // skal normalt ikke treffe noe (berikelsen forkaster objektet), så et
+    // treff betyr at OSM har fått dataene som manglet. Ikke en feil — men et
+    // spørsmål om den kuraterte raden fortsatt er den beste.
+    const vaaknet = awakenedClaims(seenClaims);
+    if (vaaknet.length) {
+        console.log(
+            `\nFOREBYGGENDE CLAIMS SOM TRAFF (${vaaknet.length}) — OSM har fått dataene som manglet:`
+        );
+        for (const c of vaaknet) {
+            console.log(`  ${c.osmId.padEnd(20)} → ${c.source}/${c.externalId}`);
+        }
+        console.log(
+            '  Importen ville nå laget en rad for disse. Claimen hindrer det. Vurder om ' +
+                'den kuraterte raden fortsatt er bedre enn importens, eller om claimen kan ' +
+                'fjernes — se docs/runbooks/alpin-usikker-heis.md.'
         );
     }
 
