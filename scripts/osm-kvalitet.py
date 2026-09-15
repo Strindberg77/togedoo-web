@@ -99,7 +99,12 @@ from collections import Counter, defaultdict
 
 CELL_M = 30.0           # rutenettets basiscelle; terskler over denne får flere naboruter
 M_PER_DEG_LAT = 111_320.0
-TERSKLER = [20, 30, 50, 75, 100]
+# SMÅ TERSKLER FØRST, og det er en retting (sep. 2026). Lista startet på 20 m,
+# men en spørring mot prod fant 50 par under 4 m — sortert stigende og avkortet
+# på 50, altså kan det være mange flere. Hele avgjørelsen ligger nå i
+# intervallet 0–10 m, og det var ikke målt i det hele tatt. 100 m beholdes som
+# den øvre enden av kurven.
+TERSKLER = [2, 3, 5, 10, 20, 30, 50, 100]
 
 
 def bbox_center(geom):
