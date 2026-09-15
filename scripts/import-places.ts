@@ -69,6 +69,14 @@ import {
 import { FileStore, NullStore, type WorkStore } from './work-store';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
 import { sanitizeWebsite } from '../lib/website';
+import {
+    DEDUP_RADIUS_M,
+    dedupPairs,
+    nedtakingsSql,
+    uloste,
+    type DedupKandidat,
+    type DedupPar,
+} from '../lib/dedup';
 
 // Speilene kan overstyres via env (komma-separert) — nyttig for selvhostet
 // Overpass og for å verifisere feilhåndteringen mot et test-endepunkt.
@@ -1097,6 +1105,97 @@ export function verifyPointFacilities(
     return { verified, rapport, merknader, telling };
 }
 
+// ──────────────────────────── DUBLETTER (dedup) ────────────────────────────
+//
+// SAMME FYSISKE STED, KARTLAGT TO GANGER. Regelen selv ligger i
+// lib/dedup.ts, og det er hele poenget: OPPRYDDINGEN
+// (scripts/dedup-opprydding.ts) må svare likt om de 263 parene som allerede
+// ligger i basen. Er de to uenige, tar oppryddingen ned rad A mens neste
+// import bygger A og fjerner B, og basen svinger mellom to tilstander.
+//
+// Her ligger bare OVERSETTELSEN fra OSM-elementer til [DedupKandidat], og
+// rapportlinjene.
+
+/**
+ * OSM-elementer → kandidater regelen kan vurdere.
+ *
+ * Navnet løses HER, med kategoriens egen navnekjede ([nameTags]) — Aking
+ * leser `piste:name` før `name`. Å sende rå tagger inn i lib/dedup.ts ville
+ * tvunget den fila til å kjenne OSM, og da kunne den ikke vært felles med
+ * oppryddingen, som bare har `osm_tags` fra basen.
+ */
+export function dedupKandidater(
+    elements: readonly OsmElement[],
+    nameTags?: readonly string[]
+): DedupKandidat[] {
+    const ut: DedupKandidat[] = [];
+    for (const el of elements) {
+        const pos = coords(el);
+        if (!pos) continue;
+        ut.push({
+            externalId: `${el.type}/${el.id}`,
+            lat: pos.lat,
+            lng: pos.lng,
+            navn: resolvePlaceName(el.tags ?? {}, nameTags)?.value ?? null,
+        });
+    }
+    return ut;
+}
+
+/** Elementene uten dem regelen tar ut, og parene til rapporten. */
+export function dedupElements(
+    elements: readonly OsmElement[],
+    nameTags?: readonly string[],
+    radius = DEDUP_RADIUS_M
+): { elements: OsmElement[]; par: DedupPar[] } {
+    const { tapere, par } = dedupPairs(dedupKandidater(elements, nameTags), radius);
+    return {
+        elements: elements.filter((el) => !tapere.has(`${el.type}/${el.id}`)),
+        par,
+    };
+}
+
+/**
+ * Rapportlinjene. Tom liste når ingenting skjedde.
+ *
+ * DE ULØSTE AVKORTES ALDRI. De er ikke støy — de er restbeholdningen, og en
+ * rapport som teller bort de løste og tier om resten ville fått neste person
+ * til å tro at basen er ren.
+ */
+export function dedupRapport(par: readonly DedupPar[]): string[] {
+    if (par.length === 0) return [];
+    const droppet = par.filter((p) => p.utfall === 'droppet');
+    const rest = uloste(par);
+    const linjer = [
+        `    ${droppet.length} objekt tatt ut — samme sted innen ${DEDUP_RADIUS_M} m`,
+    ];
+    for (const p of droppet.slice(0, 10)) {
+        linjer.push(`      ${p.taper.padEnd(20)} → ${p.vinner.padEnd(20)} ${p.meter} m`);
+    }
+    if (droppet.length > 10) {
+        linjer.push(`      … og ${droppet.length - 10} til`);
+    }
+    const restSum = rest['to-flater'] + rest['navn-bare-pa-taper'] + rest['navn-uenighet'];
+    if (restSum) {
+        linjer.push(
+            `    ${restSum} par IKKE løst: ${rest['to-flater']} flate mot flate, ` +
+                `${rest['navn-bare-pa-taper']} med navn bare på taperen, ` +
+                `${rest['navn-uenighet']} med ulike navn`
+        );
+        for (const p of par.filter((x) => x.utfall !== 'droppet')) {
+            linjer.push(
+                `      ULØST  ${p.taper} og ${p.vinner}, ${p.meter} m — ` +
+                    (p.utfall === 'to-flater'
+                        ? 'to flater, kan ikke skilles uten geometri'
+                        : p.utfall === 'navn-bare-pa-taper'
+                          ? `bare den ene har navn («${p.taperNavn}»)`
+                          : `ulike navn («${p.taperNavn}» / «${p.vinnerNavn}»)`)
+            );
+        }
+    }
+    return linjer;
+}
+
 // ─────────────────────────────────── AKING ───────────────────────────────────
 //
 // EGEN KATEGORI fra sep. 2026. Akebakker lå tidligere under Skianlegg, med
@@ -1727,6 +1826,26 @@ interface PlaceCategoryDef {
      * unntatt Aking bruker. Se [resolvePlaceName] og [AKING_NAME_TAGS].
      */
     nameTags?: readonly string[];
+    /**
+     * Fjern objekter som er dubletter av et annet i samme kategori. Regelen
+     * ligger i lib/dedup.ts og deles med oppryddingsskriptet.
+     *
+     * OPT-IN, og det er hele poenget med flagget. Fenomenet er MÅLT for
+     * `leisure=playground` (440 av 11 901) og `leisure=pitch` (373 av
+     * 15 423) mot Geofabrik-fila. For de andre kategoriene er det ikke målt,
+     * og en regel som fjerner rader skal ikke slås på for en kategori ingen
+     * har talt.
+     *
+     * IKKE SATT FOR Aking og Skianlegg, og det er ikke en forglemmelse: de
+     * har allerede hvert sitt bedre svar på det samme spørsmålet.
+     * [verifyPointFacilities] avviser en node som ligger INNE I et
+     * verifisert polygon — en ekte punkt-i-polygon-test, ikke en
+     * senteravstand — og [akingClusters] samler segmenter på relasjon og
+     * navnegruppe. Å legge denne oppå ville gitt to mekanismer som svarer på
+     * samme spørsmål med ulik terskel, og den strengeste ville vunnet i
+     * stillhet.
+     */
+    dedupDubletter?: true;
 }
 
 // Rekkefølgen er match-prioritet (et element kategoriseres av første treff).
@@ -1778,6 +1897,8 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         selector: 'nwr["leisure"="playground"](area.a);',
         matches: (t: OsmTags) => t.leisure === 'playground',
         isFree: true,
+        // 440 av 11 901 lekeplasser har et punkt innen 10 m av en flate.
+        dedupDubletter: true,
     },
     {
         // MÅ STÅ ETTER lekeplass. Rekkefølgen er match-prioritet, og Oslo har
@@ -1894,6 +2015,9 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         // per sted.
         isFree: true,
         titleLabelFor: (t: OsmTags) => rollerTitleLabel(t.sport),
+        // Samme objekttype som Ballbane (leisure=pitch/track), og dekket av
+        // den samme målingen — se der.
+        dedupDubletter: true,
     },
     {
         // Ball- OG RACKETSPORT (des. 2026, fase B). Selektoren hentet tidligere
@@ -1920,6 +2044,11 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         matches: (t: OsmTags) => t.leisure === 'pitch',
         isFree: true,
         titleLabelFor: (t: OsmTags) => ballTitleLabel(t.sport),
+        // 373 av 15 423 leisure=pitch har et punkt innen 10 m av en flate.
+        // MERK at målingen er gjort på `leisure=pitch` som helhet, altså før
+        // importen deler den i Ballbane og Rullesport — tallet for denne
+        // kategorien alene er mindre.
+        dedupDubletter: true,
     },
     {
         // KLATRING (fase C). Må stå FØR idrettshall: kategorisering skjer på
@@ -2595,6 +2724,17 @@ export interface EnrichedChunk {
     rows: ImportRow[];
     /** OSM-id-er undertrykt av en claim. Havner i manifestet, se der. */
     seenClaims: string[];
+    /**
+     * external_id-ene til punktene som ble droppet som dubletter av en
+     * annet objekt i samme kategori (lib/dedup.ts).
+     *
+     * SAMME GRUNN SOM [seenClaims] TIL Å LIGGE I MANIFESTET: ved
+     * gjenopptagelse leses berikelsen fra mellomleddet og [enrichChunk]
+     * kjøres aldri. Uten dette feltet ville nedtakings-SQL-en til slutt vært
+     * TOM nettopp for de chunkene som gikk bra — og radene ville blitt
+     * stående publisert uten at noe sa fra.
+     */
+    deduped: string[];
 }
 
 /**
@@ -2622,12 +2762,27 @@ export async function enrichChunk(
 ): Promise<EnrichedChunk> {
     const perKategori = groupFetchRecords(fetched);
     const beriket: { cat: PlaceCategory; elements: OsmElement[] }[] = [];
+    const deduped: string[] = [];
     for (const cat of cats) {
         const sets = perKategori.get(cat.key) ?? {};
         const ut: EnrichOutput = cat.enrichSets
             ? cat.enrichSets(sets)
             : { elements: sets.main ?? [], rapport: [] };
-        beriket.push({ cat, elements: ut.elements });
+        // DEDUPEN KJØRER ETTER enrichSets, ikke før. For kategoriene som har
+        // begge ville rekkefølgen betydd noe — men ingen har det, og flagget
+        // er dokumentert som gjensidig utelukkende med enrichSets nettopp
+        // derfor. Rekkefølgen her er den som ville vært riktig om det endret
+        // seg: dedupen skal se det berikelsen faktisk slipper gjennom.
+        let elements = ut.elements;
+        if (cat.dedupDubletter) {
+            const d = dedupElements(elements, cat.nameTags);
+            elements = d.elements;
+            for (const p of d.par) if (p.utfall === 'droppet') deduped.push(p.taper);
+            for (const linje of dedupRapport(d.par)) {
+                console.log(`  ${chunk.label}/${cat.key.padEnd(11)}${linje}`);
+            }
+        }
+        beriket.push({ cat, elements });
         if (ut.summary) console.log(`  ${chunk.label}/${cat.key.padEnd(11)} ${ut.summary}`);
         for (const linje of ut.rapport) console.log(linje);
         // MERKNADENE SIST, så de er det siste kategorien etterlater på
@@ -2788,7 +2943,7 @@ export async function enrichChunk(
     const stopp = geocodeFailureStop(chunk.label, { forsok, feil: errors.length });
     if (stopp) throw stopp;
 
-    return { rows, seenClaims };
+    return { rows, seenClaims, deduped };
 }
 
 /**
@@ -2918,7 +3073,7 @@ function stageFingerprints(
 async function runChunk(
     chunk: ImportChunk,
     opts: { dryRun: boolean; limit: number; cats: PlaceCategory[]; store: WorkStore; resume: boolean }
-): Promise<{ rows: number; seenClaims: string[] }> {
+): Promise<{ rows: number; seenClaims: string[]; deduped: string[] }> {
     const { dryRun, limit, cats, store, resume } = opts;
     console.log(`\n=== ${chunk.label} (${chunk.id}) ===`);
     const fp = stageFingerprints(chunk, cats, limit);
@@ -2945,15 +3100,22 @@ async function runChunk(
     if (resume && store.isDone(chunk, 'enrich', fp.enrich)) {
         const rows = store.read<ImportRow>(chunk, 'enrich');
         const entry = store.entries().get(`${chunk.id}/enrich`);
-        enriched = { rows, seenClaims: [...(entry?.seenClaims ?? [])] };
+        enriched = {
+            rows,
+            seenClaims: [...(entry?.seenClaims ?? [])],
+            deduped: [...(entry?.deduped ?? [])],
+        };
         console.log(`  [gjenopptatt] berik: ${rows.length} rader fra mellomleddet (ingen geokoding)`);
     } else {
         enriched = await enrichChunk(chunk, fetched, limit, cats);
-        store.write(chunk, 'enrich', fp.enrich, enriched.rows, { seenClaims: enriched.seenClaims });
+        store.write(chunk, 'enrich', fp.enrich, enriched.rows, {
+            seenClaims: enriched.seenClaims,
+            deduped: enriched.deduped,
+        });
     }
 
     const skrevet = await writeChunk(chunk, enriched.rows, dryRun);
-    return { rows: skrevet, seenClaims: enriched.seenClaims };
+    return { rows: skrevet, seenClaims: enriched.seenClaims, deduped: enriched.deduped };
 }
 
 export interface ImportArgs {
@@ -3355,11 +3517,13 @@ async function main() {
     // og skrives, og de feilede oppsummeres til slutt med exit-kode 1.
     const failed: { city: string; error: string }[] = [];
     const seenClaims = new Set<string>();
+    const deduped = new Set<string>();
     for (const chunk of plan) {
         try {
             const res = await runChunk(chunk, { dryRun, limit, cats, store, resume });
             total += res.rows;
             for (const id of res.seenClaims) seenClaims.add(id);
+            for (const id of res.deduped) deduped.add(id);
         } catch (err) {
             // ET STOPPVILKÅR AVBRYTER HELE KJØRINGEN, ikke bare chunken.
             // Skillet er poenget: en Overpass-504 for Trondheim skal ikke
@@ -3471,7 +3635,12 @@ async function main() {
     for (const [nokkel, entry] of store.entries()) {
         if (!nokkel.endsWith('/enrich')) continue;
         for (const id of entry.seenClaims ?? []) seenClaims.add(id);
+        // Samme grunn som for seenClaims: en gjenopptatt chunk kjører aldri
+        // dedupen på nytt, og uten manifestet ville nedtakingslista manglet
+        // nettopp de chunkene som gikk bra.
+        for (const id of entry.deduped ?? []) deduped.add(id);
     }
+    if (deduped.size) console.log(nedtakingsSql([...deduped].sort()));
     const doede = staleClaims(seenClaims);
     if (doede.length) {
         const heleKjoringen = runCoversEverything(
