@@ -40,6 +40,28 @@ Ved 200 km blir det ikke verre og ikke bedre: du får fortsatt de 100
 nærmeste, som alle ligger innen få kilometer av brukeren. Hverken paginering
 eller klynging løser det — **«N nærmeste per kategori» gjør det.**
 
+**Dette er nå en bevist egenskap, ikke en antakelse.** RPC-en sorterer på
+avstand FØR den kapper (`order by … limit least(p_limit, 500)`, migrasjon
+0015). Å utvide radien kan derfor bare legge til rader som ligger lenger unna
+enn ALLE som allerede var med — de sorterer strengt etter dem. Følgen:
+
+> `resultat(200 km)` begynner med nøyaktig `resultat(50 km)`. Fantes det
+> allerede 100 rader innen 50 km, er de to identiske.
+
+Egenskapen er kodet som en modell av spørringen i `lib/radius.test.ts`.
+Merk at det er en modell av SQL-en, ikke en test av den.
+
+### Det som LIKEVEL blir verre med større radius
+
+Ikke utvalget — **løftet**. Chippen sier «200 km», overskriften sier «Steder
+innen 200 km fra der du er», og lista dekker tre kilometer. Ved 10 km var
+avviket knapt merkbart; ved 200 km er det grovt.
+
+Det er en presentasjonsfeil, ikke en hentefeil, og den løses der den oppstår:
+`truncationNote` i togedoo-modern sier hvor langt de hentede radene faktisk
+rakk («de 100 nærmeste dekker 3,1 km av 200 km — snevre inn»). Hentingen er
+uendret.
+
 ### Men hvor alvorlig er det egentlig?
 
 Førsteutkastet av dette dokumentet skrev at museene «faller ut», og at dette
@@ -87,21 +109,72 @@ Hentingen er uendret.
 
 ---
 
-## Funn 2: det er TO radiustak, ikke ett
+## Funn 2: det er TO radiustak, ikke ett — RETTET sep. 2026
 
-| Sted | Verdi |
-|---|---|
-| `explore_screen.dart` — `_radiusOptionsMeters` | `[5000, 10000, 20000, 50000]` |
-| `app/api/activities/route.ts:141` | `Math.min(…, 100000)` |
+| Sted | Før | Nå |
+|---|---|---|
+| `explore_screen.dart` — `_radiusOptionsMeters` | `[5000, 10000, 20000, 50000]` | `[5000, 10000, 20000, 50000, 100000, 200000]` |
+| `app/api/activities/route.ts` | `Math.min(…, 100000)` | `parseRadius()`, tak 500 km |
 
-```ts
-const radius = Math.min(Number(searchParams.get('radius') ?? 10000) || 10000, 100000);
-```
+Serveren klippet til 100 km uansett hva appen ba om. Å bare heve app-lista
+ville derfor ikke vært nok.
 
-Serveren klipper til 100 km uansett hva appen ber om. Å bare heve app-lista
-er derfor ikke nok: Oppdal ligger 120 km fra Trondheim og forblir usynlig.
+### Delingen er nå en annen, og det er hele poenget
 
-**Begge må opp.** To linjer til sammen.
+To like tak er to tak. Neste gang appen vil ha 250 km må serveren endres
+samtidig, og glemmer man det, feiler den i stillhet. Derfor er ansvaret delt
+etter hva tallet ER:
+
+| | Eier | Tall | Hva det uttrykker |
+|---|---|---|---|
+| Appen | produktvalget | 5–200 km | hvilke avstander en forelder kan velge mellom |
+| Serveren | fornuftsgrensen | 500 km | et tall ingen rimelig produktbeslutning treffer |
+
+`lib/radius.ts` bærer begrunnelsen. `parseRadius` returnerer også `clamped`,
+og svaret bærer `radiusMeters` + `radiusClamped` i radius-modus — så en
+avkorting som likevel skjer, er synlig i stedet for stum.
+
+**Taket er ikke en ytelsesgrense, og det står nå skrevet.** Spørringen er
+`st_dwithin` mot en GIST-indeks, KNN-sortering og `limit least(p_limit, 500)`.
+Kostnaden drives av LIMIT, ikke av radien: ved 7 800 rader i dag og ~39 500
+etter nasjonal import koster radien ingenting. Den dagen tabellen er i
+millionklassen, er det den setningen som ikke lenger holder.
+
+### Målte avstander, ikke antatte
+
+Fra bysentrene i `lib/cities.ts` til kommunegrensene i `data/kommuner.geojson`
+(nærmeste kant / sentroide / fjerneste kant). Kommunen er en grov proxy for
+hvor anlegget ligger — den gir et intervall, ikke et punkt:
+
+| Mål | Fra | Nærmeste | Sentroide | Fjerneste |
+|---|---|---|---|---|
+| Oppdal | Trondheim | 82 km | **103 km** | 137 km |
+| Gol | Oslo | 118 km | 133 km | 150 km |
+| Hafjell (Øyer) | Oslo | 142 km | 155 km | 173 km |
+| Hemsedal | Oslo | 146 km | 166 km | 188 km |
+| Trysil | Oslo | 143 km | 169 km | 209 km |
+| Kvitfjell (Ringebu) | Oslo | 164 km | 187 km | 208 km |
+| Hovden (Bykle) | Oslo | 183 km | 205 km | 235 km |
+| Hovden (Bykle) | Stavanger | 68 km | 99 km | 124 km |
+
+200 km dekker det norske alpinkjerneområdet sett fra Oslo. **Hovden fra Oslo
+(205 km) faller utenfor**, og det er et bevisst valg: svaret på «jeg vil til
+Hovden» er et stedssøk, ikke en større radius. Se «Hvor «fire byer» sitter»
+under — en stedsvelger som gir en koordinat er allerede identifisert som den
+riktige veien.
+
+### Hvem den store radiusen egentlig er for
+
+Ikke en Oslo-familie som leter etter Trysil — den familien vet allerede hvor
+Trysil er. Den er for en familie som bor et sted der nærmeste alpinanlegg,
+badeland eller skøytehall ligger 80–150 km unna. For dem er 50 km forskjellen
+mellom en tom liste og en nyttig én.
+
+Det er også derfor ÉN felles radius er riktig, og ikke én per kategori:
+radiusen er ett tall i én spørring, og en per-kategori-radius ville krevd
+enten flere spørringer eller en RPC-endring. Verre: kategorivalget ville
+endret avstanden i stillhet. Brukeren valgte radiusen; den skal bety det den
+sier.
 
 ---
 
@@ -127,7 +200,7 @@ det er hentet, og løser derfor presentasjonen, ikke utvalget.
 | `lib/cities.ts` — fire bysentre | Oppslag på navn | **Nei** — se under |
 | Appen — by-chips | Fire faste byer | **Ja, til slutt** |
 | Appen — `_serverCategories` | Kategoriliste | **Nei** — ingen bygeografi |
-| Radiustakene | Se funn 2 | **Ja** |
+| Radiustakene | Se funn 2 | **Gjort** (sep. 2026) |
 | `limit: 100` | Se funn 1 | **Ja — men når forsiden bygges** |
 
 ---
@@ -136,8 +209,9 @@ det er hentet, og løser derfor presentasjonen, ikke utvalget.
 
 Tre ting, i rekkefølge. Alle additive, alle små nok for kvelder.
 
-1. **Hev begge radiustakene.** To linjer. Da blir Oppdal synlig for en
-   Trondheims-familie, uten noen ny arkitektur.
+1. ~~**Hev begge radiustakene.**~~ **Gjort sep. 2026.** Oppdal (103 km fra
+   Trondheim) er nå innenfor. Se funn 2 for tallene og for hvorfor serverens
+   tak ligger over appens største valg.
 2. **Importer per fylke i stedet for per by.** Bytter `DEFAULT_CITIES` mot en
    fylkesliste og `admin_level=7` mot `4`. Samme kode, annen inndata.
 3. **Per-kategori-grense** — men først når forsiden bygges, ikke som

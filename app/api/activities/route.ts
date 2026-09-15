@@ -17,6 +17,7 @@ import {
     type LatLng,
 } from '../../../lib/cities';
 import { sanitizeWebsite } from '../../../lib/website';
+import { parseRadius } from '../../../lib/radius';
 import {
     cityModeEventWindowFilter,
     cityModeSortIsLoadBearing,
@@ -136,7 +137,14 @@ async function fromDatabase(searchParams: URLSearchParams) {
 
     const lat = searchParams.get('lat') ? Number(searchParams.get('lat')) : null;
     const lng = searchParams.get('lng') ? Number(searchParams.get('lng')) : null;
-    const radius = Math.min(Number(searchParams.get('radius') ?? 10000) || 10000, 100000);
+    // Radiusen tolkes og avkortes ETT sted, med sitt eget tak og sin egen
+    // begrunnelse — se lib/radius.ts. Uttrykket som sto her (`Math.min(…,
+    // 100000)`) var det nederste av TO tak: appen kunne be om 200 km og få
+    // 100 km tilbake, i stillhet. Nå er serverens tall en fornuftsgrense
+    // (500 km) og appens chip-liste produktvalget, og `radiusClamped` i
+    // svaret gjør avkortingen synlig hvis den likevel skjer.
+    const radiusParsed = parseRadius(searchParams.get('radius'));
+    const radius = radiusParsed.meters;
     const kind = searchParams.get('kind');
     // Kategori kan være komma-separert (flervalg) → liste. Verdiene
     // parameteriseres av .in()/p_categories, så ingen sanering nødvendig
@@ -169,7 +177,14 @@ async function fromDatabase(searchParams: URLSearchParams) {
     // Settes kun i by-modus (se sorteringen under).
     let centre: LatLng | null = null;
 
-    if (lat !== null && lng !== null && Number.isFinite(lat) && Number.isFinite(lng)) {
+    // ÉN definisjon av «radius-modus», brukt både til å velge spørring og til
+    // å avgjøre om svaret skal bære radiusen. Sto som det samme uttrykket to
+    // steder, og et tomt `municipality` gjør `centre` null i BEGGE modusene —
+    // så centre kan ikke brukes til å skille dem.
+    const radiusMode =
+        lat !== null && lng !== null && Number.isFinite(lat) && Number.isFinite(lng);
+
+    if (radiusMode) {
         // Radius-søk i PostGIS, nærmest først.
         const { data, error } = await db.rpc('activities_nearby', {
             p_lat: lat,
@@ -259,6 +274,16 @@ async function fromDatabase(searchParams: URLSearchParams) {
         mode: 'datahub',
         data: rows.map((row) => toApiShape(row, distanceFromCityKm(centre, row.lat, row.lng))),
         count: rows.length,
+        // HVILKEN RADIUS SOM FAKTISK BLE BRUKT. Bare satt i radius-modus —
+        // i by-modus finnes ingen radius, og et tall der ville vært en
+        // påstand om noe som ikke skjedde.
+        //
+        // Feltet finnes fordi avkortingen ellers er usynlig: ba klienten om
+        // mer enn taket, viser den fortsatt sin egen overskrift («Steder
+        // innen 200 km fra der du er») over en liste som dekker mindre.
+        ...(radiusMode
+            ? { radiusMeters: radius, radiusClamped: radiusParsed.clamped }
+            : {}),
         // ODbL-krav: steder (kind='place') kommer fra OpenStreetMap.
         attribution: 'Stedsdata © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',
         timestamp: new Date().toISOString(),
