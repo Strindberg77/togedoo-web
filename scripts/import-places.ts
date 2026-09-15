@@ -69,6 +69,14 @@ import {
 import { FileStore, NullStore, type WorkStore } from './work-store';
 import { makePlaceTitleDetailed, isUsablePlaceName, TitleSource } from '../lib/places';
 import { sanitizeWebsite } from '../lib/website';
+import {
+    DEDUP_RADIUS_M,
+    dedupPairs,
+    nedtakingsSql,
+    uloste,
+    type DedupKandidat,
+    type DedupPar,
+} from '../lib/dedup';
 
 // Speilene kan overstyres via env (komma-separert) — nyttig for selvhostet
 // Overpass og for å verifisere feilhåndteringen mot et test-endepunkt.
@@ -1097,350 +1105,95 @@ export function verifyPointFacilities(
     return { verified, rapport, merknader, telling };
 }
 
-// ──────────────────────── NODE OVER FLATE (dedup) ────────────────────────
+// ──────────────────────────── DUBLETTER (dedup) ────────────────────────────
 //
-// SAMME FYSISKE STED, KARTLAGT TO GANGER: én gang som punkt, én gang som
-// flate, av to bidragsytere som ikke visste om hverandre. Importen lager to
-// rader, og en forelder ser to nåler oppå hverandre.
+// SAMME FYSISKE STED, KARTLAGT TO GANGER. Regelen selv ligger i
+// lib/dedup.ts, og det er hele poenget: OPPRYDDINGEN
+// (scripts/dedup-opprydding.ts) må svare likt om de 263 parene som allerede
+// ligger i basen. Er de to uenige, tar oppryddingen ned rad A mens neste
+// import bygger A og fjerner B, og basen svinger mellom to tilstander.
 //
-// ─────────────────────────────────────────────────────────────────────────
-// HVORFOR AKKURAT DENNE REGELEN, OG INGEN ANNEN
-//
-// Tre andre filtre ble MÅLT mot Geofabrik-fila (norway-260908) og forkastet,
-// ett etter ett. Tallene står her fordi de er grunnen til at denne fila er
-// så liten som den er:
-//
-//   utstyrsfilter     428 av 11 901 lekeplasser har en playground:*-tagg
-//                     (3,6 %). Filteret ville fjernet 96 % av kategorien.
-//   surface=grass     79 av 12 799 pitcher med sport (0,6 %). Og
-//                     basketballbanen som utløste hele undersøkelsen hadde
-//                     ingen surface i det hele tatt — som 5 645 andre.
-//   avstandsterskel   andelen lekeplasser med en nabo stiger JEVNT:
-//                     3,7 % ved 10 m, 8,4 % ved 30, 13,0 % ved 50, 21,7 %
-//                     ved 100. Ingen knekk, altså ingen naturlig terskel —
-//                     og ved 50 m ville 1 544 lekeplasser vært berørt uten
-//                     at noe i dataene sier hvilke som er ekte naboer.
-//
-// Det som står igjen er det ene tilfellet som ikke krever skjønn: et PUNKT
-// og en FLATE i samme kategori, nærmere hverandre enn [NODE_OVER_FLATE_M].
-// To objekter så nær hverandre, der det ene har utstrekning og det andre
-// ikke, er ikke to naboanlegg — det er ett sted tegnet på to måter.
-// 440 lekeplasser og 373 pitcher nasjonalt.
-//
-// FLATE MOT FLATE GJØRES IKKE. Kurven over sier at terskelen ikke finnes,
-// og de tre fortløpende way-id-ene i Kjelsås (39–67 m fra hverandre) kan
-// bare skilles fra ekte naboer med GEOMETRI — om ringene grenser til
-// hverandre. Standardhentingen bruker `out center tags` og har ingen
-// geometri, så det er en egen oppgave med en egen kostnad.
+// Her ligger bare OVERSETTELSEN fra OSM-elementer til [DedupKandidat], og
+// rapportlinjene.
 
 /**
- * Hvor nær et punkt må ligge en flate for å regnes som samme sted.
+ * OSM-elementer → kandidater regelen kan vurdere.
  *
- * 10 m, og det er MÅLT, ikke valgt: det er terskelen tallene over gjelder
- * for. Merk at avstanden er punkt mot flatens BBOKS-SENTER, ikke mot
- * flatens kant — standardhentingen (`out center tags`) gir ikke ringen, bare
- * senteret. For en lekeplass på 30 × 30 m er de to nesten det samme; for en
- * stor, avlang flate er senteret et dårligere mål, og da slår regelen
- * MINDRE ofte til. Feilen går altså i den retningen som lar en rad stå,
- * ikke i den som sletter en.
- *
- * Overstyrbar av samme grunn som ski-tolleransen: to tørrkjøringer med ulik
- * verdi skiller «for få par» fra «feil sammenslått», uten en kodeendring
- * imellom.
+ * Navnet løses HER, med kategoriens egen navnekjede ([nameTags]) — Aking
+ * leser `piste:name` før `name`. Å sende rå tagger inn i lib/dedup.ts ville
+ * tvunget den fila til å kjenne OSM, og da kunne den ikke vært felles med
+ * oppryddingen, som bare har `osm_tags` fra basen.
  */
-export const NODE_OVER_FLATE_M = Number(process.env.PLACES_NODE_FLATE_M ?? 10) || 10;
-
-/**
- * Slingringsmonn på selve sammenligningen. Én mikrometer.
- *
- * IKKE KOSMETIKK. To punkter plassert nøyaktig 10 m fra hverandre gir
- * `distanceMeters` = 10.000000000019043, altså `> 10`, og paret ville falt
- * utenfor en terskel det ligger nøyaktig på. Feilen er i siste bit av et
- * `Math.hypot`, ikke i geografien.
- *
- * Grensen er uansett ikke meningsfull under centimeternivå: målingen som ga
- * tallet 10 (scripts/osm-kvalitet.py) bruker haversine med R = 6 371 000 m,
- * altså 111 195 m per breddegrad, mens [distanceMeters] er en plan
- * tilnærming med 111 320. De to er 0,11 % fra hverandre — 1,1 cm ved 10 m.
- * Å late som om terskelen er eksakt ville vært en presisjon vi ikke har.
- */
-const NODE_OVER_FLATE_SLINGRING_M = 1e-6;
-
-/**
- * Utfallet for ett (node, flate)-par.
- *
- * TO AV TRE UTFALL BEHOLDER BEGGE. Det er ikke forsiktighet for
- * forsiktighetens skyld: premisset for hele regelen er at de to beskriver
- * SAMME sted, og et navn som bare finnes på det ene — eller to navn som ikke
- * er like — motsier det premisset. Da er det dataene som skal rettes i OSM,
- * ikke raden som skal forsvinne her.
- */
-export type DedupUtfall =
-    /** Noden bar ingenting flaten ikke har. Droppet. */
-    | 'droppet'
-    /** Bare noden har navn. Begge beholdes — flaten ville mistet navnet. */
-    | 'navn-bare-pa-node'
-    /** Begge har navn, og de er ulike. Begge beholdes; premisset holder ikke. */
-    | 'navn-uenighet';
-
-export interface DedupPar {
-    /** external_id på punktet. */
-    readonly node: string;
-    /** external_id på flaten. */
-    readonly flate: string;
-    readonly meter: number;
-    readonly utfall: DedupUtfall;
-    readonly nodeNavn: string | null;
-    readonly flateNavn: string | null;
-}
-
-/** Samme navn, uten hensyn til store bokstaver og mellomrom. */
-function sammeNavn(a: string | null, b: string | null): boolean {
-    if (a === null || b === null) return false;
-    return a.trim().toLowerCase() === b.trim().toLowerCase();
-}
-
-/**
- * PUNKTER SOM ER DUBLETTER AV EN FLATE, fjernet.
- *
- * ─────────────────────────────────────────────────────────────────────────
- * REGELEN, uttømmende. «navn» betyr et BRUKBART navn ([isUsablePlaceName]),
- * ikke bare en `name`-tagg — «Lekeplass» som navn er ikke et navn.
- *
- *   node uten navn,  flate uten navn   → flaten vinner, noden droppes
- *   node uten navn,  flate med navn    → flaten vinner, noden droppes
- *   node med navn,   flate med LIKT    → flaten vinner, noden droppes
- *   node med navn,   flate uten navn   → BEGGE beholdes, rapporteres
- *   node med navn,   flate med ULIKT   → BEGGE beholdes, rapporteres
- *
- * HVORFOR FLATEN VINNER NÅR DEN VINNER: den har utstrekning. Senterpunktet
- * er utledet av ekte geometri i stedet for å være ett håndplassert punkt, og
- * den dagen flate-mot-flate løses på naboskap, er det flatene som bærer
- * informasjonen. I Kjelsås er den også den best taggede av de to:
- * way/650069798 har `access=permissive`, `surface=grass` og
- * `description=Kindergarden`, mens node/1095094457 fire meter unna bare har
- * `access=yes` — altså en tagg som er direkte feil for en barnehage.
- *
- * TAGGENE SLÅS IKKE SAMMEN. Det ville vært fristende: ta flatens
- * external_id og fyll hullene fra noden. Men `osm_tags` lagres og serveres
- * videre (surface, lit, sport, website, bydel leses alle derfra), og et
- * sammenslått taggsett er et objekt som ikke finnes i OSM. Den som åpner
- * external_id-en på osm.org for å etterprøve noe, ville ikke funnet det vi
- * viser. Hele denne kodebasen holder på at en rad svarer til ETT ekte
- * OSM-objekt — se lib/osm-claims.ts.
- *
- * ─────────────────────────────────────────────────────────────────────────
- * DETERMINISME, som er den egentlige vanskeligheten
- *
- * `external_id` er upsert-nøkkelen. Bytter vinneren mellom to kjøringer, får
- * brukeren en ny rad og den gamle blir stående — importen sletter aldri.
- *
- * Tre egenskaper gjør utfallet uavhengig av rekkefølgen elementene kommer i:
- *
- *   1. EN FLATE FJERNES ALDRI. Bare punkter kan tape. Da kan ikke fjerningen
- *      av ett objekt endre hva et annet objekt sammenlignes mot.
- *   2. HVERT PUNKT AVGJØRES FOR SEG, mot flatene alene. Ingen node ser noen
- *      annen node, så det finnes ingen kjede og ingen grådig matching.
- *   3. NÆRMESTE FLATE VELGES, med external_id som tiebreak ved nøyaktig lik
- *      avstand. Valget påvirker bare hvilken flate som NAVNGIS i rapporten —
- *      utfallet for noden er det samme uansett hvilken av dem den taper
- *      mot — men en total ordning gjør også rapportlinja stabil.
- *
- * Til sammen: utdata er en ren funksjon av inndata-MENGDEN. Låst av en
- * stokketest i scripts/node-flate-dedup.test.ts.
- */
-export function dedupNodeOverFlate(
+export function dedupKandidater(
     elements: readonly OsmElement[],
-    radius = NODE_OVER_FLATE_M,
     nameTags?: readonly string[]
-): { elements: OsmElement[]; par: DedupPar[] } {
-    const navnet = (el: OsmElement) =>
-        resolvePlaceName(el.tags ?? {}, nameTags)?.value ?? null;
-
-    // Flatene sortert på breddegrad, så hvert punkt bare sammenlignes med
-    // dem som i det hele tatt KAN ligge nær nok. Uten den er nasjonalt
-    // ~7 000 noder × ~5 000 flater 35 millioner avstander per kategori.
-    // Samme grep som forkastningsfilteret i [skianleggVerify], enklere form:
-    // en flate som ligger mer enn radiusen unna i breddegrad ALENE, ligger
-    // mer enn radiusen unna.
-    const flater = elements
-        .filter((el) => el.type !== 'node')
-        .map((el) => ({ el, pos: coords(el) }))
-        .filter((f): f is { el: OsmElement; pos: { lat: number; lng: number } } => f.pos !== null)
-        .sort((a, b) => a.pos.lat - b.pos.lat || `${a.el.type}/${a.el.id}`.localeCompare(`${b.el.type}/${b.el.id}`));
-    const lats = flater.map((f) => f.pos.lat);
-    // Vinduet er bevisst litt for VIDT: det skal aldri utelukke et par den
-    // ekte testen ville godtatt. Et par som faller utenfor her, får aldri en
-    // ny sjanse.
-    const dLat = (radius + NODE_OVER_FLATE_SLINGRING_M) / 111_320 + 1e-9;
-
-    /** Første indeks med lat >= verdi. */
-    const nedreIndeks = (verdi: number): number => {
-        let lo = 0;
-        let hi = lats.length;
-        while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (lats[mid] < verdi) lo = mid + 1;
-            else hi = mid;
-        }
-        return lo;
-    };
-
-    const par: DedupPar[] = [];
-    const droppet = new Set<OsmElement>();
-
+): DedupKandidat[] {
+    const ut: DedupKandidat[] = [];
     for (const el of elements) {
-        if (el.type !== 'node') continue;
         const pos = coords(el);
         if (!pos) continue;
-
-        let beste: { el: OsmElement; meter: number } | null = null;
-        for (let i = nedreIndeks(pos.lat - dLat); i < flater.length && lats[i] <= pos.lat + dLat; i++) {
-            const f = flater[i];
-            const m = distanceMeters(
-                { lat: pos.lat, lon: pos.lng },
-                { lat: f.pos.lat, lon: f.pos.lng }
-            );
-            if (m > radius + NODE_OVER_FLATE_SLINGRING_M) continue;
-            if (
-                beste === null ||
-                m < beste.meter ||
-                // Nøyaktig lik avstand: id-en avgjør, så rapporten er stabil.
-                (m === beste.meter &&
-                    `${f.el.type}/${f.el.id}`.localeCompare(`${beste.el.type}/${beste.el.id}`) < 0)
-            ) {
-                beste = { el: f.el, meter: m };
-            }
-        }
-        if (!beste) continue;
-
-        const nodeNavn = navnet(el);
-        const flateNavn = navnet(beste.el);
-        const utfall: DedupUtfall =
-            nodeNavn === null || (flateNavn !== null && sammeNavn(nodeNavn, flateNavn))
-                ? 'droppet'
-                : flateNavn === null
-                  ? 'navn-bare-pa-node'
-                  : 'navn-uenighet';
-
-        par.push({
-            node: `${el.type}/${el.id}`,
-            flate: `${beste.el.type}/${beste.el.id}`,
-            meter: Math.round(beste.meter * 10) / 10,
-            utfall,
-            nodeNavn,
-            flateNavn,
+        ut.push({
+            externalId: `${el.type}/${el.id}`,
+            lat: pos.lat,
+            lng: pos.lng,
+            navn: resolvePlaceName(el.tags ?? {}, nameTags)?.value ?? null,
         });
-        if (utfall === 'droppet') droppet.add(el);
     }
+    return ut;
+}
 
+/** Elementene uten dem regelen tar ut, og parene til rapporten. */
+export function dedupElements(
+    elements: readonly OsmElement[],
+    nameTags?: readonly string[],
+    radius = DEDUP_RADIUS_M
+): { elements: OsmElement[]; par: DedupPar[] } {
+    const { tapere, par } = dedupPairs(dedupKandidater(elements, nameTags), radius);
     return {
-        elements: elements.filter((el) => !droppet.has(el)),
-        // Sortert på node-id: rapporten skal se lik ut mellom to kjøringer
-        // av samme data, uansett hvilken rekkefølge Overpass svarte i.
-        par: par.sort((a, b) => a.node.localeCompare(b.node)),
+        elements: elements.filter((el) => !tapere.has(`${el.type}/${el.id}`)),
+        par,
     };
 }
 
-/** Rapportlinjene for dedupen. Tom liste når ingenting skjedde. */
+/**
+ * Rapportlinjene. Tom liste når ingenting skjedde.
+ *
+ * DE ULØSTE AVKORTES ALDRI. De er ikke støy — de er restbeholdningen, og en
+ * rapport som teller bort de løste og tier om resten ville fått neste person
+ * til å tro at basen er ren.
+ */
 export function dedupRapport(par: readonly DedupPar[]): string[] {
     if (par.length === 0) return [];
     const droppet = par.filter((p) => p.utfall === 'droppet');
-    const beholdt = par.filter((p) => p.utfall !== 'droppet');
+    const rest = uloste(par);
     const linjer = [
-        `    ${droppet.length} punkt droppet — samme sted som en flate innen ${NODE_OVER_FLATE_M} m`,
+        `    ${droppet.length} objekt tatt ut — samme sted innen ${DEDUP_RADIUS_M} m`,
     ];
-    for (const p of droppet.slice(0, 20)) {
-        linjer.push(`      ${p.node.padEnd(20)} → ${p.flate.padEnd(20)} ${p.meter} m`);
+    for (const p of droppet.slice(0, 10)) {
+        linjer.push(`      ${p.taper.padEnd(20)} → ${p.vinner.padEnd(20)} ${p.meter} m`);
     }
-    if (droppet.length > 20) {
-        linjer.push(`      … og ${droppet.length - 20} til (alle id-ene står i SQL-en under)`);
+    if (droppet.length > 10) {
+        linjer.push(`      … og ${droppet.length - 10} til`);
     }
-    for (const p of beholdt) {
-        // BEGGE BEHOLDT er det et menneske må se på, så de avkortes aldri.
+    const restSum = rest['to-flater'] + rest['navn-bare-pa-taper'] + rest['navn-uenighet'];
+    if (restSum) {
         linjer.push(
-            `      BEGGE BEHOLDT  ${p.node} og ${p.flate}, ${p.meter} m — ` +
-                (p.utfall === 'navn-bare-pa-node'
-                    ? `bare punktet har navn («${p.nodeNavn}»)`
-                    : `ulike navn («${p.nodeNavn}» / «${p.flateNavn}»)`)
+            `    ${restSum} par IKKE løst: ${rest['to-flater']} flate mot flate, ` +
+                `${rest['navn-bare-pa-taper']} med navn bare på taperen, ` +
+                `${rest['navn-uenighet']} med ulike navn`
         );
+        for (const p of par.filter((x) => x.utfall !== 'droppet')) {
+            linjer.push(
+                `      ULØST  ${p.taper} og ${p.vinner}, ${p.meter} m — ` +
+                    (p.utfall === 'to-flater'
+                        ? 'to flater, kan ikke skilles uten geometri'
+                        : p.utfall === 'navn-bare-pa-taper'
+                          ? `bare den ene har navn («${p.taperNavn}»)`
+                          : `ulike navn («${p.taperNavn}» / «${p.vinnerNavn}»)`)
+            );
+        }
     }
     return linjer;
-}
-
-/**
- * NEDTAKINGSRAPPORTEN: radene som ble dubletter, og SQL-en som tar dem ned.
- *
- * ─────────────────────────────────────────────────────────────────────────
- * HVORFOR IMPORTEN IKKE GJØR DET SELV
- *
- * Importen sletter aldri, og den tar heller ikke ned. Et punkt som slutter å
- * bli en rad, forsvinner ikke fra basen av seg selv — raden står publisert
- * til noen gjør noe. Nasjonalt er det ~440 lekeplasser og ~373 pitcher.
- *
- * Fristelsen er å la importen sette `status='rejected'` selv. Tre grunner
- * til at den ikke gjør det:
- *
- *   1. REGELEN HAR ALDRI KJØRT MOT EKTE DATA. Første gang den gjør det, er
- *      det mot 813 rader. En regel som viser seg å være feil, og som har
- *      avpublisert 813 rader før noen så utskriften, er en dårlig handel mot
- *      ett lim-inn.
- *   2. PRESEDENSEN. docs/runbooks/oslo-alpin.md gjør nøyaktig dette for de
- *      to erstattede OSM-radene: importen bygger dem ikke lenger, og et
- *      menneske tar dem ned etterpå. Én mekanisme, ikke to.
- *   3. `--dry-run` VILLE BLITT EN LØGN. En tørrkjøring som avpubliserer
- *      rader er ikke tørr, og å gjøre nedtakingen betinget av flagget ville
- *      gitt to kodeveier der den ene aldri testes.
- *
- * `rejected + locked` er nøyaktig det `unpublish` i lib/moderation.ts gjør:
- * raden beholder id-en sin, forsvinner fra API-et (som kun serverer
- * `published`), og låsen hindrer at importen skriver den igjen om regelen
- * senere skrus av. `publish` angrer hele operasjonen.
- */
-export function nedtakingsRapport(eksterneIder: readonly string[]): string {
-    // Id-ene er laget av oss fra OSM-type og -id, så formen er kjent. Vakten
-    // står likevel: strengen under limes inn i en SQL-editor, og en id som
-    // ikke ser ut som en id skal stoppe utskriften, ikke pyntes på.
-    const ugyldige = eksterneIder.filter((id) => !/^(node|way|relation)\/\d+$/.test(id));
-    if (ugyldige.length) {
-        return (
-            `\nDUBLETTER: ${eksterneIder.length} punkt droppet, men ${ugyldige.length} ` +
-            `av id-ene har uventet form (f.eks. «${ugyldige[0]}»). SQL-en skrives ikke ut.`
-        );
-    }
-    const liste = eksterneIder.map((id) => `'${id}'`).join(',\n    ');
-    return [
-        ``,
-        `DUBLETTER TATT UT AV IMPORTEN (${eksterneIder.length} punkt)`,
-        `  Disse ble ikke bygget som rader denne kjøringen — de er samme sted som`,
-        `  en flate innen ${NODE_OVER_FLATE_M} m. Finnes de i basen fra en TIDLIGERE`,
-        `  kjøring, står de fortsatt publisert: importen sletter aldri.`,
-        ``,
-        `  Kontroller først:`,
-        ``,
-        `    select a.external_id, a.title, a.status, a.locked`,
-        `    from public.activities a`,
-        `    join public.sources s on s.id = a.source_id`,
-        `    where s.slug = 'osm-steder' and a.external_id in (`,
-        `    ${liste}`,
-        `    );`,
-        ``,
-        `  Ta dem så ned — samme overgang som 'unpublish' i lib/moderation.ts:`,
-        ``,
-        `    update public.activities a`,
-        `    set status = 'rejected', locked = true`,
-        `    from public.sources s`,
-        `    where a.source_id = s.id and s.slug = 'osm-steder'`,
-        `      and a.status = 'published'`,
-        `      and a.external_id in (`,
-        `    ${liste}`,
-        `      );`,
-        ``,
-        `  «and a.status = 'published'» speiler from: ['published'] i`,
-        `  MODERATION_TRANSITIONS.unpublish, så SQL-en aldri gjør noe overgangen`,
-        `  ikke ville gjort. Angre med POST /api/admin/moderate {action:'publish'}.`,
-        ``,
-    ].join('\n');
 }
 
 // ─────────────────────────────────── AKING ───────────────────────────────────
@@ -2074,8 +1827,8 @@ interface PlaceCategoryDef {
      */
     nameTags?: readonly string[];
     /**
-     * Fjern PUNKTER som er dubletter av en FLATE i samme kategori. Se
-     * [dedupNodeOverFlate].
+     * Fjern objekter som er dubletter av et annet i samme kategori. Regelen
+     * ligger i lib/dedup.ts og deles med oppryddingsskriptet.
      *
      * OPT-IN, og det er hele poenget med flagget. Fenomenet er MÅLT for
      * `leisure=playground` (440 av 11 901) og `leisure=pitch` (373 av
@@ -2092,7 +1845,7 @@ interface PlaceCategoryDef {
      * samme spørsmål med ulik terskel, og den strengeste ville vunnet i
      * stillhet.
      */
-    dedupNodeOverFlate?: true;
+    dedupDubletter?: true;
 }
 
 // Rekkefølgen er match-prioritet (et element kategoriseres av første treff).
@@ -2145,7 +1898,7 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         matches: (t: OsmTags) => t.leisure === 'playground',
         isFree: true,
         // 440 av 11 901 lekeplasser har et punkt innen 10 m av en flate.
-        dedupNodeOverFlate: true,
+        dedupDubletter: true,
     },
     {
         // MÅ STÅ ETTER lekeplass. Rekkefølgen er match-prioritet, og Oslo har
@@ -2264,7 +2017,7 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         titleLabelFor: (t: OsmTags) => rollerTitleLabel(t.sport),
         // Samme objekttype som Ballbane (leisure=pitch/track), og dekket av
         // den samme målingen — se der.
-        dedupNodeOverFlate: true,
+        dedupDubletter: true,
     },
     {
         // Ball- OG RACKETSPORT (des. 2026, fase B). Selektoren hentet tidligere
@@ -2295,7 +2048,7 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         // MERK at målingen er gjort på `leisure=pitch` som helhet, altså før
         // importen deler den i Ballbane og Rullesport — tallet for denne
         // kategorien alene er mindre.
-        dedupNodeOverFlate: true,
+        dedupDubletter: true,
     },
     {
         // KLATRING (fase C). Må stå FØR idrettshall: kategorisering skjer på
@@ -2973,7 +2726,7 @@ export interface EnrichedChunk {
     seenClaims: string[];
     /**
      * external_id-ene til punktene som ble droppet som dubletter av en
-     * flate ([dedupNodeOverFlate]).
+     * annet objekt i samme kategori (lib/dedup.ts).
      *
      * SAMME GRUNN SOM [seenClaims] TIL Å LIGGE I MANIFESTET: ved
      * gjenopptagelse leses berikelsen fra mellomleddet og [enrichChunk]
@@ -3021,10 +2774,10 @@ export async function enrichChunk(
         // derfor. Rekkefølgen her er den som ville vært riktig om det endret
         // seg: dedupen skal se det berikelsen faktisk slipper gjennom.
         let elements = ut.elements;
-        if (cat.dedupNodeOverFlate) {
-            const d = dedupNodeOverFlate(elements, NODE_OVER_FLATE_M, cat.nameTags);
+        if (cat.dedupDubletter) {
+            const d = dedupElements(elements, cat.nameTags);
             elements = d.elements;
-            for (const p of d.par) if (p.utfall === 'droppet') deduped.push(p.node);
+            for (const p of d.par) if (p.utfall === 'droppet') deduped.push(p.taper);
             for (const linje of dedupRapport(d.par)) {
                 console.log(`  ${chunk.label}/${cat.key.padEnd(11)}${linje}`);
             }
@@ -3887,7 +3640,7 @@ async function main() {
         // nettopp de chunkene som gikk bra.
         for (const id of entry.deduped ?? []) deduped.add(id);
     }
-    if (deduped.size) console.log(nedtakingsRapport([...deduped].sort()));
+    if (deduped.size) console.log(nedtakingsSql([...deduped].sort()));
     const doede = staleClaims(seenClaims);
     if (doede.length) {
         const heleKjoringen = runCoversEverything(

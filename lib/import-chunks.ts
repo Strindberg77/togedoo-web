@@ -210,8 +210,8 @@ export interface ManifestEntry {
      */
     readonly seenClaims?: readonly string[];
     /**
-     * Kun `enrich`: external_id-ene til PUNKTER som ble droppet fordi de var
-     * dubletter av en flate i samme kategori (se [dedupNodeOverFlate]).
+     * Kun `enrich`: external_id-ene til objekter som ble tatt ut fordi de var
+     * dubletter av et annet objekt i samme kategori (lib/dedup.ts).
      *
      * HVORFOR HER, OG IKKE BARE I MINNET — nøyaktig samme grunn som
      * [seenClaims]: en gjenopptatt kjøring leser berikelsen fra mellomleddet
