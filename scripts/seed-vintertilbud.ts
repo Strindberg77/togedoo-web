@@ -61,6 +61,13 @@ const SPLIT: Record<
     'tommkleiva': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     'trollvannskleiva': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     'grefsenkleiva': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    // HEIS UTEN UTFORLØYPE (sep. 2026). Fire ekte anlegg som importens
+    // nedfartskrav ikke slipper gjennom. Se seed-entryene og
+    // docs/runbooks/alpin-usikker-heis.md.
+    'kolsas-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'finse-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'ringkollen': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'grakallparken': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     // Korketrekkeren er en akebakke, ikke et alpinanlegg — og fra sep. 2026
     // er det en EGEN kategori, ikke bare en fasett på Skianlegg. Raden lå
     // under Skianlegg med «(akebakke)» skrevet inn i tittelen, som er en
@@ -125,7 +132,15 @@ interface VinterSeed {
     fallbackLng: number;
     isFree: boolean | null; // true=gratis, false=betalt, null=ukjent
     priceText?: string | null;
-    url: string;
+    /**
+     * Stedets egen side. VALGFRI fra sep. 2026, og fraværet er et VALG:
+     * en rad uten lenke er ærligere enn en lenke til feil sted.
+     *
+     * Skrives som `null`, ikke tom streng — kolonnen er `url text` (nullbar,
+     * migrasjon 0001), og tom streng ville vært en tredje tilstand ingen
+     * leser skiller fra de to andre.
+     */
+    url?: string;
     targetAudience?: string; // default 'For alle'
     openingHours?: string | null;
 }
@@ -327,6 +342,106 @@ export const SEED: VinterSeed[] = [
         manualCoord: { lat: 59.951768, lng: 10.814618 },
         fallbackLat: 59.951768, fallbackLng: 10.814618,
         isFree: false, url: 'http://www.oslo-skisenter.no/',
+    },
+
+    // --- HEIS UTEN UTFORLØYPE (sep. 2026) ------------------------------
+    //
+    // FIRE ANLEGG SOM IMPORTEN IKKE KAN TA. Den nasjonale tørrkjøringen ga
+    // dem dommen `usikker-heis`: de har heis i OSM, men ingen
+    // `piste:type=downhill` innenfor polygonet, og [skiVerdict] krever en
+    // nedfart.
+    //
+    // KRAVET SKAL IKKE MYKES OPP. Uten det kommer Holmenkollen, Granåsen
+    // skistadion og Linderudkollen hoppbakke inn som alpinanlegg — de har
+    // også heis og ingen utforløype. Prisen er disse fire, og prisen betales
+    // her, i en kuratert rad.
+    //
+    // ET TREDJE SIGNAL FINNES IKKE. Kolsås ble slått opp i OSM: den har bare
+    // `landuse=recreation_ground`, `lit=yes`, `name` og `sport=skiing`.
+    // Hverken `piste:difficulty` eller `piste:lit`. Og `sport=skiing` alene
+    // er nøyaktig det Varingskollen SKISTADION (langrenn) har — altså kan
+    // ikke den taggen skille dem.
+    //
+    // DE FINNES IKKE I BASEN FRA FØR. Til forskjell fra Oslo-seeden er det
+    // ingenting å ta ned med unpublish: disse fire har aldri blitt rader.
+    //
+    // GRUPPERT PÅ ÅRSAK, IKKE PÅ REGION — i motsetning til resten av fila.
+    // De fire deler én årsak og én kjørebok, og Gråkallparken ville vært
+    // uforklarlig alene nede i Trondheim-seksjonen.
+    //
+    // KOORDINATENE er manuelt verifisert i kart av Frederik, ved parkering
+    // eller bunnstasjon. Kommunen er ETTERPRØVD ved punkt-i-polygon mot
+    // Kartverkets kommunegrenser (2024), og ingen av de fire ligger nærmere
+    // en nabogrense enn 4,1 km — altså godt utenfor forenklingsfeilen i
+    // L-kvaliteten.
+    //
+    // INGEN LENKE. `url` er utelatt med vilje: en rad uten lenke er ærligere
+    // enn en lenke til feil sted. (Korketrekkeren peker i dag på
+    // akeforeningen.no, som er en interesseorganisasjon og ikke bakken.)
+    //
+    // BESKRIVELSENE ER BEVISST TYNNE. De sier bare det som er etterprøvd —
+    // hvor stedet er og at det er en alpinbakke. Antall nedfarter, barnebakke
+    // og åpningstider er IKKE slått opp, og skal ikke gjettes her.
+    {
+        externalId: 'kolsas-skisenter',
+        title: 'Kolsås Skisenter',
+        description: 'Alpinbakke i Kolsåsområdet i Bærum, ca. 13 km fra Oslo sentrum.',
+        // nearCity: Bærum er ikke en av appens fire by-chiper. Uten
+        // near_city ville raden vært usynlig i by-modus, som matcher
+        // `municipality ILIKE X OR near_city ILIKE X`. Kirkerudbakken, også
+        // i Bærum og 16 km fra Oslo, har allerede nearCity 'Oslo'; Kolsås er
+        // 13 km unna, altså nærmere enn presedensen.
+        municipality: 'Bærum', nearCity: 'Oslo',
+        address: 'Kolsåsbakken, Bærum',
+        manualCoord: { lat: 59.936150, lng: 10.522875 },
+        fallbackLat: 59.936150, fallbackLng: 10.522875,
+        isFree: false,
+    },
+    {
+        externalId: 'finse-skisenter',
+        title: 'Finse Skisenter',
+        description: 'Alpinbakke på Finse i Ulvik. Finse har ingen veiforbindelse — atkomst med Bergensbanen.',
+        // INGEN nearCity, og det er det eneste stedet i denne fila der
+        // avstanden alene avgjør: 122 km til Bergen sentrum og 195 km til
+        // Oslo. Den lengste eksisterende nearCity-tilknytningen er 35 km
+        // (Eikedalen → Bergen, Jessheimbadet → Oslo). Å kalle Finse en
+        // «nærliggende utflukt» fra Bergen ville vært feil, og uten
+        // veiforbindelse er det ikke engang en kjøretur.
+        //
+        // FØLGEN, som er ekte: raden er ikke synlig i noen av appens fire
+        // by-chiper. Den finnes i radius-modus og for en kommune-filtrering
+        // som ikke finnes i appen ennå. Det er det samme som vil gjelde de
+        // tusen importerte radene utenfor de fire byene.
+        municipality: 'Ulvik',
+        address: 'Finse, 5719 Finse',
+        manualCoord: { lat: 60.603992, lng: 7.503743 },
+        fallbackLat: 60.603992, fallbackLng: 7.503743,
+        isFree: false,
+    },
+    {
+        externalId: 'ringkollen',
+        title: 'Ringkollen',
+        description: 'Alpinbakke på Ringkollen i Ringerike, ca. 35 km fra Oslo sentrum.',
+        // Samme avstand til Oslo som Jessheimbadet (35 km) og samme avstand
+        // som Eikedalen har til Bergen — altså innenfor presedensen for
+        // nearCity, og Ringerike er ingen by-chip.
+        municipality: 'Ringerike', nearCity: 'Oslo',
+        address: 'Ringkollen, Ringerike',
+        manualCoord: { lat: 60.166439, lng: 10.387994 },
+        fallbackLat: 60.166439, fallbackLng: 10.387994,
+        isFree: false,
+    },
+    {
+        externalId: 'grakallparken',
+        title: 'Gråkallparken',
+        description: 'Alpinbakke i Gråkallen-området vest for Trondheim sentrum.',
+        // Ligger I Trondheim kommune, altså ingen nearCity — samme regel som
+        // Pirbadet og de fem Oslo-anleggene.
+        municipality: 'Trondheim',
+        address: 'Gråkallen, Trondheim',
+        manualCoord: { lat: 63.415211, lng: 10.266573 },
+        fallbackLat: 63.415211, fallbackLng: 10.266573,
+        isFree: false,
     },
 
     // ================= BERGEN =================
@@ -542,7 +657,9 @@ async function geocode(address: string): Promise<GeoResult> {
     return { lat: p.lat, lng: p.lon, total, verified: false, note: `tvetydig (${total} treff), topp: ${hit.adressetekst}` };
 }
 
-function toRow(seed: VinterSeed, sourceId: string, lat: number, lng: number, verified: boolean) {
+/** Seed-entry → rad. Eksportert kun for test: url-null-kontrakten kan ikke
+ *  etterprøves gjennom SEED alene. */
+export function toRow(seed: VinterSeed, sourceId: string, lat: number, lng: number, verified: boolean) {
     return {
         source_id: sourceId,
         external_id: seed.externalId,
@@ -560,7 +677,7 @@ function toRow(seed: VinterSeed, sourceId: string, lat: number, lng: number, ver
         lng,
         is_free: seed.isFree,
         price_text: seed.priceText ?? null,
-        url: seed.url,
+        url: seed.url ?? null,
         opening_hours: seed.openingHours ?? null,
         status: verified ? 'published' : 'pending',
     };

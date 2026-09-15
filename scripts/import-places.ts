@@ -59,6 +59,7 @@ import {
 } from '../lib/import-guards';
 import { municipalityIndex } from './municipality-index';
 import {
+    awakenedClaims,
     claimNameMatches,
     claimsByOsmId,
     OSM_CLAIMS,
@@ -170,6 +171,24 @@ export interface EnrichOutput {
     rapport: string[];
     /** Én oppsummeringslinje, uten innrykk og uten kategoriprefiks. */
     summary?: string;
+    /**
+     * KORT LISTE SOM ALLTID SKRIVES UT I SIN HELHET, i motsetning til
+     * [rapport], som er én linje per objekt og avkortes av
+     * scripts/work-report.ts.
+     *
+     * HVORFOR SKILLET FINNES. Den nasjonale tørrkjøringen ga 815
+     * rapportlinjer for Skianlegg. Fire av dem var norske alpinanlegg som
+     * fikk dommen `usikker-heis` — de har heis i OSM, men ingen
+     * `piste:type=downhill` innenfor polygonet, og nedfartskravet slipper dem
+     * derfor ikke gjennom. Kravet er riktig og skal stå (uten det kommer
+     * Holmenkollen, Granåsen og Linderudkollen inn som alpinanlegg), men
+     * kostnaden er noen ekte anlegg, og de må SEEDES. Da kan de ikke ligge
+     * spredt blant 815 linjer bare synlige med --lines=815.
+     *
+     * Merknadene er derfor de tilfellene et MENNESKE må se på, ikke en
+     * gjentakelse av dommene. Er lista tom, er det ingenting å gjøre.
+     */
+    merknader?: string[];
 }
 
 /**
@@ -794,6 +813,44 @@ async function skianleggFetch(chunk: ImportChunk): Promise<FetchSets> {
  * Skillet er det som gjør at fase 3 kan bytte kilde uten å røre denne
  * funksjonen, og at den kan testes uten Overpass.
  */
+/**
+ * ÉN MERKNADSLINJE for et objekt med heis, men uten utforløype.
+ *
+ * Alt som trengs for å avgjøre saken uten å åpne kodebasen: id, navn,
+ * koordinat, hvilke heistyper som ble funnet, og lenka kuratoren uansett
+ * ville klikket seg til.
+ *
+ * HOPPANLEGG-MERKET er det som gjør lista brukbar. Holmenkollen, Granåsen og
+ * Linderudkollen får nøyaktig samme dom som Kolsås og Finse — heis, ingen
+ * utforløype — og det er hele grunnen til at nedfartskravet ikke kan mykes
+ * opp. Med merket kan de to gruppene skilles på ett blikk i stedet for ett
+ * oppslag hver.
+ */
+export function usikkerHeisLinje(
+    el: OsmElement,
+    punkt: GeoPoint | null,
+    memberTags: readonly OsmTags[]
+): string {
+    const id = `${el.type}/${el.id}`;
+    const heiser = memberTags
+        .map((t) => t.aerialway)
+        .filter((v): v is string => Boolean(v));
+    const typer = [...new Set(heiser)].sort();
+    const antall = new Map<string, number>();
+    for (const h of heiser) antall.set(h, (antall.get(h) ?? 0) + 1);
+    const heisTekst = typer.length
+        ? typer.map((t) => `${t}${(antall.get(t) ?? 0) > 1 ? `×${antall.get(t)}` : ''}`).join(', ')
+        : 'ingen heis i medlemmene';
+    const koord = punkt ? `${punkt.lat.toFixed(5)},${punkt.lon.toFixed(5)}` : 'uten punkt';
+    const hopp = hasSkiJump([el.tags ?? {}, ...memberTags]);
+    return (
+        `    ${id.padEnd(18)} ${(el.tags?.name ?? '(uten navn)').padEnd(32)} ` +
+        `${koord.padEnd(19)} ${heisTekst}` +
+        (hopp ? '  ⚠ HOPPANLEGG — skal trolig IKKE seedes' : '') +
+        `\n      https://www.openstreetmap.org/${id}`
+    );
+}
+
 export function skianleggVerify(sets: FetchSets): EnrichOutput {
     const polygons = sets.omrade ?? [];
     const evidence = sets.bevis ?? [];
@@ -806,6 +863,7 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
     });
     const verified: OsmElement[] = [];
     const rapport: string[] = [];
+    const merknader: string[] = [];
 
     // PUNKTOBJEKTENE tas i en ANDRE runde, etter flatene. Grunnen er
     // duplikatene: en node og et polygon kan beskrive samme anlegg, og da må
@@ -880,6 +938,9 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
             `    ${id.padEnd(18)} ${navn.padEnd(32)} ${verdict.padEnd(13)} ` +
                 `[${grunnlag}, ${hvorfor}]`
         );
+        if (verdict === 'usikker-heis') {
+            merknader.push(usikkerHeisLinje(poly, centerOfBounds(b), memberTags));
+        }
 
         if (verdict !== 'alpint') continue;
         const c = centerOfBounds(b);
@@ -900,15 +961,25 @@ export function skianleggVerify(sets: FetchSets): EnrichOutput {
         rapport.push(`    — ${punktObjekter.length} punktobjekter (node uten flate) —`);
         rapport.push(...punkt.rapport);
     }
+    merknader.push(...punkt.merknader);
 
-    const usikre = rapport.filter((r) => r.includes('usikker-heis')).length;
+    const usikre = merknader.length;
     return {
         elements: verified,
         rapport,
+        merknader: merknader.length
+            ? [
+                  `  HEIS UTEN UTFORLØYPE (${merknader.length}) — hvert av disse er ENTEN et`,
+                  `  ekte alpinanlegg som mangler piste:type=downhill i OSM og må SEEDES,`,
+                  `  ELLER et hoppanlegg som skal forbli utenfor. Nedfartskravet skilles`,
+                  `  ikke automatisk; se docs/runbooks/alpin-usikker-heis.md.`,
+                  ...merknader,
+              ]
+            : undefined,
         summary:
             `${String(polygons.length).padStart(4)} objekter, ` +
             `${evidence.length} bevisobjekter → ${verified.length} alpinanlegg` +
-            (usikre ? `, ${usikre} med heis uten utforløype (se under)` : '') +
+            (usikre ? `, ${usikre} med heis uten utforløype (egen liste under)` : '') +
             `\n         punktobjekter: ${punktObjekter.length} ` +
             `(${punkt.telling.alpint} alpint, ${punkt.telling.dublett} i en flate, ` +
             `${punkt.telling.ikkeAlpint} ikke-alpint` +
@@ -950,10 +1021,12 @@ export function verifyPointFacilities(
 ): {
     verified: OsmElement[];
     rapport: string[];
+    merknader: string[];
     telling: { alpint: number; dublett: number; ikkeAlpint: number; usikker: number };
 } {
     const verified: OsmElement[] = [];
     const rapport: string[] = [];
+    const merknader: string[] = [];
     const telling = { alpint: 0, dublett: 0, ikkeAlpint: 0, usikker: 0 };
 
     for (const el of punktObjekter) {
@@ -1002,7 +1075,10 @@ export function verifyPointFacilities(
 
         const memberTags = naere.map((n) => n.el.tags ?? {});
         const verdict = skiVerdict(el.tags ?? {}, memberTags);
-        if (verdict === 'usikker-heis') telling.usikker += 1;
+        if (verdict === 'usikker-heis') {
+            telling.usikker += 1;
+            merknader.push(usikkerHeisLinje(el, p, memberTags));
+        }
         if (verdict === 'ikke-alpint') telling.ikkeAlpint += 1;
         rapport.push(
             `    ${id.padEnd(18)} ${navn.padEnd(32)} ${verdict.padEnd(13)} ` +
@@ -1018,7 +1094,7 @@ export function verifyPointFacilities(
             skiVerified: true,
         });
     }
-    return { verified, rapport, telling };
+    return { verified, rapport, merknader, telling };
 }
 
 // ─────────────────────────────────── AKING ───────────────────────────────────
@@ -2554,6 +2630,14 @@ export async function enrichChunk(
         beriket.push({ cat, elements: ut.elements });
         if (ut.summary) console.log(`  ${chunk.label}/${cat.key.padEnd(11)} ${ut.summary}`);
         for (const linje of ut.rapport) console.log(linje);
+        // MERKNADENE SIST, så de er det siste kategorien etterlater på
+        // skjermen. De er de tilfellene et menneske må se på; rapporten over
+        // er én linje per objekt og ruller forbi.
+        if (ut.merknader?.length) {
+            console.log('');
+            for (const linje of ut.merknader) console.log(linje);
+            console.log('');
+        }
     }
 
     const { merged: elements, addedPerCategory } = mergeEnriched(beriket);
@@ -3411,6 +3495,25 @@ async function main() {
                 : `  Kjøringen dekket bare ${plan.map((c) => c.label).join(', ')}${catArg ? ` og kategori ${catArg}` : ''} — ` +
                       'en claim utenfor rekkevidden er IKKE død. Kjør uten --city og ' +
                       '--category før du fjerner noe.'
+        );
+    }
+
+    // FOREBYGGENDE CLAIMS SOM VÅKNET. Motstykket til lista over: disse fire
+    // skal normalt ikke treffe noe (berikelsen forkaster objektet), så et
+    // treff betyr at OSM har fått dataene som manglet. Ikke en feil — men et
+    // spørsmål om den kuraterte raden fortsatt er den beste.
+    const vaaknet = awakenedClaims(seenClaims);
+    if (vaaknet.length) {
+        console.log(
+            `\nFOREBYGGENDE CLAIMS SOM TRAFF (${vaaknet.length}) — OSM har fått dataene som manglet:`
+        );
+        for (const c of vaaknet) {
+            console.log(`  ${c.osmId.padEnd(20)} → ${c.source}/${c.externalId}`);
+        }
+        console.log(
+            '  Importen ville nå laget en rad for disse. Claimen hindrer det. Vurder om ' +
+                'den kuraterte raden fortsatt er bedre enn importens, eller om claimen kan ' +
+                'fjernes — se docs/runbooks/alpin-usikker-heis.md.'
         );
     }
 

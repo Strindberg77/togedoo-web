@@ -93,6 +93,29 @@ export interface OsmClaim {
     readonly expectName: string | null;
     /** Hvorfor den kuraterte raden er bedre. Skrives for neste person. */
     readonly note: string;
+    /**
+     * FOREBYGGENDE CLAIM: objektet blir ikke en rad i dag uansett, og skal
+     * derfor ikke meldes som dødt.
+     *
+     * HVA DEN LØSER. [applyOsmClaims] kjører i buildRows, altså på de
+     * BERIKEDE elementene. Et Skianlegg-polygon som berikelsen forkaster
+     * («usikker-heis», «ikke-alpint») når aldri dit, så claimen kan ikke
+     * treffe. De fire anleggene med heis uten utforløype ville derfor stått
+     * i «CLAIMS SOM IKKE TRAFF NOE» ved hver eneste nasjonale kjøring — og
+     * en rapport som alltid har fire falske treff blir en rapport ingen
+     * leser.
+     *
+     * HVORFOR CLAIMEN LIKEVEL SKAL FINNES: dommen er en egenskap ved
+     * OSM-DATAENE, ikke ved anlegget. Tegnes det en `piste:type=downhill`
+     * inn i Kolsås i morgen, blir polygonet «alpint», når buildRows, og
+     * claimen slår inn — uten den ville importen laget en rad ved siden av
+     * seed-raden, nøyaktig som med Korketrekkeren.
+     *
+     * PRISEN, og den er ekte: flagget slår av dødt-claim-varselet for
+     * nettopp disse. Blir way/43656613 slettet i OSM, sier ingenting fra.
+     * Seed-siden er fortsatt voktet av [assertClaimsResolve].
+     */
+    readonly expectNoHit?: boolean;
 }
 
 /**
@@ -175,6 +198,70 @@ export const OSM_CLAIMS: readonly OsmClaim[] = [
         note: 'Grefsenkleiva har egen parkering mot Østreheimsveien. Samme relasjon i OSM.',
     },
     // ─────────────────────────────────────────────────────────────────────
+    // HEIS UTEN UTFORLØYPE (sep. 2026): FIRE ANLEGG IMPORTEN IKKE KAN TA.
+    //
+    // Den nasjonale tørrkjøringen ga disse fire dommen `usikker-heis` — heis
+    // i OSM, men ingen `piste:type=downhill` innenfor polygonet. Kravet står
+    // (uten det kommer Holmenkollen, Granåsen og Linderudkollen inn som
+    // alpinanlegg), så anleggene seedes i stedet.
+    //
+    // HVORFOR DE LIKEVEL CLAIMES, når importen ikke lager dem i dag: dommen
+    // er en egenskap ved OSM-DATAENE, ikke ved anlegget. Får Kolsås en
+    // `piste:type=downhill` tegnet inn i morgen, blir den «alpint» ved neste
+    // kjøring og importen lager en rad ved siden av seed-raden — nøyaktig det
+    // som skjedde med Korketrekkeren. Claimen er vaksinen, og den koster
+    // ingenting så lenge dommen står.
+    //
+    // FØLGEN AV DET: disse fire claimene vil stå som «traff ingenting» i
+    // dødt-claim-rapporten så lenge dommen er `usikker-heis`, fordi et
+    // objekt som forkastes i berikelsen aldri når [applyOsmClaims]. Det er
+    // FORVENTET for nettopp disse fire, og er ikke et tegn på at lista
+    // rotner. Se docs/runbooks/alpin-usikker-heis.md.
+    //
+    // expectName BESKRIVER OSM-OBJEKTET. Kolsås heter «Kolsås Skisenter
+    // (Kolsåsbakken)» i OSM og «Kolsås Skisenter» som rad; Ringkollen heter
+    // «Ringkollen alpinbakke» i OSM og «Ringkollen» som rad.
+    {
+        osmId: 'way/43656613',
+        source: 'kuratert-vintertilbud',
+        externalId: 'kolsas-skisenter',
+        expectNoHit: true,
+        expectName: 'Kolsås Skisenter (Kolsåsbakken)',
+        note: 'Heis i OSM, men ingen piste:type=downhill — importen dømmer «usikker-heis». Kun landuse=recreation_ground, lit, name og sport=skiing; sport=skiing alene er det Varingskollen skistadion (langrenn) også har.',
+    },
+    {
+        osmId: 'way/544124493',
+        source: 'kuratert-vintertilbud',
+        externalId: 'finse-skisenter',
+        expectNoHit: true,
+        expectName: 'Finse Skisenter',
+        note: 'Heis i OSM, ingen utforløype tagget. Seedes med manuelt verifisert punkt i Ulvik.',
+    },
+    {
+        osmId: 'relation/16471584',
+        source: 'kuratert-vintertilbud',
+        externalId: 'ringkollen',
+        expectNoHit: true,
+        expectName: 'Ringkollen alpinbakke',
+        note: 'Heis i OSM, ingen utforløype tagget. Seedes med manuelt verifisert punkt i Ringerike.',
+    },
+    {
+        osmId: 'way/1489390372',
+        source: 'kuratert-vintertilbud',
+        externalId: 'grakallparken',
+        expectNoHit: true,
+        expectName: 'Gråkallparken',
+        note: 'Heis i OSM, ingen utforløype tagget. Seedes med manuelt verifisert punkt i Trondheim.',
+    },
+    // SILJAN SKISENTER (relation/8359960) ER IKKE CLAIMET OG IKKE SEEDET.
+    // Den sto på samme liste, men ser nedlagt ut. Importen kan ikke vite om
+    // et anlegg er i drift — `disused`/`abandoned` er filtrert bort i
+    // selektoren, men et anlegg som er lagt ned UTEN å bli omtagget ser helt
+    // levende ut i dataene. Så lenge dommen er «usikker-heis» blir den ingen
+    // rad, og det er riktig utfall her. Skulle den bli tagget med en
+    // utforløype senere, kommer den inn som alpinanlegg — og da er det
+    // OSM-dataene som må rettes, ikke denne lista.
+    // ─────────────────────────────────────────────────────────────────────
     // IKKE SKREVET, FORDI ID-EN IKKE ER SLÅTT OPP:
     //
     //   kirkerudbakken-skisenter   (OSM: recreation_ground, id ukjent her)
@@ -220,7 +307,23 @@ export function staleClaims(
     seen: ReadonlySet<string>,
     claims: readonly OsmClaim[] = OSM_CLAIMS
 ): OsmClaim[] {
-    return claims.filter((c) => !seen.has(c.osmId));
+    return claims.filter((c) => !c.expectNoHit && !seen.has(c.osmId));
+}
+
+/**
+ * Forebyggende claims som FAKTISK traff — altså objekter som ikke lenger
+ * forkastes i berikelsen.
+ *
+ * Dette er den andre halvdelen av [expectNoHit], og den er ikke et varsel om
+ * noe galt: den betyr at OSM har fått dataene som manglet. Da er spørsmålet
+ * om den kuraterte raden fortsatt er bedre enn importens, eller om claimen
+ * kan fjernes og stedet overlates til importen igjen.
+ */
+export function awakenedClaims(
+    seen: ReadonlySet<string>,
+    claims: readonly OsmClaim[] = OSM_CLAIMS
+): OsmClaim[] {
+    return claims.filter((c) => c.expectNoHit && seen.has(c.osmId));
 }
 
 /**

@@ -144,6 +144,14 @@ for (const chunkId of chunkIds) {
                         `skjult — --lines=${ut.rapport.length} viser alle`
                 );
             }
+            // MERKNADENE AVKORTES ALDRI. Det er hele grunnen til at de er et
+            // eget felt: de fire norske anleggene med «heis uten utforløype»
+            // lå spredt blant 815 rapportlinjer og var bare synlige med
+            // --lines=815.
+            if (ut.merknader?.length) {
+                console.log('');
+                for (const linje of ut.merknader) console.log(`  ${linje}`);
+            }
         }
 
         // ── AKING: HELE DOMSTELLINGEN ───────────────────────────────────

@@ -40,11 +40,14 @@ uten alpinanlegg i mellomtiden.
 npx --yes tsx scripts/seed-vintertilbud.ts --dry-run
 ```
 
-Skal vise 30 rader og ingen advarsler. Alle fem nye har `manualCoord`, så de
-geokodes ikke og skal stå som «manuelt verifisert».
+Skal vise alle seed-radene og ingen advarsler. Alle fem nye har `manualCoord`,
+så de geokodes ikke og skal stå som «manuelt verifisert». (Antallet sto her og
+var 30; det er fjernet med vilje — et tall i en kjørebok går ut på dato i
+stillhet, og seeden har siden fått fire rader til, se
+[alpin-usikker-heis.md](alpin-usikker-heis.md).)
 
 `assertClaimsResolve` kjører først i `main()` og kaster hardt hvis en claim
-peker på en seed-rad som ikke finnes. Fem claims vokter fem rader.
+peker på en seed-rad som ikke finnes. Fem av claimene vokter disse fem radene.
 
 ### 2. Kjør seeden
 

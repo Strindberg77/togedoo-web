@@ -351,6 +351,15 @@ er dagens boks god nok, og da er det målingen som sier det og ikke jeg.
 
 ---
 
+### «usikker-heis» har fått sin egen liste
+
+Fire norske alpinanlegg fikk dommen `usikker-heis` i denne kjøringen og lå
+spredt blant 815 rapportlinjer. `EnrichOutput.merknader` er nå en kort liste
+som aldri avkortes, og de fire seedes i stedet. Se
+[alpin-usikker-heis.md](alpin-usikker-heis.md).
+
+---
+
 ### Funn 2 — noder skal få en dom, ikke hoppes over
 
 #### Først: tallet 774 er lest feil
@@ -548,3 +557,6 @@ claim-vilkåret er fortsatt bare sett mot mock-data.
   spørringene; `out count;` er ikke kjørt herfra, og `nationalChunk()` står
   derfor fortsatt på den ene målte boksen.
 - Ingen romlig klynging av navnløse akebakker. Se funn 3.
+- Ingen seeding av de fire anleggene med «heis uten utforløype». Radene og
+  claimene finnes i koden, men seeden er ikke kjørt — se
+  [alpin-usikker-heis.md](alpin-usikker-heis.md).
