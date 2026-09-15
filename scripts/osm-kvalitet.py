@@ -72,6 +72,13 @@ SVARER PÅ
   3. Hvor mange objekter i hver kategori ligger innenfor N meter av et annet
      objekt i SAMME kategori? Fem terskler, så valget tas på en kurve.
 
+     Med en «par»-linje per terskel, delt på node↔flate, node↔node og
+     flate↔flate. DEN LINJA ER TALLET SOM BETYR NOE før en nasjonal kjøring:
+     dedupNodeOverFlate i importen fjerner BARE node↔flate-parene, så
+     totalen «objekter med en nabo» overdriver hvor mange rader regelen
+     faktisk tar. I Kjelsås er 2 av 17 lekeplasser naboer ved 10 m, og
+     begge tilhører det ene node↔flate-paret.
+
 Pluss typefordeling node/way/relasjon: i Kjelsås er 7 av 17 lekeplasser noder
 og 10 er flater, og ett node/way-par ligger 4 m fra hverandre. Samme sted
 kartlagt to ganger, av to bidragsytere, er sin egen duplikatklasse.
@@ -145,8 +152,12 @@ def cell(pt, size_m):
     return (y, x)
 
 
-def naboer_innen(punkter, terskel):
-    """(antall objekter med minst én nabo, klyngestørrelser) ved enkeltlenke."""
+def naboer_innen(punkter, terskel, typer=None):
+    """(antall med nabo, klyngestørrelser, parfordeling per typekombinasjon).
+
+    `typer` er «n»/«w»/«r» per punkt. Parfordelingen er den som betyr noe for
+    node-over-flate-dedupen i importen: den fjerner BARE punkt-mot-flate, så
+    totalen «objekter med en nabo» overdriver hvor mange rader den tar."""
     size = max(terskel, CELL_M)
     rutenett = defaultdict(list)
     for i, pt in enumerate(punkter):
@@ -161,6 +172,7 @@ def naboer_innen(punkter, terskel):
         return x
 
     par = 0
+    par_type = Counter()
     for (y, x), idxs in rutenett.items():
         kandidater = []
         for dy in (-1, 0, 1):
@@ -172,6 +184,13 @@ def naboer_innen(punkter, terskel):
                     continue
                 if meters(punkter[i], punkter[j]) <= terskel:
                     par += 1
+                    if typer:
+                        t = tuple(sorted((typer[i], typer[j])))
+                        # node mot flate (w/r) er den ENE kombinasjonen
+                        # importen faktisk dedupliserer.
+                        par_type["node↔flate" if t[0] == "n" and t[1] in "wr"
+                                 else "node↔node" if t == ("n", "n")
+                                 else "flate↔flate"] += 1
                     a, b = finn(i), finn(j)
                     if a != b:
                         forelder[a] = b
@@ -179,11 +198,12 @@ def naboer_innen(punkter, terskel):
     grupper = Counter(finn(i) for i in range(len(punkter)))
     storrelser = Counter(v for v in grupper.values() if v > 1)
     med_nabo = sum(k * n for k, n in storrelser.items())
-    return med_nabo, storrelser, par
+    return med_nabo, storrelser, par_type
 
 
 def main(stier):
     per_kat = defaultdict(list)          # leisure -> [(lat, lon)]
+    per_kat_type = defaultdict(list)     # leisure -> ["n" | "w" | "r"]
     tagger = defaultdict(Counter)        # leisure -> Counter over egenskaper
     surface_med_sport = Counter()
     typefordeling = defaultdict(Counter)  # leisure -> Counter over n/w/r
@@ -212,7 +232,9 @@ def main(stier):
                 per_kat[leisure].append(c)
 
                 oid = str(p.get("@id") or o.get("id") or "")
-                typefordeling[leisure][oid[:1] if oid[:1] in "nwr" else "?"] += 1
+                t1 = oid[:1] if oid[:1] in "nwr" else "?"
+                typefordeling[leisure][t1] += 1
+                per_kat_type[leisure].append(t1)
 
                 t = tagger[leisure]
                 t["totalt"] += 1
@@ -264,11 +286,17 @@ def main(stier):
         print(f"\n  NABOER I SAMME KATEGORI (bboks-senter mot bboks-senter)")
         print(f"  {'terskel':>8}  {'m/nabo':>7}  {'andel':>6}  klyngestørrelser")
         for terskel in TERSKLER:
-            med, storrelser, _ = naboer_innen(rader, terskel)
+            med, storrelser, par_type = naboer_innen(
+                rader, terskel, per_kat_type.get(kat))
             fordeling = ",  ".join(
                 f"{v} klynge{'r' if v > 1 else ''} à {k}"
                 for k, v in sorted(storrelser.items())) or "ingen"
             print(f"  {terskel:>6} m  {med:>7}  {med / n * 100:5.1f} %  {fordeling}")
+            if par_type:
+                # DENNE LINJA ER TALLET SOM BETYR NOE før en nasjonal kjøring:
+                # dedupNodeOverFlate fjerner bare node↔flate-parene.
+                print("           par: " + "  ".join(
+                    f"{k} {v}" for k, v in sorted(par_type.items())))
 
     if surface_med_sport:
         print(f"\n{'='*66}\n=== surface PÅ pitch MED sport (filteret som vurderes) ===")

@@ -65,7 +65,7 @@ export interface WorkStore {
         stage: StageName,
         fingerprint: string,
         rows: readonly T[],
-        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets'>
+        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets' | 'deduped'>
     ): void;
     /**
      * Skriver en SIDEFIL som ikke er et steg: den havner ikke i manifestet og
@@ -144,7 +144,7 @@ export class FileStore implements WorkStore {
         stage: StageName,
         fingerprint: string,
         rows: readonly T[],
-        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets'>
+        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets' | 'deduped'>
     ): void {
         const final = this.file(chunk, stage);
         const tmp = `${final}.tmp`;

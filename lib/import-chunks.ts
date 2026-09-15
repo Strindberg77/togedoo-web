@@ -209,6 +209,19 @@ export interface ManifestEntry {
      * chunkene som gikk bra — og rapporten ville meldt døde claims som lever.
      */
     readonly seenClaims?: readonly string[];
+    /**
+     * Kun `enrich`: external_id-ene til PUNKTER som ble droppet fordi de var
+     * dubletter av en flate i samme kategori (se [dedupNodeOverFlate]).
+     *
+     * HVORFOR HER, OG IKKE BARE I MINNET — nøyaktig samme grunn som
+     * [seenClaims]: en gjenopptatt kjøring leser berikelsen fra mellomleddet
+     * og kjører aldri dedupen på nytt. Uten feltet ville nedtakings-SQL-en
+     * til slutt manglet nettopp de chunkene som gikk gjennom første gang, og
+     * de dupliserte radene ville blitt stående publisert i stillhet.
+     *
+     * Radene tas IKKE ned av importen. Dette er inndata til et menneske.
+     */
+    readonly deduped?: readonly string[];
 }
 
 /** Manifestet som ÉN oppføring per (chunk, steg) — siste vinner.
