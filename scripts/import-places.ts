@@ -2666,9 +2666,33 @@ export async function buildRows(
         const titled = await makePlaceTitleDetailed(titleLabel, navnet?.value ?? null, pos.lat, pos.lng);
         if (!usableName) await sleep(TITLE_PAUSE_MS); // punktsøk-høflighet ved cache-miss
 
+        // ADRESSEN: OSM sin egen først, ellers den geokodede.
+        //
+        // [TITTELEN_ER_NORSK] HVORFOR DEN GEOKODEDE OGSÅ LAGRES
+        //
+        // Tittelen for en generert rad er en NORSK SETNING: «Lekeplass ved
+        // Kapellveien 12». Appen plukker den fra hverandre igjen —
+        // DatahubPlace.displayTitle strippper prefikset «<kategori> ved » og
+        // «<kategori> i » for å vise «Kapellveien 12» på kortet. Altså finnes
+        // det allerede en klient som PARSER norsk for å få tak i delene.
+        //
+        // Det holder så lenge appen er norsk. Skal den til Sverige, må
+        // «Lekplats vid Kapellveien 12» bygges av noen — og å oversette ved å
+        // lete etter ordet «ved» i en lagret streng er ikke en vei videre.
+        //
+        // Med adressen i sitt EGET felt er den genererte tittelen utledbar av
+        // `category` + `address`, og en klient på et annet språk kan sette den
+        // sammen selv i stedet for å ta den fra hverandre. Dette løser ikke
+        // flerspråkligheten — det slutter bare å grave hullet dypere, og det
+        // koster ingenting: adressen er allerede hentet og cachet.
+        //
+        // OSM SIN EGEN VINNER. `addr:street` er stedets adresse; den
+        // geokodede er den NÆRMESTE innen 200 m. Dekningen er riktignok ~0 %
+        // i norsk OSM for disse kategoriene, så i praksis er det den
+        // geokodede som havner her.
         const addrStreet = tags['addr:street']
             ? `${tags['addr:street']}${tags['addr:housenumber'] ? ' ' + tags['addr:housenumber'] : ''}`
-            : null;
+            : (titled.address ?? null);
 
         rows.push({
             external_id: `${el.type}/${el.id}`,
