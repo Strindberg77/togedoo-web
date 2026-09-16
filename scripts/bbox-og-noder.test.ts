@@ -14,12 +14,29 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    NATIONAL_AREA,
     NATIONAL_BBOX,
-    NORWAY_BANDS_4,
     chunkForCity,
     nationalChunk,
     scopedSelector,
+    type ImportChunk,
 } from '../lib/import-chunks';
+
+// TO BOKSER, SKREVET UT FOR HÅND. Fram til okt. 2026 sto det NORWAY_BANDS_4
+// her. Båndene tapte mot `area[ISO3166-1=NO]` i målingen og er ute av
+// produksjonskoden, men MEKANISMEN de brukte — én selektorlinje gjentatt per
+// avgrensning — står igjen, og den er verdt å holde testet: det er den eneste
+// veien tilbake dersom en reservekjøring på bboks må deles opp.
+//
+// MERK at ingen chunk i produksjon lager mer enn ÉN avgrensning i dag. Denne
+// grenen i scopedSelector er altså uten kaller. Den er beholdt bevisst, og
+// skilt fra områdebyttet: å slette den i samme commit ville gjort en
+// halvering vanskeligere å lese dersom den nasjonale kjøringen går galt.
+const TO_BOKSER = ['(57.94,4.46,63.98,12.91)', '(63.94,8.77,66.13,14.67)'] as const;
+const flerboks = (): ImportChunk => ({
+    ...nationalChunk('bbox'),
+    overpassScopes: [...TO_BOKSER],
+});
 
 process.env.PLACES_OVERPASS_BACKOFF_MS = '0';
 process.env.PLACES_OVERPASS_QUERY_PAUSE_MS = '0';
@@ -38,29 +55,32 @@ test('scopedSelector gjentar hver LINJE per boks, ikke hvert filter per setning'
     const { PLACE_CATEGORIES } = await load();
     const ski = PLACE_CATEGORIES.find((c) => c.key === 'skianlegg')!;
     const linjer = ski.selector.split('\n').map((l) => l.trim()).filter(Boolean);
-    const ut = scopedSelector(ski.selector, nationalChunk(NORWAY_BANDS_4));
+    const ut = scopedSelector(ski.selector, flerboks());
 
     const utLinjer = ut.split('\n').map((l) => l.trim()).filter(Boolean);
-    assert.equal(utLinjer.length, linjer.length * NORWAY_BANDS_4.length);
+    assert.equal(utLinjer.length, linjer.length * TO_BOKSER.length);
     assert.ok(!ut.includes('(area.a)'), 'ingen rest av den kanoniske formen');
     for (const l of utLinjer) {
-        const treff = NORWAY_BANDS_4.filter((b) => l.includes(b));
+        const treff = TO_BOKSER.filter((b) => l.includes(b));
         assert.equal(treff.length, 1, `«${l}» har ${treff.length} bokser, skal ha nøyaktig én`);
     }
     // Hver boks skal ha fått ALLE linjene.
-    for (const boks of NORWAY_BANDS_4) {
+    for (const boks of TO_BOKSER) {
         assert.equal(utLinjer.filter((l) => l.includes(boks)).length, linjer.length);
     }
 });
 
 test('én boks og én area gir nøyaktig samme utdata som før', async () => {
-    // Ingen regresjon for de to bruksmåtene som finnes i dag.
+    // Ingen regresjon for de tre bruksmåtene som finnes i dag.
     const { PLACE_CATEGORIES } = await load();
     const ski = PLACE_CATEGORIES.find((c) => c.key === 'skianlegg')!;
     assert.equal(
-        scopedSelector(ski.selector, nationalChunk()),
+        scopedSelector(ski.selector, nationalChunk('bbox')),
         ski.selector.split('(area.a)').join(NATIONAL_BBOX)
     );
+    // OMRÅDET beholder den kanoniske formen urørt — selektorene er skrevet
+    // med (area.a), og det er nøyaktig det området heter.
+    assert.equal(scopedSelector(ski.selector, nationalChunk()), ski.selector);
     assert.equal(scopedSelector(ski.selector, chunkForCity('Oslo')), ski.selector);
 });
 
@@ -71,15 +91,32 @@ test('bokssettet ligger i hentestegets fingeravtrykk', async () => {
     // gårsdagens objekter uten en eneste advarsel.
     const { overpassQuery } = await load();
     const { fingerprint } = await import('../lib/import-chunks');
-    const en = nationalChunk();
-    const fire = nationalChunk(NORWAY_BANDS_4);
-    const fp = (c: ReturnType<typeof nationalChunk>) =>
+    const en = nationalChunk('bbox');
+    const to = flerboks();
+    const fp = (c: ImportChunk) =>
         fingerprint({ v: 2, area: c.overpassArea, scopes: [...c.overpassScopes] });
-    assert.notEqual(fp(en), fp(fire), 'et nytt bokssett MÅ gi et nytt fingeravtrykk');
-    assert.equal(en.overpassArea, fire.overpassArea, 'og det er ikke area som skiller dem');
-    // Og spørringen som faktisk sendes inneholder alle fire boksene.
-    const q = overpassQuery(fire, 'nwr["leisure"="park"](area.a);', 'out center tags');
-    for (const b of NORWAY_BANDS_4) assert.ok(q.includes(b), `mangler ${b}`);
+    assert.notEqual(fp(en), fp(to), 'et nytt bokssett MÅ gi et nytt fingeravtrykk');
+    assert.equal(en.overpassArea, to.overpassArea, 'og det er ikke area som skiller dem');
+    // Og spørringen som faktisk sendes inneholder begge boksene.
+    const q = overpassQuery(to, 'nwr["leisure"="park"](area.a);', 'out center tags');
+    for (const b of TO_BOKSER) assert.ok(q.includes(b), `mangler ${b}`);
+});
+
+test('BYTTET fra bboks til område gir et NYTT fingeravtrykk', async () => {
+    // Spørsmål 3 i oppgaven, besvart ved å regne det ut og ikke ved å lese
+    // koden: gamle .import-work fra bboks-kjøringene kan IKKE gjenbrukes med
+    // --resume etter dette byttet. Begge feltene endrer seg samtidig — area
+    // fra tom streng til områdesetningen, scopes fra boksen til (area.a) —
+    // og BEGGE ligger i v:2-avtrykket.
+    const { fingerprint } = await import('../lib/import-chunks');
+    const omrade = nationalChunk();
+    const boks = nationalChunk('bbox');
+    const fp = (c: ImportChunk) =>
+        fingerprint({ v: 2, area: c.overpassArea, scopes: [...c.overpassScopes] });
+    assert.notEqual(fp(omrade), fp(boks));
+    assert.notEqual(omrade.overpassArea, boks.overpassArea, 'area skiller dem');
+    assert.notDeepEqual(omrade.overpassScopes, boks.overpassScopes, 'og scopes gjør det også');
+    assert.equal(omrade.overpassArea, NATIONAL_AREA);
 });
 
 // ---------------------------------------------------------------------------

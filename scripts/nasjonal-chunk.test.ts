@@ -22,6 +22,7 @@ import {
 } from '../lib/geo-polygon';
 import {
     chunkForCity,
+    NATIONAL_AREA,
     NATIONAL_BBOX,
     nationalChunk,
     nationalCoverage,
@@ -44,15 +45,24 @@ test('--national gir ÉN chunk, uten by-anker', async () => {
     const c = nationalChunk();
     assert.equal(c.id, 'norge');
     assert.equal(c.cityAnchor, null, 'municipality utledes per rad');
-    assert.equal(c.overpassArea, '', 'en bbox trenger ingen area-setning');
-    assert.deepEqual(c.overpassScopes, [NATIONAL_BBOX]);
+    assert.equal(c.overpassArea, NATIONAL_AREA, 'okt. 2026: området, ikke bboksen');
+    assert.deepEqual(c.overpassScopes, ['(area.a)']);
     assert.equal(c.overpassTimeout, 300, 'samme timeout som målingen brukte');
 });
 
 test('bboksen er NØYAKTIG den som ble målt', () => {
     // Justeres tallene uten en ny måling, er 445/7555/5,5 s/35 s ikke lenger
-    // sanne om koden som kjører.
+    // sanne om koden som kjører. Boksen er nå RESERVE, men en reserve som er
+    // endret i stillhet er ingen reserve.
     assert.equal(NATIONAL_BBOX, '(57.5,4.0,71.5,31.5)');
+});
+
+test('omraadet er NØYAKTIG det som ble målt', () => {
+    // 4536 bevisobjekter og 91 akebakker ble målt mot DENNE setningen.
+    // admin_level=2 er ikke pynt: uten den kan ISO3166-1=NO også treffe
+    // underordnede grenser, og da avgjør tilfeldigheter hvilket område
+    // Overpass finner.
+    assert.equal(NATIONAL_AREA, 'area["ISO3166-1"="NO"]["admin_level"="2"]->.a');
 });
 
 test('--national og --city= utelukker hverandre', async () => {
@@ -98,22 +108,29 @@ test('scopedSelector bytter ALLE forekomster, ikke bare den første', async () =
     const { PLACE_CATEGORIES } = await load();
     const ski = PLACE_CATEGORIES.find((c) => c.key === 'skianlegg')!;
     assert.ok(ski.selector.split('(area.a)').length > 2, 'flere linjer i denne');
-    const ut = scopedSelector(ski.selector, nationalChunk());
+    const ut = scopedSelector(ski.selector, nationalChunk('bbox'));
     assert.ok(!ut.includes('(area.a)'), 'ingen rest');
     assert.equal(ut.split(NATIONAL_BBOX).length - 1, ski.selector.split('(area.a)').length - 1);
 });
 
-test('en by-spørring har area-setningen, en nasjonal har bbox', async () => {
+test('en by-spørring har area-setningen, en nasjonal reserve har bbox', async () => {
     const { overpassQuery } = await load();
     const by = overpassQuery(chunkForCity('Oslo'), 'nwr["leisure"="park"](area.a);', 'out center tags');
     assert.match(by, /area\["boundary"="administrative"\]\["admin_level"="7"\]\["name"="Oslo"\]->\.a;/);
     assert.match(by, /\(area\.a\);/);
     assert.match(by, /\[timeout:180\]/);
 
+    const reserve = overpassQuery(nationalChunk('bbox'), 'nwr["leisure"="park"](area.a);', 'out center tags');
+    assert.ok(!reserve.includes('area.a'), 'ingen area-referanse igjen');
+    assert.ok(!reserve.includes('->.a'), 'ingen tom area-setning med semikolon');
+    assert.match(reserve, /nwr\["leisure"="park"\]\(57\.5,4\.0,71\.5,31\.5\);/);
+    assert.match(reserve, /\[timeout:300\]/);
+
+    // STANDARDEN har samme FORM som by-spørringen — bare på admin_level 2.
+    // Det er hele poenget: én mekanisme, to nivåer.
     const norge = overpassQuery(nationalChunk(), 'nwr["leisure"="park"](area.a);', 'out center tags');
-    assert.ok(!norge.includes('area.a'), 'ingen area-referanse igjen');
-    assert.ok(!norge.includes('->.a'), 'ingen tom area-setning med semikolon');
-    assert.match(norge, /nwr\["leisure"="park"\]\(57\.5,4\.0,71\.5,31\.5\);/);
+    assert.match(norge, /area\["ISO3166-1"="NO"\]\["admin_level"="2"\]->\.a;/);
+    assert.match(norge, /nwr\["leisure"="park"\]\(area\.a\);/);
     assert.match(norge, /\[timeout:300\]/);
 });
 
@@ -194,6 +211,72 @@ test('vakten kaster IKKE på legitime nasjonale rader', async () => {
     assert.equal(rows.length, 3);
     assert.deepEqual(rowsMissingCityAnchor(rows), [], 'ingen rader mangler by-anker');
     assert.deepEqual(rows.map((r) => r.municipality).sort(), ['Bergen', 'Oslo', 'Tromsø']);
+});
+
+test('et OMRÅDE SOM IKKE LØSER SEG stanser kjøringen — det ser ikke ut som et tomt land', async () => {
+    // DEN ENE INNVENDINGEN MOT area[ISO3166-1=NO] SOM OVERLEVDE MÅLINGEN:
+    // løser området seg ikke på speilet, svarer `area[...]->.a` med et TOMT
+    // SETT og hele spørringen gir 0 objekter — uten å feile. Et land uten
+    // alpinanlegg ser likt ut.
+    //
+    // Den er dekket, og av to uavhengige lag. Dette fester det andre:
+    // utbyttesjekken. For ÉN nasjonal chunk er nationalCoverage 1, så
+    // forventningen er hele det nasjonale tallet, og 0 av 254 er langt under
+    // gulvet på 20 %.
+    //
+    // (Det første laget ligger i hentesteget: et tomt svar bekreftes med en
+    // ekstra spørring og havner i «Bekreftet tomme sett» i oppsummeringen.
+    // Se scripts/tomt-hentesteg.test.ts.)
+    const { yieldCollapseStop, NATIONAL_EXPECTATION } = await import('../lib/import-guards');
+    const dekning = nationalCoverage([nationalChunk()]);
+    assert.equal(dekning, 1, 'én nasjonal chunk dekker hele landet');
+
+    // ENHETEN ER OBJEKTER I «omrade»-SETTET, ikke rader — se
+    // NasjonalForventning. Kartet under er altså «områdeselektoren hentet 0».
+    const tomt = yieldCollapseStop(new Map([['skianlegg', 0]]), dekning!);
+    assert.ok(tomt, '0 av 254 må stanse kjøringen');
+    assert.match(tomt.message, /skianlegg: 0 objekter i settet «omrade» mot 254 forventet/);
+
+    // Og de MÅLTE tallene fra områdekjøringen skal ikke stanse noe.
+    assert.equal(NATIONAL_EXPECTATION.skianlegg.objekter, 254);
+    assert.equal(yieldCollapseStop(new Map([['skianlegg', 423]]), dekning!), null);
+    // Aking: området målte 91 objekter, forventningen er 89 — 102 %.
+    // Det ble 13 RADER, og det er ikke et tall vakten skal se.
+    assert.equal(yieldCollapseStop(new Map([['aking', 91]]), dekning!), null);
+});
+
+test('Svalbard og Jan Mayen stoppes av vakten, uansett hva området tar med', async () => {
+    // SPØRSMÅL 2 I OPPGAVEN, besvart der det ER mulig å svare offline.
+    //
+    // Om `area["ISO3166-1"="NO"]` omfatter Svalbard og Jan Mayen kan ikke
+    // avgjøres herfra — det avhenger av taggingen i OSM, og den kan ikke leses
+    // uten nett. Men SPØRSMÅLET SPILLER INGEN ROLLE for hva som havner i
+    // basen: grensefila har 357 fastlandskommuner (kommunenummer 03–56,
+    // nordligste punkt 71,19° N på Nordkapp). Svalbard (2100) og Jan Mayen
+    // (2211) står ikke i den, så et punkt der finner ingen kommune og faller
+    // ut her — nøyaktig som en svensk park.
+    //
+    // Det var det samme før byttet, av en annen grunn: bboksen stopper på
+    // 71,5° N og 4,0° Ø, mens Longyearbyen ligger på 78,2° N og Jan Mayen på
+    // 8,7° V. Ingen av dem har noen gang vært hentet.
+    const { buildRows, rowsMissingCityAnchor, PLACE_CATEGORIES } = await load();
+    const { municipalityIndex } = await import('./municipality-index');
+    const park = PLACE_CATEGORIES.find((c) => c.key === 'park')!;
+    const rows = await buildRows(
+        null,
+        [
+            { type: 'way', id: 1, tags: { leisure: 'park', name: 'Sofienbergparken' }, center: { lat: 59.921, lon: 10.766 } },
+            // Longyearbyen
+            { type: 'way', id: 2, tags: { leisure: 'park', name: 'Svalbardparken' }, center: { lat: 78.2232, lon: 15.6469 } },
+            // Olonkinbyen, Jan Mayen
+            { type: 'way', id: 3, tags: { leisure: 'park', name: 'Jan Mayen-parken' }, center: { lat: 70.9221, lon: -8.7187 } },
+        ],
+        50,
+        [park],
+        (lat, lng) => municipalityIndex().lookup(lat, lng)
+    );
+    assert.deepEqual(rows.map((r) => r.title), ['Sofienbergparken']);
+    assert.deepEqual(rowsMissingCityAnchor(rows), [], 'ingen rad slipper gjennom uten kommune');
 });
 
 test('en utenlandsk rad når aldri vakten — den er utelatt før', async () => {

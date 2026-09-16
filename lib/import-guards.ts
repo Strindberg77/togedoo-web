@@ -130,38 +130,80 @@ export function geocodeFailureStop(
 // ---------------------------------------------------------------------------
 
 /**
- * Nasjonale objekttall per kategori, målt med osmium mot Geofabrik-fila
+ * NASJONALE OBJEKTTALL per kategori, målt med osmium mot Geofabrik-fila
  * (sep. 2026).
  *
- * TALLET ER DEN DOMINERENDE TAGGEN, ikke et eksakt anslag for kategorien.
- * `ballbane` teller `leisure=pitch` (15 423), men selektoren siler også på
- * sport og access — der er tallet et TAK.
+ * ENHETEN ER OBJEKTER, OG DET ER HELE POENGET MED DENNE TYPEN.
  *
- * FOR `skianlegg` ER DET MOTSATT, og det er verdt å vite før man leser et
- * avvik som en feil. 254 er `landuse=winter_sports`, men selektoren har SEKS
- * mønstre: også recreation_ground med piste:type, piste:lit eller
- * piste:difficulty, recreation_ground med sport~ski, og sports_centre med
- * sport~ski. Tallet er derfor et GULV. Den første nasjonale tørrkjøringen ga
- * 305 rader, og 305 > 254 er i seg selv ikke bevis for noe — spørsmålet om
- * duplikater må avgjøres på geometri, ikke på forholdstallet.
+ * Fram til okt. 2026 var dette et `Record<string, number>`, og
+ * [yieldCollapseStop] sammenlignet tallene med ANTALL RADER. De to er ikke
+ * samme størrelse, og for aking er de ikke engang samme størrelsesorden:
  *
- * Det er nettopp derfor gulvet er 20 % og ikke 80 %: sjekken skal fange en
- * selektor som har sluttet å treffe, ikke et unøyaktig anslag.
+ *   aking       13 rader mot 89 «forventet» → 15 % → STOPP
+ *   skianlegg  307 rader mot 254 «forventet» → 121 %
  *
- * Kategorier UTEN et tall her hoppes over. `rullesport` og `klatring` er ikke
+ * Begge er meningsløse. 89 er `piste:type=sled`-OBJEKTER; 13 er BAKKER etter
+ * relasjonsforankring og navnegruppering — Korketrekkeren alene er 14 objekter
+ * som blir 1 rad. Og 254 er bare `landuse=winter_sports`, mens selektoren
+ * dekker seks mønstre og hentet 423 objekter.
+ *
+ * En tallverdi kan ikke bære enheten sin. Derfor er den nå et objekt som sier
+ * HVA som er talt og HVOR det skal telles, og vakten teller samme sted.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * FORHOLDET MELLOM OBJEKT OG RAD ER VÅRT, IKKE OSM SITT
+ *
+ * Objekter kommer fra OSM og kan telles utenfor koden vår. Rader er resultatet
+ * av grupperingen, forankringen, dedupen og claims — regler vi selv endrer.
+ * Et radtall som «fasit» ville altså blitt feil av at VI forbedret noe, og det
+ * er nøyaktig den vakten man slutter å tro på.
+ *
+ * Derfor: vakten stopper på OBJEKTER. Radene rapporteres ved siden av, uten et
+ * forholdstall, fordi det ikke finnes et tall å dele på.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * TALLET ER ET GULV, IKKE ET ANSLAG. Det teller ÉN tagg, mens selektorene
+ * gjerne dekker flere mønstre. `skianlegg` har seks; `ballbane` siler i tillegg
+ * på sport og access, så der ligger det an til å bli et tak i praksis. Ingen av
+ * delene betyr noe så lenge terskelen er 20 %: sjekken skal fange en selektor
+ * som har sluttet å treffe, ikke et unøyaktig anslag.
+ *
+ * ANKERET er Geofabrik-uttrekket og osmium — ikke en kjøring. Tallene kan
+ * regnes ut på nytt offline, deterministisk, uten å røre Overpass, og de er
+ * uavhengige av alt vi selv gjør med dataene etterpå. Det er den egenskapen
+ * som gjør dem brukbare som fasit; et radtall fra én kjøring har den ikke.
+ *
+ * Kategorier UTEN en oppføring hoppes over. `rullesport` og `klatring` er ikke
  * målt nasjonalt; å gjette et tall for dem ville gjort vakten til en
  * tilfeldighetsgenerator.
  */
-export const NATIONAL_EXPECTATION: Readonly<Record<string, number>> = {
-    ballbane: 15423, //    leisure=pitch
-    lekeplass: 11901, //   leisure=playground
-    badeplass: 4841, //    natural=beach
-    park: 3070, //         leisure=park
-    idrettshall: 2312, //  leisure=sports_centre
-    museum: 1241, //       tourism=museum
-    bibliotek: 721, //     amenity=library
-    skianlegg: 254, //     landuse=winter_sports
-    aking: 89, //          piste:type=sled
+export interface NasjonalForventning {
+    /** Objekter i Geofabrik-fila med taggen under. */
+    readonly objekter: number;
+    /** Taggen som FAKTISK ble talt. Ikke hele selektoren. */
+    readonly tag: string;
+    /**
+     * Hentesettet objektene skal telles i, som `<kategori>/<sett>` heter i
+     * manifestet uten kategoridelen.
+     *
+     * DETTE FELTET ER IKKE PYNT. `skianlegg` henter to sett: `omrade` (423
+     * objekter, blir rader) og `bevis` (4 536 objekter, blir ALDRI rader — de
+     * er inndata til den romlige testen). Summerte vakten begge, ville
+     * forholdstallet vært 1 952 % og sjekken ubrukelig for alltid.
+     */
+    readonly sett: string;
+}
+
+export const NATIONAL_EXPECTATION: Readonly<Record<string, NasjonalForventning>> = {
+    ballbane: { objekter: 15423, tag: 'leisure=pitch', sett: 'main' },
+    lekeplass: { objekter: 11901, tag: 'leisure=playground', sett: 'main' },
+    badeplass: { objekter: 4841, tag: 'natural=beach', sett: 'main' },
+    park: { objekter: 3070, tag: 'leisure=park', sett: 'main' },
+    idrettshall: { objekter: 2312, tag: 'leisure=sports_centre', sett: 'main' },
+    museum: { objekter: 1241, tag: 'tourism=museum', sett: 'main' },
+    bibliotek: { objekter: 721, tag: 'amenity=library', sett: 'main' },
+    skianlegg: { objekter: 254, tag: 'landuse=winter_sports', sett: 'omrade' },
+    aking: { objekter: 89, tag: 'piste:type=sled', sett: 'main' },
 };
 
 /**
@@ -198,24 +240,31 @@ export const YIELD_MIN_PROGRESS = 0.25;
  * forventningen bli per chunk — og det krever data vi ikke har.
  */
 export function yieldCollapseStop(
-    radPerKategori: ReadonlyMap<string, number>,
+    /**
+     * OBJEKTER HENTET per kategori, talt i settet [NasjonalForventning.sett]
+     * peker på. IKKE rader — se typedokumentasjonen for hvorfor.
+     *
+     * En kategori som mangler her vurderes ikke. Det dekker to tilfeller:
+     * kategorien var ikke med i kjøringen (`--category=`), eller hentesteget
+     * ble gjenopptatt fra en `.import-work` som er eldre enn settellingen.
+     * Kalleren skal SI det i det andre tilfellet — se [hoppetOverIUtbytte].
+     */
+    objektPerKategori: ReadonlyMap<string, number>,
     andelPlanenDekker: number,
-    forventning: Readonly<Record<string, number>> = NATIONAL_EXPECTATION
+    forventning: Readonly<Record<string, NasjonalForventning>> = NATIONAL_EXPECTATION
 ): ImportStop | null {
     if (andelPlanenDekker < YIELD_MIN_PROGRESS) return null;
     const under: string[] = [];
-    for (const [key, nasjonalt] of Object.entries(forventning)) {
-        const faktisk = radPerKategori.get(key);
-        // En kategori som ikke er med i kjøringen (--category=) har ingen
-        // oppføring og skal ikke vurderes.
+    for (const [key, f] of Object.entries(forventning)) {
+        const faktisk = objektPerKategori.get(key);
         if (faktisk === undefined) continue;
-        const forventet = nasjonalt * andelPlanenDekker;
+        const forventet = f.objekter * andelPlanenDekker;
         if (forventet < 1) continue;
         const andel = faktisk / forventet;
         if (andel < YIELD_FLOOR) {
             under.push(
-                `${key}: ${faktisk} rader mot ${Math.round(forventet)} forventet ` +
-                    `(${Math.round(andel * 100)} %)`
+                `${key}: ${faktisk} objekter i settet «${f.sett}» mot ${Math.round(forventet)} ` +
+                    `forventet fra ${f.tag} (${Math.round(andel * 100)} %)`
             );
         }
     }
@@ -224,7 +273,25 @@ export function yieldCollapseStop(
         'utbyttekollaps',
         `Etter ${Math.round(andelPlanenDekker * 100)} % av planen ligger disse under ` +
             `${Math.round(YIELD_FLOOR * 100)} % av forventet: ${under.join('; ')}. ` +
-            `Det ser ut som en selektor som har sluttet å treffe, ikke som geografi. ` +
-            `Sjekk selektoren mot en tag-endring i OSM før du kjører videre.`
+            `Begge tall er OBJEKTER fra OSM, ikke rader. Det ser ut som en selektor som ` +
+            `har sluttet å treffe, ikke som geografi. Sjekk selektoren mot en tag-endring ` +
+            `i OSM før du kjører videre.`
     );
+}
+
+/**
+ * Kategoriene vakten IKKE fikk vurdert fordi hentesteget mangler settellingen.
+ *
+ * Et gjenopptatt hentesteg skrevet før okt. 2026 har ingen `settAntall` i
+ * manifestet. Da kan [yieldCollapseStop] ikke telle noe, og den hopper over
+ * kategorien — riktig, siden alternativet er å stoppe på et tall som ikke
+ * finnes. Men en vakt som slår seg av i stillhet er verre enn ingen vakt, så
+ * kalleren spør her og skriver det i oppsummeringen.
+ */
+export function hoppetOverIUtbytte(
+    objektPerKategori: ReadonlyMap<string, number>,
+    kategorier: readonly string[],
+    forventning: Readonly<Record<string, NasjonalForventning>> = NATIONAL_EXPECTATION
+): string[] {
+    return kategorier.filter((k) => forventning[k] !== undefined && !objektPerKategori.has(k));
 }

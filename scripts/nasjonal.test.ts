@@ -296,12 +296,32 @@ test('ulik kategori er aldri duplikat', () => {
 const input = (over: Partial<GodkjenningsInput> = {}): GodkjenningsInput => ({
     fingerprint: 'c46cedd8',
     chunks: 1,
-    raderTotalt: 347,
+    raderTotalt: 320,
     diff: { nye: 341, oppdaterer: 6 },
+    // DE MÅLTE TALLENE fra områdekjøringen okt. 2026. Objekter og rader er
+    // ulike enheter, og fikstureret viser nettopp avstanden mellom dem:
+    // aking hentet 91 objekter og ble 13 bakker.
     kategorier: [
-        { key: 'skianlegg', rader: 261, forventet: 254, utenNavn: 4 },
-        { key: 'aking', rader: 86, forventet: 89, utenNavn: 1 },
+        {
+            key: 'skianlegg',
+            rader: 307,
+            objekter: 423,
+            forventet: 254,
+            forventetTag: 'landuse=winter_sports',
+            forventetSett: 'omrade',
+            utenNavn: 157,
+        },
+        {
+            key: 'aking',
+            rader: 13,
+            objekter: 91,
+            forventet: 89,
+            forventetTag: 'piste:type=sled',
+            forventetSett: 'main',
+            utenNavn: 1,
+        },
     ],
+    utbytteHoppet: [],
     geokoding: { forsok: 5, feil: 0 },
     overpass: { sporringer: 6, medOmkamp: 3 },
     tommeSett: [],
@@ -317,7 +337,7 @@ const input = (over: Partial<GodkjenningsInput> = {}): GodkjenningsInput => ({
 test('de tre linjene som betyr mest staar der', () => {
     const t = formatApproval(input());
     assert.match(t, /nye 341, oppdaterer 6/, 'nye vs. oppdaterer');
-    assert.match(t, /103 %/, 'andel mot forventet');
+    assert.match(t, /102 %/, 'andel regnes på OBJEKTER: 91 av 89');
     assert.match(t, /--approve=c46cedd8/, 'fingeravtrykket i skrivekommandoen');
 });
 
@@ -328,7 +348,21 @@ test('uten databasetilgang staar det UKJENT, ikke null', () => {
 });
 
 test('en kategori uten maalt nasjonalt tall viser tankestrek', () => {
-    const t = formatApproval(input({ kategorier: [{ key: 'rullesport', rader: 12, forventet: null, utenNavn: 0 }] }));
+    const t = formatApproval(
+        input({
+            kategorier: [
+                {
+                    key: 'rullesport',
+                    rader: 12,
+                    objekter: null,
+                    forventet: null,
+                    forventetTag: null,
+                    forventetSett: null,
+                    utenNavn: 0,
+                },
+            ],
+        })
+    );
     assert.match(t, /rullesport/);
 });
 
@@ -472,4 +506,34 @@ test('oppsummeringen sier PAR og RADER, ikke bare et tall', async () => {
     assert.match(t, /3 par mellom 3 rader med delt GENERERT tittel/);
     assert.match(t, /node\/1 og node\/2, 40 m fra hverandre/, 'linjeformatet er uendret');
     assert.match(formatApproval(input()), /Duplikatkandidater \.+ 0/, 'null skal fortsatt staa som 0');
+});
+
+// ---------------------------------------------------------------------------
+// ENHETEN I KATEGORITABELLEN — det falske stoppet i okt. 2026
+// ---------------------------------------------------------------------------
+
+test('andelen regnes paa OBJEKTER, radene staar uten forholdstall', async () => {
+    // FEILEN: «aking 13 rader mot 89 forventet (15 %)» stanset kjøringen.
+    // 89 er piste:type=sled-OBJEKTER i Geofabrik; 13 er BAKKER etter
+    // relasjonsforankring og navnegruppering — Korketrekkeren alene er 14
+    // objekter som blir 1 rad. Tallene var aldri sammenlignbare.
+    const { formatApproval } = await import('../lib/import-approval');
+    const t = formatApproval(input());
+
+    assert.match(t, /objekter {3}forventet {3}andel {6}rader/, 'kolonnene navngir enheten');
+    assert.match(t, /aking\s+91\s+89\s+102 %\s+13\s+/, '91 mot 89, og 13 rader ved siden av');
+    assert.match(t, /skianlegg\s+423\s+254\s+167 %\s+307\s+/);
+    // Det gamle, meningsløse forholdstallet skal ikke finnes noe sted.
+    assert.ok(!t.includes('15 %'), 'ingen andel regnet på rader mot objekter');
+    // Og grunnlaget skal stå, slik at neste leser ser hva tallet er talt på.
+    assert.match(t, /piste:type=sled i «main»/);
+    assert.match(t, /landuse=winter_sports i «omrade»/);
+});
+
+test('en hoppet over utbyttesjekk staar som ADVARSEL i oppsummeringen', async () => {
+    const { formatApproval } = await import('../lib/import-approval');
+    const t = formatApproval(input({ utbytteHoppet: ['skianlegg', 'aking'] }));
+    assert.match(t, /UTBYTTESJEKKEN HOPPET OVER skianlegg, aking/);
+    assert.match(t, /ADVARSEL/);
+    assert.ok(!formatApproval(input()).includes('HOPPET OVER'), 'ingen linje naar alt er talt');
 });

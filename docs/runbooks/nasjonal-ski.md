@@ -67,14 +67,22 @@ Norges grenseobjekt er blant de tyngste i OSM (lang kystlinje, tusenvis av
 handel. Prisen for å filtrere sent er båndbredde og minne — ikke tid, fordi
 den dyre ressursen (~1,1 s per navnløs rad) aldri brukes på utenlandske rader.
 
-**Sjekk «utelatt»-linjene i loggen.** For ski forventes ~40 % utelatt
-(445 → ~254). Er tallet null, virker ikke grensefila.
+**Sjekk «utelatt»-linjene i loggen.** I bboks-modus (`PLACES_NATIONAL_SCOPE=bbox`)
+forventes ~40 % utelatt for ski (445 → ~254); er tallet null, virker ikke
+grensefila. I områdemodus — standarden fra okt. 2026 — er forventningen den
+motsatte: tallet skal være **lavt**, fordi avgrensningen allerede har skjedd i
+spørringen. Et høyt tall der betyr at området har truffet noe annet enn staten
+Norge.
 
-> **Oppdatert sep. 2026, se funn 1 under.** Tabellen står ved lag, men to ting
-> er kommet til: `area`-filteret kan ikke ha margin mot riksgrensa, og det er
-> nå med i en måling (`scripts/bbox-candidates.ts`, variant D) i stedet for
-> bare å være forkastet. Og filteret kom faktisk for sent for én ting —
-> `--limit` ble talt før det.
+> **UTDATERT FRA OKT. 2026 — MÅLINGEN SNUDDE DEN.** Tabellen over beskriver
+> hvorfor `area[ISO3166-1=NO]` ble frarådet. Variant D ble målt i okt. 2026 og
+> vant: bevisspørringen gikk fra 7 555 til 4 536 objekter (−40 %), aking fra
+> 313 til 91 (−71 %), begge uten remark og på første forsøk. «Ny feilmodus»-raden
+> var det eneste argumentet som overlevde, og den er dekket av ADVARSEL-linja
+> for 0 elementer. Se «Byttet til område» nederst.
+>
+> Det argumentet som IKKE ble motbevist: `area` kan ikke ha margin mot
+> riksgrensa. Det står fortsatt, og er den ene kjente kostnaden ved byttet.
 
 ---
 
@@ -301,26 +309,24 @@ heiser og nedfarter inntil 50 m **utenfor** et polygon; klipper boksen på
 riksgrensa, mister et grenseanlegg beviset sitt og faller stille fra «alpint»
 til «ikke-alpint».
 
-Det er også et nytt argument mot områdefilteret, i tillegg til de som står
-lenger oppe: **et `area`-filter kan ikke ha margin.** Det klipper nøyaktig på
-grensa, per definisjon. Spørringen er likevel med i målingen under, som
-variant D — den er aldri prøvd, og `out count;` er den billigste måten å
-finne ut om området i det hele tatt løser seg.
+Det var også et argument mot områdefilteret: **et `area`-filter kan ikke ha
+margin.** Det klipper nøyaktig på grensa, per definisjon.
 
-#### Anbefaling
+> **Dette argumentet står fortsatt etter byttet i okt. 2026.** Det er den ene
+> kjente kostnaden, og den er ikke målt. Se «Byttet til område» under for
+> hvordan den måles etter kjøringen.
 
-**Fire bånd, etter at tellingen er gjort.** Fem gir ett prosentpoeng til for
-en ekstra setning per selektorlinje; over fem flater det ut. Men byttet skal
-ikke gjøres på areal alene, og derfor er `nationalChunk()` fortsatt på den
-**målte** ene boksen. Sett `PLACES_NATIONAL_BANDS=4` for å kjøre med bånd —
-bokssettet inngår i hentestegets fingeravtrykk, så `--resume` henter på nytt
-i stedet for å gjenbruke gårsdagens objekter.
+#### Anbefaling — OMGJORT OKT. 2026
+
+Den opprinnelige anbefalingen var **fire bånd, etter at tellingen er gjort**.
+Tellingen ble gjort, og båndene tapte mot variant D. De er tatt ut av
+`lib/import-chunks.ts`; `optimalBands` regner dem fortsatt ut på kommando.
 
 > Fingeravtrykket hashet tidligere bare `overpassArea`, som er **tom streng**
-> for den nasjonale chunken. Bboksen lå altså ikke i det i det hele tatt, og
-> «bytt boks og kjør med `--resume`» ville stille gjenbrukt gamle data.
-> Rettet; versjonen er hevet til 2, så alle lagrede hentesteg hentes én gang
-> til.
+> for den nasjonale chunken i bboks-modus. Bboksen lå altså ikke i det i det
+> hele tatt, og «bytt boks og kjør med `--resume`» ville stille gjenbrukt
+> gamle data. Rettet; versjonen er hevet til 2, så alle lagrede hentesteg
+> hentes én gang til.
 
 #### Hva Frederik skal kjøre
 
@@ -330,8 +336,9 @@ npx --yes tsx scripts/bbox-candidates.ts --queries  # bare spørringene
 ```
 
 Skriptet skriver ut ferdige `curl`-kommandoer for fire varianter —
-**A** dagens boks, **B** fire bånd, **C** fem bånd, **D**
-`area[ISO3166-1=NO]` — for områdesettet, bevissettet og aking.
+**A** bboks (nå reserve), **B** fire bånd, **C** fem bånd, **D**
+`area[ISO3166-1=NO]` (nå i produksjon) — for områdesettet, bevissettet og
+aking. Det er disse kommandoene som produserte målingen under.
 
 Hver spørring ender på `out count;`. Den returnerer **ett** objekt:
 
@@ -560,3 +567,261 @@ claim-vilkåret er fortsatt bare sett mot mock-data.
 - Ingen seeding av de fire anleggene med «heis uten utforløype». Radene og
   claimene finnes i koden, men seeden er ikke kjørt — se
   [alpin-usikker-heis.md](alpin-usikker-heis.md).
+
+---
+
+## Byttet til område (okt. 2026)
+
+`nationalChunk()` bruker fra nå `area["ISO3166-1"="NO"]["admin_level"="2"]`
+i stedet for bboksen. Reserven er `PLACES_NATIONAL_SCOPE=bbox`.
+
+### Målingen
+
+Kjørt mot overpass-api.de, kveld, alle på første forsøk, ingen remark:
+
+| selektor | A bboks | D area | |
+|---|---|---|---|
+| `skianlegg:bevis` | 7 555 objekter | 4 536 objekter | −40 % |
+| `aking` | 313 objekter | 91 objekter | −71 % |
+
+**91 er det avgjørende tallet.** Det stemmer eksakt med work-report fra
+tørrkjøringen dagen før — «aking 91 i Norge, 222 utenfor» — og
+`NATIONAL_EXPECTATION.aking` er 89, målt mot `piste:type=sled` i
+Geofabrik-fila. Tre uavhengige kilder på samme størrelse. Området henter
+nøyaktig det Norge-filteret ellers måtte kaste.
+
+`admin_level=2` er ikke pynt: uten den kan `ISO3166-1=NO` også sitte på
+underordnede grenser i OSM, og da avgjør det Overpass tilfeldigvis finner
+først hvilket område spørringen bruker.
+
+### Det som IKKE er målt — og som må sjekkes etter første kjøring
+
+**Marginen er borte.** Bboksen hadde `BOX_MARGIN_M` = 2 km, fordi
+bevisspørringen skal finne heiser og nedfarter inntil
+`SKI_EVIDENCE_TOLERANCE_M` (50 m) utenfor et polygon. Området klipper
+nøyaktig på riksgrensa. Et bevisobjekt som ligger **helt** i Sverige, men
+betjener et norsk anlegg, hentes ikke lenger.
+
+Ingenting i de 3 019 objektene som forsvant fra bevissettet sier hvor mange
+— om noen — som var slike. Det kan ikke avgjøres uten en kjøring.
+
+**Sjekken er billig og finnes allerede:** kjør `skianlegg:omrade` under
+variant D og se på tallet.
+
+```bash
+npx --yes tsx scripts/bbox-candidates.ts --category=skianlegg --queries
+```
+
+| resultat | betydning |
+|---|---|
+| ~254 polygoner | riktig — det er Geofabrik-tallet for Norge |
+| 0 | området løste seg ikke; bruk `PLACES_NATIONAL_SCOPE=bbox` |
+| ~445 | området traff ikke Norge, men noe større |
+
+Og etter tørrkjøringen: **antall anlegg med alpin-dom skal være minst like
+høyt som i bboks-kjøringen.** Faller det, er marginen årsaken, og da er
+reserven veien tilbake mens det utredes.
+
+### Norge-filteret er beholdt — som vakt
+
+`buildRows` hopper fortsatt over rader uten treff i kommunefila. Det er ikke
+lenger et filter i standardkjøringen, men det blir stående av fire grunner:
+
+1. **Reserven.** I bboks-modus er det fortsatt et ekte filter som fjerner
+   63–71 %.
+2. **Oppslaget er ikke valgfritt.** `cityAnchor` er `null` nasjonalt, så hver
+   rad må ha en kommune fra grensefila uansett — `rowsMissingCityAnchor`
+   kaster ellers før upsert. «Filteret» er bare navnet på det som skjer når
+   oppslaget ikke finner noen. De to alternativene er å kaste (velter hele
+   chunken for én rad) eller å skrive tom `municipality` (bryter by-modus i
+   `/api/activities`).
+3. **To ulike grensedefinisjoner.** OSM sin `admin_level=2` og Kartverkets
+   kommunefil er to kilder, og de er ikke identiske i strandsonen. Linja
+   måler uenigheten.
+4. **Svalbard og Jan Mayen.** Se under.
+
+Linja i loggen endrer altså betydning: fra «så mange naboland vi hentet» til
+«så mye er de to grensedefinisjonene uenige om». Et **høyt** tall i
+områdemodus er et varsel.
+
+### Svalbard og Jan Mayen
+
+**Om `area["ISO3166-1"="NO"]` omfatter dem er ikke verifisert.** Det avhenger
+av taggingen i OSM, og den kan ikke leses herfra — Overpass, Nominatim og
+openstreetmap.org er utilgjengelige fra utviklingsmiljøet. ISO 3166-1 fører
+Svalbard og Jan Mayen under en egen kode, `SJ`, men hvilken kode OSM sitt
+grenseobjekt faktisk bærer er ikke lest.
+
+**Spørsmålet påvirker ikke hva som havner i basen.** `data/kommuner.geojson`
+har 357 fastlandskommuner (kommunenummer 03–56, nordligste punkt 71,19° N på
+Nordkapp). Svalbard (2100) og Jan Mayen (2211) står ikke i den, så et punkt
+der finner ingen kommune og faller ut i vakten — som en svensk park.
+`scripts/nasjonal-chunk.test.ts` fester det med Longyearbyen og Olonkinbyen.
+
+Det var også utenfor rekkevidde før byttet, av en annen grunn: bboksen
+stopper på 71,5° N og 4,0° Ø, mens Longyearbyen ligger på 78,2° N og Jan
+Mayen på 8,7° **vest**.
+
+Vil du ha svaret, koster det én spørring:
+
+```bash
+curl -sS -A 'togedoo-import/1.0' https://overpass-api.de/api/interpreter \
+  --data-urlencode 'data=[out:json][timeout:60];
+area["ISO3166-1"="NO"]["admin_level"="2"]->.a;
+node(area.a)(78.0,15.0,78.5,16.5);
+out count;'
+```
+
+Svarer den 0, er Svalbard utenfor området. Svarer den noe annet, er det
+vakten som holder det ute — og det er greit, men da bør det stå her.
+
+### Fingeravtrykket
+
+Byttet gir **nytt fingeravtrykk**, og gamle `.import-work`-kataloger fra
+bboks-kjøringene kan ikke gjenbrukes med `--resume`. Begge feltene endrer seg
+samtidig — `area` fra tom streng til områdesetningen, `scopes` fra boksen til
+`(area.a)` — og begge ligger i `v: 2`-avtrykket.
+
+Det er ønsket oppførsel, ikke en kostnad å unngå: en gjenopptagelse som
+gjenbrukte bboks-objektene ville gitt nøyaktig de utenlandske radene byttet
+skal fjerne. `scripts/bbox-og-noder.test.ts` regner det ut i stedet for å
+påstå det.
+
+### Det som ble fjernet
+
+`NORWAY_BANDS_4`, `NORWAY_BANDS_5`, `nationalBoxes()` og
+`PLACES_NATIONAL_BANDS`. Båndene var **regnet ut, ikke målt**, og deres egen
+kommentar krevde en `out count;`-måling før bruk. Målingen ble gjort, og de
+tapte på akkurat den aksen de skulle forbedre.
+
+`lib/norway-boxes.ts` og `scripts/bbox-candidates.ts` er **beholdt**. Skriptet
+er instrumentet som produserte variant D — spørringene det skriver ut er
+ordrett de som ble kjørt. Slettes det, finnes ikke lenger oppskriften for å
+reprodusere målingen hele avgjørelsen hviler på. Båndene kan fortsatt regnes
+ut derfra; de står bare ikke i produksjonskoden, og grensefila kan dermed
+oppdateres uten at et tallsett ingen kjører må limes inn på nytt.
+
+**Én ting er nå uten kaller:** flerboks-grenen i `scopedSelector`. Ingen chunk
+lager mer enn én avgrensning. Den er beholdt og testet med et litteralt
+bokssett, fordi den er veien videre om en reservekjøring på bboks må deles
+opp — og fordi å slette den i samme commit som bytter avgrensning ville gjort
+en halvering vanskeligere å lese om den nasjonale kjøringen går galt. Skal
+den bort, er det en egen, rent subtraktiv endring.
+
+---
+
+## Stoppvilkåret sammenlignet objekter med rader (okt. 2026)
+
+Den første områdekjøringen ble stanset av utbyttevakten:
+
+```
+aking       13 rader mot 89 forventet (15 %)  → STOPP
+skianlegg  307 rader mot 254 forventet (121 %)
+```
+
+**Begge tallene var meningsløse.** `NATIONAL_EXPECTATION` er målt med osmium
+mot Geofabrik-fila og er i **objekter**; `yieldCollapseStop` sammenlignet dem
+med **rader**.
+
+| | aking | skianlegg |
+|---|---|---|
+| forventning | 89 `piste:type=sled`-objekter | 254 `landuse=winter_sports`-objekter |
+| hentet | 91 objekter | 423 objekter (seks mønstre) |
+| ble | 13 bakker | 307 rader |
+
+Korketrekkeren alene er 14 objekter som blir 1 rad. Forholdet objekt→rad er
+ikke 1:1 for noen kategori, og for aking er det ikke engang samme
+størrelsesorden.
+
+### Rettingen
+
+Vakten sammenligner nå **objekter mot objekter**, i det settet forventningen
+faktisk gjelder:
+
+```ts
+export interface NasjonalForventning {
+    readonly objekter: number;  // 89
+    readonly tag: string;       // 'piste:type=sled'
+    readonly sett: string;      // 'main'
+}
+```
+
+`sett` er ikke pynt. Skianlegg henter to sett: `omrade` (423 objekter, blir
+rader) og `bevis` (4 536 objekter, blir **aldri** rader — de er inndata til den
+romlige testen). Summerte vakten begge, ville forholdstallet vært ~1 950 % og
+kategorien kunne aldri stanset, heller ikke om områdeselektoren sluttet å
+treffe.
+
+Rapporttabellen viser nå begge enheter, og bare den ene har et forholdstall:
+
+```
+  kategori        objekter   forventet   andel      rader   uten ekte navn
+  skianlegg           423         254   167 %        307              157
+  aking                91          89   102 %         13                8
+  rullesport            —           —       —         12                3
+  (forventning = objekter i Geofabrik-fila: skianlegg landuse=winter_sports i
+   «omrade», aking piste:type=sled i «main»)
+```
+
+### Hvorfor radene IKKE fikk et forventningstall
+
+Det er det egentlige spørsmålet, og svaret er at det ikke finnes noe å
+forankre et radtall i.
+
+**Objekter kommer fra OSM.** De kan telles utenfor koden vår, med osmium mot
+et navngitt Geofabrik-uttrekk, deterministisk og uten nett. Tallet er
+uavhengig av alt vi gjør med dataene etterpå.
+
+**Rader er resultatet av våre egne regler** — navnegruppering,
+relasjonsforankring, dedupen, claims, `--limit`. Et radtall som «fasit» ville
+blitt feil av at *vi* forbedret noe. Endrer vi `PLACES_AKING_GROUP_M` fra 1000
+til 800, går radtallet opp uten at en eneste ting i OSM har endret seg — og da
+stopper vakten på vår egen forbedring. Det er nøyaktig den vakten man slutter
+å tro på, og deretter slår av.
+
+Så: **vakten stopper på objekter. Radene rapporteres ved siden av, uten
+forholdstall.**
+
+### Tallene fra denne kjøringen — observasjon, ikke fasit
+
+De står i testfiksturet i `scripts/nasjonal.test.ts` og her, som **et
+utgangspunkt for å se endring**, ikke som et krav:
+
+| kategori | objekter | rader | uten ekte navn |
+|---|---|---|---|
+| skianlegg | 423 (`omrade`) | 307 | 157 |
+| aking | 91 | 13 | — |
+
+Byttet fra bboks til område, målt i samme kjøring:
+
+| | bboks | område |
+|---|---|---|
+| skianlegg | 476 rader (med Sverige/Finland) | 307 rader |
+| aking | 14 rader | 13 rader |
+
+**Hvordan de forankres, hvis de noen gang skal bli mer enn en observasjon:**
+et radtall er først en fasit når det er knyttet til en commit av
+grupperingsreglene. Da hører det hjemme som et *regresjonstall* — «samme
+inndata ga 307 rader på commit X» — og ikke som en nasjonal forventning. Den
+formen krever at hentesteget lagres og kjøres om mot ny kode, altså at
+`.import-work` fra en kjent kjøring tas vare på. Det finnes ikke i dag, og det
+er en egen oppgave.
+
+Inntil da: radtallene her er noe å sammenligne neste kjøring mot for hånd, og
+en uventet endring er et spørsmål, ikke en feil.
+
+### To ting til fra samme kjøring
+
+**`deduped` ble tapt ved `--resume`.** Feltet sto i `Pick`-typen på
+`store.write()`, så kalleren kunne sende det og typesjekken godtok det, men det
+ble aldri spredt inn i manifestoppføringen. `entry?.deduped` var derfor alltid
+`undefined` ved gjenopptagelse, og dedup-rapporten for en gjenopptatt chunk var
+tom uten at noe feilet. Fanget fordi settellingen skulle inn på nøyaktig samme
+sted. Rettet, med test.
+
+**Titlene har samme problem som lekeplassene, men verre.** «Rauland skisenter»
+× 3 og «Skianlegg» × 6 med 1,2–2,2 km mellom seg; 921 par mellom 102 rader med
+delt generert tittel, og **157 av 307 rader mangler ekte navn** (mot 4,6 %
+navnedekning for lekeplasser — her er det 49 %). Ikke rørt i denne omgangen.
+Merk at 1,2–2,2 km er *innenfor* 2 km-taket i `generatedTitlePairs`, så de
+telles; det er samme klasse som lekeplassene, ikke en ny.

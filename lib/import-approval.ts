@@ -19,9 +19,24 @@ import { fingerprint } from './import-chunks';
 
 export interface KategoriLinje {
     key: string;
+    /** Rader kjøringen ville skrevet. Resultatet av VÅR gruppering. */
     rader: number;
-    /** Nasjonalt tall × andelen av planen kjøringen dekker. null = ikke målt. */
+    /**
+     * OBJEKTER hentet fra OSM, i settet [forventetSett] navngir. `null` når
+     * kategorien ikke har en nasjonal forventning, eller når hentesteget ble
+     * gjenopptatt fra en .import-work uten settelling.
+     *
+     * DET ER DENNE KOLONNEN «andel» REGNES PÅ. Fram til okt. 2026 sto rader
+     * der, mot en forventning i objekter: aking ga «13 rader mot 89 forventet
+     * (15 %)» og stanset kjøringen, mens 13 og 89 talte helt ulike ting.
+     */
+    objekter: number | null;
+    /** Nasjonalt OBJEKTtall × andelen av planen kjøringen dekker. null = ikke målt. */
     forventet: number | null;
+    /** Taggen forventningen ble talt på, f.eks. `piste:type=sled`. */
+    forventetTag: string | null;
+    /** Hentesettet objektene telles i, f.eks. `omrade`. */
+    forventetSett: string | null;
     /** Rader som ikke fikk et ekte OSM-navn som tittel. */
     utenNavn: number;
 }
@@ -41,6 +56,8 @@ export interface GodkjenningsInput {
     /** null = ingen databasetilgang, altså ukjent. Ikke null = målt. */
     diff: ForhandsDiff | null;
     kategorier: KategoriLinje[];
+    /** Kategorier utbyttevakten ikke fikk vurdert. Se [hoppetOverIUtbytte]. */
+    utbytteHoppet: readonly string[];
     geokoding: { forsok: number; feil: number };
     overpass: { sporringer: number; medOmkamp: number };
     tommeSett: readonly string[];
@@ -80,14 +97,37 @@ export function formatApproval(i: GodkjenningsInput): string {
                 : '   (nye/oppdaterer: UKJENT — ingen databasetilgang)')
     );
     L.push('');
-    L.push('  kategori        rader   forventet   andel   uten ekte navn');
+    // TO ENHETER, OG KOLONNENE SIER HVILKEN. «andel» regnes på objekter mot
+    // objekter; radkolonnen står ved siden av UTEN forholdstall, fordi det
+    // ikke finnes et anker å dele på — se [NasjonalForventning].
+    L.push('  kategori        objekter   forventet   andel      rader   uten ekte navn');
     for (const k of i.kategorier) {
+        const har = k.objekter !== null && k.forventet !== null;
         L.push(
-            `  ${k.key.padEnd(14)}${String(k.rader).padStart(6)}` +
+            `  ${k.key.padEnd(14)}${(k.objekter === null ? '—' : String(k.objekter)).padStart(9)}` +
                 `${(k.forventet === null ? '—' : String(Math.round(k.forventet))).padStart(12)}` +
-                `${(k.forventet === null ? '—' : pct(k.rader, k.forventet)).padStart(8)}` +
+                `${(har ? pct(k.objekter!, k.forventet!) : '—').padStart(8)}` +
+                `${String(k.rader).padStart(11)}` +
                 `${String(k.utenNavn).padStart(17)}`
         );
+    }
+    const grunnlag = i.kategorier.filter((k) => k.forventetTag && k.objekter !== null);
+    if (grunnlag.length) {
+        L.push(
+            '  (forventning = objekter i Geofabrik-fila: ' +
+                grunnlag.map((k) => `${k.key} ${k.forventetTag} i «${k.forventetSett}»`).join(', ') +
+                ')'
+        );
+    }
+    if (i.utbytteHoppet.length) {
+        L.push(
+            `  UTBYTTESJEKKEN HOPPET OVER ${i.utbytteHoppet.join(', ')} — hentesteget mangler` +
+                `  ADVARSEL`
+        );
+        L.push(
+            '      settellingen. Det skjer med en .import-work skrevet før okt. 2026.'
+        );
+        L.push('      Kjør uten --resume, eller med en tom --work, for å få vakten tilbake.');
     }
     L.push('');
     L.push(

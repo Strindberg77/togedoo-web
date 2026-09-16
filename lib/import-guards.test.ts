@@ -117,20 +117,40 @@ test('en kategori uten målt nasjonalt tall hoppes over', () => {
     assert.equal(yieldCollapseStop(telling({ rullesport: 0 }), 1.0), null);
 });
 
-test('forventningstallene er de målte', () => {
+test('forventningstallene er de målte, og de er OBJEKTER', () => {
     // Låser tallene mot en utilsiktet endring. Kilde: osmium mot
-    // Geofabrik-fila, sep. 2026.
+    // Geofabrik-fila, sep. 2026. Taggen og settet står med fordi tallet uten
+    // dem ikke kan sammenlignes med noe — se NasjonalForventning.
     assert.deepEqual(NATIONAL_EXPECTATION, {
-        ballbane: 15423,
-        lekeplass: 11901,
-        badeplass: 4841,
-        park: 3070,
-        idrettshall: 2312,
-        museum: 1241,
-        bibliotek: 721,
-        skianlegg: 254,
-        aking: 89,
+        ballbane: { objekter: 15423, tag: 'leisure=pitch', sett: 'main' },
+        lekeplass: { objekter: 11901, tag: 'leisure=playground', sett: 'main' },
+        badeplass: { objekter: 4841, tag: 'natural=beach', sett: 'main' },
+        park: { objekter: 3070, tag: 'leisure=park', sett: 'main' },
+        idrettshall: { objekter: 2312, tag: 'leisure=sports_centre', sett: 'main' },
+        museum: { objekter: 1241, tag: 'tourism=museum', sett: 'main' },
+        bibliotek: { objekter: 721, tag: 'amenity=library', sett: 'main' },
+        skianlegg: { objekter: 254, tag: 'landuse=winter_sports', sett: 'omrade' },
+        aking: { objekter: 89, tag: 'piste:type=sled', sett: 'main' },
     });
+});
+
+test('SKIANLEGG teller «omrade», ikke «bevis» — ellers er vakten ubrukelig', () => {
+    // Bevissettet hentet 4536 objekter i områdekjøringen okt. 2026, og de blir
+    // ALDRI rader: de er inndata til den romlige testen. Summerte vakten
+    // begge settene, ville forholdstallet vært rundt 1950 % og kategorien
+    // kunne aldri stanset — heller ikke om områdeselektoren sluttet å treffe.
+    assert.equal(NATIONAL_EXPECTATION.skianlegg.sett, 'omrade');
+    // 423 objekter i «omrade» er det målte, og det går klar.
+    assert.equal(yieldCollapseStop(telling({ skianlegg: 423 }), 1.0), null);
+    // 0 i «omrade» stanser, selv om bevissettet var fullt.
+    assert.ok(yieldCollapseStop(telling({ skianlegg: 0 }), 1.0));
+});
+
+test('DE MÅLTE TALLENE FRA OMRÅDEKJØRINGEN GÅR KLAR', () => {
+    // Kjøringen okt. 2026 som utløste et FALSKT stopp med den gamle vakten:
+    // aking 13 rader mot 89 forventet (15 %). Med objekter mot objekter er
+    // aking 91 mot 89 — 102 %.
+    assert.equal(yieldCollapseStop(telling({ skianlegg: 423, aking: 91 }), 1.0), null);
 });
 
 test('null av 22 forventede stopper — det er hele poenget', () => {
@@ -138,7 +158,9 @@ test('null av 22 forventede stopper — det er hele poenget', () => {
     // selektor som ikke treffer.
     const stop = yieldCollapseStop(telling({ aking: 0 }), 0.25);
     assert.ok(stop);
-    assert.match(stop!.message, /aking: 0 rader mot 22 forventet/);
+    assert.match(stop!.message, /aking: 0 objekter i settet «main» mot 22 forventet/);
+    assert.match(stop!.message, /piste:type=sled/, 'meldingen sier hva tallet er talt på');
+    assert.match(stop!.message, /OBJEKTER fra OSM, ikke rader/, 'enheten står i klartekst');
 });
 
 test('en kategori med under én forventet rad vurderes ikke', () => {
@@ -146,6 +168,31 @@ test('en kategori med under én forventet rad vurderes ikke', () => {
     // Med dagens tabell er dette utenfor rekkevidde (minste tall er 89, og
     // sjekken slår først inn ved 25 % av planen = 22), så det testes mot en
     // egen tabell — grenen finnes for den dagen en liten kategori måles.
-    assert.equal(yieldCollapseStop(telling({ nisje: 0 }), 0.3, { nisje: 2 }), null);
-    assert.ok(yieldCollapseStop(telling({ nisje: 0 }), 0.3, { nisje: 20 }));
+    const nisje = (objekter: number) => ({ nisje: { objekter, tag: 'x=y', sett: 'main' } });
+    assert.equal(yieldCollapseStop(telling({ nisje: 0 }), 0.3, nisje(2)), null);
+    assert.ok(yieldCollapseStop(telling({ nisje: 0 }), 0.3, nisje(20)));
+});
+
+test('en vakt som slaar seg av skal SI det', async () => {
+    // Et hentesteg gjenopptatt fra en .import-work skrevet før okt. 2026 har
+    // ingen settelling. Da kan vakten ikke telle noe, og den hopper over
+    // kategorien — riktig, siden alternativet er å stoppe på et tall som ikke
+    // finnes. Men stillhet ville gjort det umulig å oppdage.
+    const { hoppetOverIUtbytte } = await import('./import-guards');
+    const kjort = ['skianlegg', 'aking', 'rullesport'];
+
+    // Ingenting talt: begge målte kategorier hoppes over. rullesport har
+    // ingen forventning i det hele tatt og er ikke «hoppet over».
+    assert.deepEqual(hoppetOverIUtbytte(new Map(), kjort), ['skianlegg', 'aking']);
+    // Og vakten stopper ikke på dem.
+    assert.equal(yieldCollapseStop(new Map(), 1.0), null);
+
+    // Delvis: bare den som mangler meldes.
+    assert.deepEqual(hoppetOverIUtbytte(telling({ skianlegg: 423 }), kjort), ['aking']);
+    assert.deepEqual(hoppetOverIUtbytte(telling({ skianlegg: 423, aking: 91 }), kjort), []);
+
+    // 0 ER IKKE MANGLENDE. Forskjellen er hele poenget: 0 objekter er et
+    // målt tall og skal stanse kjøringen.
+    assert.deepEqual(hoppetOverIUtbytte(telling({ skianlegg: 0 }), ['skianlegg']), []);
+    assert.ok(yieldCollapseStop(telling({ skianlegg: 0 }), 1.0));
 });
