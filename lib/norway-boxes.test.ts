@@ -20,7 +20,7 @@ import {
     pointInBox,
     uncovered,
 } from './norway-boxes';
-import { NATIONAL_BBOX, NORWAY_BANDS_4, NORWAY_BANDS_5, nationalBoxes, nationalChunk } from './import-chunks';
+import { NATIONAL_AREA, NATIONAL_BBOX, nationalChunk, nationalScope } from './import-chunks';
 import { MUNICIPALITY_FILE } from '../scripts/municipality-index';
 
 /** `(minlat,minlon,maxlat,maxlon)` tilbake til en boks. */
@@ -51,29 +51,20 @@ function allePunkter(): GeoPoint[] {
     return punkterCache;
 }
 
-test('båndene i lib/import-chunks.ts er de samme som regnes ut fra grensefila', () => {
-    // REGENERERINGSVAKTEN. Konstantene er skrevet inn for hånd, så de kan
-    // komme i utakt med data/kommuner.geojson den dagen fila oppdateres.
-    // Feiler denne, kjør `npx tsx scripts/bbox-candidates.ts` og lim inn på
-    // nytt — IKKE endre tallene for hånd.
-    const punkter = allePunkter();
-    for (const [k, fasit] of [
-        [4, NORWAY_BANDS_4],
-        [5, NORWAY_BANDS_5],
-    ] as const) {
-        const regnet = optimalBands(punkter, k).map((b) => bboxFilter(padBox(b, BOX_MARGIN_M)));
-        assert.deepEqual(regnet, [...fasit], `k=${k}`);
-    }
-});
-
 test('hvert punkt i hver kommune ligger i minst én boks', () => {
     // Avrundingen til to desimaler i bboxFilter kan flytte en kant inntil
     // ~550 m. Testen gjøres derfor på de AVRUNDEDE tallene — altså på det
     // som faktisk sendes til Overpass, ikke på flyttallene bak dem.
+    // BÅNDENE ER UTE AV PRODUKSJONSKODEN (okt. 2026) — de tapte mot området.
+    // De regnes fortsatt ut her, fra grensefila, fordi det er DP-en som
+    // testes: en deling som ikke dekker alle kommuner er feil uansett om noen
+    // kjører den. Reserveboksen står med som den ene som faktisk brukes.
+    const bandSet = (k: number) =>
+        optimalBands(allePunkter(), k).map((b) => bboxFilter(padBox(b, BOX_MARGIN_M)));
     for (const [navn, bokser] of [
-        ['4 bånd', NORWAY_BANDS_4],
-        ['5 bånd', NORWAY_BANDS_5],
-        ['dagens', [NATIONAL_BBOX]],
+        ['4 bånd', bandSet(4)],
+        ['5 bånd', bandSet(5)],
+        ['reserveboksen', [NATIONAL_BBOX]],
     ] as const) {
         const parsed = bokser.map(parseBox);
         const ute = uncovered(allePunkter(), parsed);
@@ -92,10 +83,11 @@ test('marginen er der — boksene klipper ikke på grensa', () => {
     // Uten margin mister et grenseanlegg bevis som ligger noen titalls meter
     // inn i Sverige, og faller stille fra «alpint» til «ikke-alpint».
     const norge = boundsOf(allePunkter())!;
-    const sor = parseBox(NORWAY_BANDS_4[0]);
+    const fire = optimalBands(allePunkter(), 4).map((b) => bboxFilter(padBox(b, BOX_MARGIN_M)));
+    const sor = parseBox(fire[0]);
     assert.ok(sor.minlat < norge.minlat, 'sørkanten skal ligge under Norges sørligste punkt');
     assert.ok(sor.minlon < norge.minlon, 'vestkanten skal ligge vest for Norges vestligste punkt');
-    const nord = parseBox(NORWAY_BANDS_4[3]);
+    const nord = parseBox(fire[3]);
     assert.ok(nord.maxlat > norge.maxlat);
     assert.ok(nord.maxlon > norge.maxlon);
 });
@@ -117,13 +109,24 @@ test('båndene er MINDRE enn dagens boks, og flere bånd er ikke verre', () => {
     assert.ok(areal([parseBox(NATIONAL_BBOX)]) > forrige);
 });
 
-test('nationalBoxes velges av miljøvariabelen, og standarden er den MÅLTE boksen', () => {
-    assert.deepEqual(nationalBoxes(undefined), [NATIONAL_BBOX]);
-    assert.deepEqual(nationalBoxes(''), [NATIONAL_BBOX]);
-    assert.deepEqual(nationalBoxes('4'), NORWAY_BANDS_4);
-    assert.deepEqual(nationalBoxes('5'), NORWAY_BANDS_5);
-    // En skrivefeil skal ikke bety «dagens boks» i stillhet.
-    assert.throws(() => nationalBoxes('fire'), /PLACES_NATIONAL_BANDS/);
-    assert.throws(() => nationalBoxes('6'), /PLACES_NATIONAL_BANDS/);
-    assert.deepEqual(nationalChunk().overpassScopes, [NATIONAL_BBOX]);
+test('avgrensningen velges av miljøvariabelen, og standarden er OMRÅDET', () => {
+    assert.equal(nationalScope(undefined), 'area');
+    assert.equal(nationalScope(''), 'area');
+    assert.equal(nationalScope('area'), 'area');
+    assert.equal(nationalScope('bbox'), 'bbox');
+    // En skrivefeil skal ikke bety «området» i stillhet.
+    assert.throws(() => nationalScope('boks'), /PLACES_NATIONAL_SCOPE/);
+    assert.throws(() => nationalScope('4'), /PLACES_NATIONAL_SCOPE/);
+});
+
+test('standardchunken er omraadet, reserven er boksen', () => {
+    const omrade = nationalChunk();
+    assert.equal(omrade.overpassArea, NATIONAL_AREA);
+    assert.deepEqual(omrade.overpassScopes, ['(area.a)'], 'samme form som en kommune-chunk');
+
+    const boks = nationalChunk('bbox');
+    assert.equal(boks.overpassArea, '', 'en bbox trenger ingen area-setning');
+    assert.deepEqual(boks.overpassScopes, [NATIONAL_BBOX]);
+
+    assert.equal(omrade.overpassTimeout, boks.overpassTimeout, 'timeouten er ikke endret');
 });

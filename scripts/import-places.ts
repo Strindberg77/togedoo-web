@@ -2617,10 +2617,33 @@ export async function buildRows(
         const pos = coords(el);
         if (!cat || !pos) continue;
 
-        // UTENFOR NORGE — OG DET SKJER FØR --limit. En nasjonal henting med
-        // bbox tar med naboland, og de radene er ikke våre. De utelates HER,
-        // ikke ved å la rowsMissingCityAnchor kaste før upsert — en enkelt
-        // svensk alpinbakke skal ikke velte hele chunken.
+        // UTENFOR NORGE — OG DET SKJER FØR --limit. De utelates HER, ikke ved
+        // å la rowsMissingCityAnchor kaste før upsert — en enkelt svensk
+        // alpinbakke skal ikke velte hele chunken.
+        //
+        // FRA OKT. 2026 ER DETTE EN VAKT, IKKE ET FILTER, i standardkjøringen.
+        // Avgrensningen ligger nå i spørringen (`area[ISO3166-1=NO]`), så
+        // tallet under skal være LAVT. Det skal likevel ikke være fjernet, av
+        // fire grunner — hver av dem nok alene:
+        //
+        //  1. RESERVEN. `PLACES_NATIONAL_SCOPE=bbox` finnes, og i bboks-modus
+        //     er dette fortsatt et ekte filter som fjerner 63–71 %.
+        //  2. OPPSLAGET ER IKKE VALGFRITT. cityAnchor er null nasjonalt, så
+        //     hver rad MÅ ha en kommune fra grensefila uansett. «Filteret» er
+        //     bare navnet på det som skjer når oppslaget ikke finner noen.
+        //     Alternativene er å kaste (velter chunken) eller å skrive tom
+        //     municipality (bryter by-modus i /api/activities). Å hoppe over
+        //     og rapportere er den eneste utgangen som er både trygg og ikke
+        //     dødelig.
+        //  3. TO ULIKE GRENSEDEFINISJONER. OSM sin admin_level=2 og
+        //     Kartverkets kommunefil er to kilder, og de er ikke identiske i
+        //     strandsonen. Tallet under MÅLER uenigheten.
+        //  4. SVALBARD OG JAN MAYEN. Grensefila har 357 kommuner, alle på
+        //     fastlandet (kommunenummer 03–56; Svalbard 2100 og Jan Mayen
+        //     2211 finnes ikke i den). Tar området dem med, stoppes de her.
+        //
+        // ET HØYT TALL I OMRÅDEMODUS ER ET VARSEL, ikke normalen: da har
+        // området truffet noe annet enn staten Norge.
         //
         // REKKEFØLGEN ER EN RETTING (sep. 2026). Fram til nå ble --limit talt
         // FØR Norge-filteret, og med 63–71 % utenlandske objekter i den

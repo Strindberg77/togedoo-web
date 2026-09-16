@@ -19,6 +19,25 @@
 //
 // Skriptet rører ikke nettet selv. Det er med vilje: valget av boks skal
 // gjøres på tall Frederik har sett, ikke på en kjøring herfra.
+//
+// ─────────────────────────────────────────────────────────────────────────
+// MÅLINGEN ER GJORT (okt. 2026, overpass-api.de, kveld, alle på første
+// forsøk, ingen remark):
+//
+//   skianlegg:bevis   A bboks 7 555      D area 4 536     −40 %
+//   aking             A bboks   313      D area    91     −71 %
+//
+// KANDIDAT D VANT, og står nå i produksjon som [NATIONAL_AREA]. Båndene
+// (B og C) tapte og er ute av lib/import-chunks.ts.
+//
+// SKRIPTET BLIR LIKEVEL STÅENDE. Det er instrumentet som produserte tallene
+// over — spørringene under er ordrett de som ble kjørt. Slettes det, finnes
+// ikke lenger oppskriften for å reprodusere målingen hele avgjørelsen hviler
+// på, og båndene kan ikke regnes ut på nytt den dagen noen vil etterprøve at
+// de faktisk tapte.
+//
+// Tallene på venstre side er areal og forblir en proxy; «−40 %» og «−71 %»
+// er de ekte målte tallene, og det er de som avgjorde.
 import * as fs from 'node:fs';
 
 import { boundsOf, type GeoBounds, type GeoPoint } from '../lib/geo-polygon';
@@ -30,7 +49,7 @@ import {
     padBox,
     uncovered,
 } from '../lib/norway-boxes';
-import { NATIONAL_BBOX } from '../lib/import-chunks';
+import { NATIONAL_AREA, NATIONAL_BBOX } from '../lib/import-chunks';
 import { PLACE_CATEGORIES, SKI_AREA_SELECTOR, SKI_EVIDENCE_SELECTOR } from './import-places';
 import { MUNICIPALITY_FILE } from './municipality-index';
 
@@ -149,17 +168,14 @@ interface Variant {
 }
 
 const varianter: Variant[] = [
-    { navn: 'A  dagens boks', omrade: '', bokser: [DAGENS] },
-    { navn: 'B  4 bånd', omrade: '', bokser: bands(4) },
-    { navn: 'C  5 bånd', omrade: '', bokser: bands(5) },
-    // Området SOM BLE FORKASTET, tatt med her nettopp fordi det aldri er
-    // målt. `out count;` er den billigste måten å finne ut om det i det hele
+    { navn: 'A  bboks (reserve)', omrade: '', bokser: [DAGENS] },
+    { navn: 'B  4 bånd (tapte)', omrade: '', bokser: bands(4) },
+    { navn: 'C  5 bånd (tapte)', omrade: '', bokser: bands(5) },
+    // VINNEREN. Tatt med i målingen nettopp fordi den var forkastet uten tall;
+    // `out count;` var den billigste måten å finne ut om området i det hele
     // tatt løser seg — svarer den 0, er området problemet og ikke dataene.
-    {
-        navn: 'D  area[ISO3166-1=NO]',
-        omrade: 'area["ISO3166-1"="NO"]["admin_level"="2"]->.a',
-        bokser: null,
-    },
+    // Den svarte 4 536 og 91, uten remark, på første forsøk.
+    { navn: 'D  area[ISO3166-1=NO]  ← I PRODUKSJON', omrade: NATIONAL_AREA, bokser: null },
 ];
 
 /** Selektorlinjene med ett filter per boks (eller uendret for område). */

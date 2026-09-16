@@ -89,16 +89,20 @@ export interface ImportChunk {
      * selektorer måtte ellers kjenne til hvordan chunken er avgrenset, og da
      * ville et kildebytte rørt dem alle.
      *
-     * HVORFOR EN LISTE. Ett filter holder for en kommune og for én bbox, men
-     * ikke for Norge: landet er 13 breddegrader langt og 27 lengdegrader
-     * bredt, så ÉN boks rundt det rommer også Stockholm, Helsingfors, Riga og
-     * St. Petersburg. Flere, strammere bokser er den samme mekanismen brukt
-     * flere ganger — [scopedSelector] gjentar da hver selektorlinje én gang
-     * per boks, og Overpass sin union fjerner duplikatene i overlappen.
+     * HVORFOR EN LISTE. Den ble en liste for å kunne dele Norge i flere
+     * breddebånd: ÉN boks rundt landet rommer også Stockholm, Helsingfors,
+     * Riga og St. Petersburg. Båndene tapte mot `area[ISO3166-1=NO]` i
+     * målingen (okt. 2026) og er ute — se [NATIONAL_AREA]. INGEN CHUNK I
+     * PRODUKSJON LAGER MER ENN ÉN AVGRENSNING I DAG.
+     *
+     * Mekanismen står likevel igjen, testet i scripts/bbox-og-noder.test.ts:
+     * den er veien videre om en reservekjøring på bboks noen gang må deles
+     * opp. Skal den bort, er det en egen, rent subtraktiv endring — ikke en
+     * som hører hjemme i commiten som bytter avgrensning.
      *
      * Rekkefølgen betyr ingenting for svaret, men den er en del av
-     * hentestegets fingeravtrykk: endres boksene, blir et lagret hentesteg
-     * IKKE gjenbrukt ved --resume.
+     * hentestegets fingeravtrykk: endres avgrensningen, blir et lagret
+     * hentesteg IKKE gjenbrukt ved --resume.
      */
     readonly overpassScopes: readonly string[];
     /**
@@ -328,101 +332,103 @@ export function nationalCoverage(plan: readonly ImportChunk[]): number | null {
 }
 
 /**
- * BBOKSEN OVER NORGE, som Frederik faktisk målte mot (sep. 2026).
+ * BBOKSEN OVER NORGE — IKKE LENGER STANDARD, men beholdt som RESERVE.
  *
- * Tallene skal ikke justeres uten en ny måling: det er nøyaktig denne boksen
- * som ga 445 winter_sports-polygoner på 5,5 s og 7 555 bevisobjekter på 35 s,
- * begge uten remark og på første forsøk.
+ * Fram til okt. 2026 var dette den nasjonale avgrensningen. [NATIONAL_AREA]
+ * overtok etter målingen som er gjengitt der. Boksen blir stående av én grunn:
+ * den er den eneste ALTERNATIVE avgrensningen som er MÅLT ende-til-ende — 445
+ * winter_sports-polygoner på 5,5 s og 7 555 bevisobjekter på 35 s, begge uten
+ * remark og på første forsøk. Svarer ikke speilets områdeindeks en kveld, er
+ * `PLACES_NATIONAL_SCOPE=bbox` veien tilbake til noe som er kjørt før.
  *
- * DEN DEKKER OGSÅ SVERIGE, DANMARK OG FINLAND. Det er ikke en feil, men et
- * valg: se [nationalChunk] for hvorfor avgrensningen til Norge skjer på
- * koordinatet og ikke i spørringen.
+ * Tallene skal ikke justeres uten en ny måling — da er de ikke lenger sanne
+ * om koden som kjører.
+ *
+ * DEN DEKKER OGSÅ SVERIGE, DANMARK OG FINLAND, og det er nettopp derfor den
+ * tapte: se [NATIONAL_AREA]. I bboks-modus er Norge-filteret i buildRows et
+ * EKTE FILTER og ikke bare en vakt.
  */
 export const NATIONAL_BBOX = '(57.5,4.0,71.5,31.5)';
 
 /**
- * NORGE SOM FIRE BÅND, alternativet til [NATIONAL_BBOX].
+ * NORGE SOM OMRÅDE — standardavgrensningen fra okt. 2026.
  *
- * HVORFOR: work-report etter første nasjonale tørrkjøring (sep. 2026) viste at
- * 63–71 % av de hentede objektene lå utenfor Norge. Årsaken er formen: Norge
- * er 13 breddegrader langt, og ÉN boks som rommer både Lindesnes (4,5°Ø) og
- * Vardø (31,2°Ø) rommer også Stockholm, Helsingfors, Riga og St. Petersburg.
+ * MÅLT (overpass-api.de, kveld, alle på første forsøk, uten remark):
  *
- * Boksene er REGNET UT, ikke valgt for hånd: lib/norway-boxes.ts finner de k
- * båndene som gir minst samlet areal ved dynamisk programmering, mot alle
- * 266 619 punktene i data/kommuner.geojson, og legger [BOX_MARGIN_M] på hver.
- * Kjør `npx tsx scripts/bbox-candidates.ts` for å regne dem ut på nytt;
- * lib/norway-boxes.test.ts feiler hvis tallene her har kommet i utakt med
- * grensefila.
+ *   selektor            A  bboks                D  area[ISO3166-1=NO]
+ *   skianlegg:bevis     7 555 objekter          4 536 objekter   −40 %
+ *   aking                 313 objekter             91 objekter   −71 %
  *
- * MARGINEN (2 km) er ikke pynt. Bevisspørringen skal finne heiser og
- * nedfarter som ligger inntil 50 m UTENFOR et polygon. Klipper boksen på
- * riksgrensa, mister et grenseanlegg beviset sitt og faller stille fra
- * «alpint» til «ikke-alpint».
+ * De 91 stemmer eksakt med det Norge-filteret slapp gjennom i tørrkjøringen
+ * dagen før («aking 91 i Norge, 222 utenfor»). Området henter altså nøyaktig
+ * det filteret ellers måtte kaste — og [NATIONAL_EXPECTATION] sier 89 for
+ * `piste:type=sled` i Geofabrik-fila, så 91 er det samme tallet pluss drift.
+ * Tre uavhengige kilder på samme størrelse.
  *
- * AREALET ER 32 % AV DAGENS BOKS. Det er en PROXY og ikke et løfte om antall
- * objekter — mye av det som fjernes er hav. Den ekte målingen er `out count;`
- * per kandidat, og den må gjøres før dette settet tas i bruk. Derfor er
- * [nationalChunk] fortsatt på [NATIONAL_BBOX] som standard.
+ * DETTE BLE FRARÅDET DA DET BLE FORESLÅTT, med den begrunnelsen at områdebygging
+ * koster tid og kan feile. Målingen sier noe annet, og målingen vinner.
+ *
+ * `admin_level=2` er med for å låse treffet til STATEN Norge. Uten den kan
+ * `ISO3166-1=NO` også sitte på underordnede grenser i OSM, og da avgjør
+ * området hvilken rad Overpass tilfeldigvis fant først.
+ *
+ * DET OMRÅDET IKKE GIR, og bboksen ga: MARGIN UTENFOR RIKSGRENSA. Boksen hadde
+ * [BOX_MARGIN_M] = 2 km, fordi bevisspørringen skal finne heiser og nedfarter
+ * som ligger inntil [SKI_EVIDENCE_TOLERANCE_M] utenfor et polygon. Området
+ * klipper på grensa. Et bevisobjekt som ligger HELT i Sverige, men betjener et
+ * norsk anlegg, hentes ikke lenger. Se runbooken for hvordan det måles etter
+ * kjøringen — det er ikke målt på forhånd.
  */
-export const NORWAY_BANDS_4: readonly string[] = [
-    '(57.94,4.46,63.98,12.91)',
-    '(63.94,8.77,66.13,14.67)',
-    '(66.09,11.64,68.33,18.20)',
-    '(68.29,13.60,71.20,31.22)',
-];
-
-/** Samme, med fem bånd. 31 % av dagens areal — ett prosentpoeng bedre enn
- *  fire, mot en ekstra setning per selektorlinje. Med i målingen for at
- *  valget skal kunne gjøres på tall og ikke på magefølelse. */
-export const NORWAY_BANDS_5: readonly string[] = [
-    '(57.94,4.46,63.98,12.91)',
-    '(63.94,8.77,66.13,14.67)',
-    '(66.09,11.64,68.33,18.20)',
-    '(68.29,13.61,69.38,29.73)',
-    '(69.34,16.81,71.20,31.22)',
-];
+export const NATIONAL_AREA = 'area["ISO3166-1"="NO"]["admin_level"="2"]->.a';
 
 /**
- * Boksene den nasjonale chunken skal bruke.
+ * HVILKEN AVGRENSNING DEN NASJONALE CHUNKEN BRUKER.
  *
- * STANDARD ER DAGENS ÉNE BOKS, og det er med vilje: den er MÅLT (445
- * polygoner, 7 555 bevisobjekter, 40 s, uten remark). Båndene er regnet ut,
- * ikke målt mot Overpass. Å bytte en målt mekanisme mot en uprøvd uten tall
- * er nøyaktig den handelen som ble avvist for `area[ISO3166-1=NO]`.
+ * Standarden er området ([NATIONAL_AREA]) fordi det er MÅLT og vant: −40 % på
+ * bevisspørringen, −71 % på aking, uten remark.
  *
- *   PLACES_NATIONAL_BANDS=4   fire bånd
- *   PLACES_NATIONAL_BANDS=5   fem bånd
- *   (usatt)                   dagens boks
+ * `PLACES_NATIONAL_SCOPE=bbox` går tilbake til [NATIONAL_BBOX]. Reserven
+ * finnes fordi områdene på et Overpass-speil bygges av en egen prosess som
+ * ligger etter OSM og kan mangle: svarer `area[...]->.a` med et tomt sett, gir
+ * hele spørringen 0 objekter uten å feile. Da er dette veien til en
+ * avgrensning som er kjørt før, uten en kodeendring imellom.
  *
- * Variabelen finnes for at tørrkjøringen skal kunne gjøres uten en
- * kodeendring imellom, slik [SKI_EVIDENCE_TOLERANCE_M] allerede kan. Boksene
- * inngår i hentestegets fingeravtrykk, så en kjøring med --resume og et annet
- * bokssett henter på nytt i stedet for å gjenbruke gårsdagens objekter.
+ * HVA SOM IKKE FINNES LENGER: `PLACES_NATIONAL_BANDS` og bånd-konstantene
+ * (kandidat B og C, fire og fem breddebånd). De var REGNET UT, ikke målt, og
+ * kommentaren deres krevde en `out count;`-måling før bruk. Målingen ble gjort
+ * i okt. 2026, og båndene tapte mot området på akkurat den aksen de skulle
+ * forbedre. De er fortsatt regnbare på kommando —
+ * `npx tsx scripts/bbox-candidates.ts` skriver dem ut — men de står ikke
+ * lenger i produksjonskoden, og grensefila kan dermed oppdateres uten at et
+ * tallsett ingen kjører må limes inn på nytt.
  */
-export function nationalBoxes(
-    env: string | undefined = process.env.PLACES_NATIONAL_BANDS
-): readonly string[] {
-    if (env === '4') return NORWAY_BANDS_4;
-    if (env === '5') return NORWAY_BANDS_5;
-    if (env !== undefined && env !== '') {
-        throw new Error(
-            `PLACES_NATIONAL_BANDS må være «4» eller «5», fikk «${env}». ` +
-                `Utelat variabelen for dagens ene boks.`
-        );
-    }
-    return [NATIONAL_BBOX];
+export type NationalScope = 'area' | 'bbox';
+
+export function nationalScope(
+    env: string | undefined = process.env.PLACES_NATIONAL_SCOPE
+): NationalScope {
+    if (env === undefined || env === '' || env === 'area') return 'area';
+    if (env === 'bbox') return 'bbox';
+    throw new Error(
+        `PLACES_NATIONAL_SCOPE må være «area» eller «bbox», fikk «${env}». ` +
+            `Utelat variabelen for området (standard).`
+    );
 }
 
 /**
  * HELE NORGE SOM ÉN CHUNK.
  *
- * MÅLINGEN SOM GJØR DEN MULIG (overpass-api.de, ved midnatt):
+ * MÅLINGEN SOM GJØR DEN MULIG (overpass-api.de, ved midnatt, bboks):
  *
  *   område  nwr[landuse=winter_sports]                      445 obj   5,5 s   3,2 MB
  *   bevis   nwr[piste:type~downhill|sled|playground]       7555 obj    35 s  11,3 MB
  *
  * Ingen remark, begge på første forsøk.
+ *
+ * MÅLINGEN SOM SNEVRET DEN INN (okt. 2026, kveld): de samme spørringene med
+ * `area["ISO3166-1"="NO"]` ga 4 536 og 91 objekter, også uten remark og på
+ * første forsøk. Se [NATIONAL_AREA]. Avgrensningen ligger nå i SPØRRINGEN;
+ * Norge-filteret i buildRows er dermed en VAKT, ikke lenger et filter.
  *
  * TIDSPUNKTET BETYR MER ENN STØRRELSEN. Oslo ALENE feilet med 504 i hver
  * eneste kjøring på dagtid, mens hele Norge gikk gjennom ved midnatt. Den
@@ -440,16 +446,21 @@ export function nationalBoxes(
  *  − Ingen delvis gjenopptagelse: feiler chunken, kjøres hele på nytt.
  *    Hentesteget er 40 sekunder, så det er en billig pris.
  */
-export function nationalChunk(boxes: readonly string[] = nationalBoxes()): ImportChunk {
+export function nationalChunk(scope: NationalScope = nationalScope()): ImportChunk {
     return {
         id: 'norge',
         label: 'Norge',
         // null: chunken dekker 357 kommuner, så municipality utledes per rad
         // fra grensefila. Se lib/municipality.ts.
         cityAnchor: null,
-        // En bbox trenger ingen area-setning.
-        overpassArea: '',
-        overpassScopes: boxes,
+        // OMRÅDE: samme form som en kommune-chunk, bare på admin_level 2.
+        // BBOKS: ingen area-setning — boksen sitter på hver selektorlinje.
+        overpassArea: scope === 'area' ? NATIONAL_AREA : '',
+        overpassScopes: scope === 'area' ? ['(area.a)'] : [NATIONAL_BBOX],
+        // UENDRET PÅ 300. Området henter 40 % færre objekter, men det er ikke
+        // volumet som feiler mot dette speilet — Oslo ALENE ga 504 på dagtid.
+        // Å stramme timeouten på et lavere volum ville vært å endre to ting
+        // samtidig i den ene kjøringen som skal bekrefte den første.
         overpassTimeout: 300,
     };
 }
