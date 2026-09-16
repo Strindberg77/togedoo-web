@@ -64,14 +64,55 @@ test('1. brukbart OSM-navn → osm-navn, ingen geokoding', async () => {
     assert.equal(calls.nominatim, 0, 'ingen bydel-oppslag når navnet holder');
 });
 
-test('2. gate fra Kartverket → ved-gate, Nominatim ALDRI kalt', async () => {
+test('2. gate fra Kartverket → ved-gate MED husnummer, Nominatim ALDRI kalt', async () => {
+    // HUSNUMMERET BLE STRIPPET FRAM TIL SEP. 2026, og testen låste det.
+    // Konsekvensen var målbar: 1 384 av 1 423 Oslo-lekeplasser fikk tittel fra
+    // gata alene, og fire ulike lekeplasser het «Gunnar Schjelderups vei».
     const calls = stubFetch({
         kartverket: { adresser: [{ adressetekst: 'Storgata 5', poststed: 'Oslo' }] },
     });
     const r = await makePlaceTitleDetailed('Lekeplass', null, O.lat, O.lng);
     assert.equal(r.source, 'ved-gate');
-    assert.equal(r.title, 'Lekeplass ved Storgata');
+    assert.equal(r.title, 'Lekeplass ved Storgata 5');
+    // Adressen returneres, så importen kan lagre den i `address` i stedet for
+    // at tittelen er eneste sted den finnes.
+    assert.equal(r.address, 'Storgata 5');
     assert.equal(calls.nominatim, 0, 'bydel-tier skal ikke røres når gate finnes');
+});
+
+test('2b. to lekeplasser i samme gate får ULIKE titler', async () => {
+    // Selve problemet, som en test. Uten husnummeret er de to strengene like.
+    const a = await (async () => {
+        stubFetch({ kartverket: { adresser: [{ adressetekst: 'Kapellveien 12' }] } });
+        return makePlaceTitleDetailed('Lekeplass', null, 59.9, 10.7);
+    })();
+    const b = await (async () => {
+        stubFetch({ kartverket: { adresser: [{ adressetekst: 'Kapellveien 84' }] } });
+        return makePlaceTitleDetailed('Lekeplass', null, 59.91, 10.71);
+    })();
+    assert.notEqual(a.title, b.title);
+    assert.equal(a.title, 'Lekeplass ved Kapellveien 12');
+    assert.equal(b.title, 'Lekeplass ved Kapellveien 84');
+});
+
+test('2c. adresse uten husnummer gir nøyaktig samme tittel som før', async () => {
+    stubFetch({ kartverket: { adresser: [{ adressetekst: 'Kapellveien' }] } });
+    const r = await makePlaceTitleDetailed('Lekeplass', null, O.lat, O.lng);
+    assert.equal(r.title, 'Lekeplass ved Kapellveien');
+});
+
+test('2d. MATRIKKELNUMMER er ikke et gatenavn', async () => {
+    // «Tennisbane ved 77/442-1» står i basen i dag. Kartverket svarer med
+    // gårds- og bruksnummer der det ikke finnes en gateadresse, og et
+    // matrikkelnummer er ikke et navn en forelder kan lese.
+    const calls = stubFetch({
+        kartverket: { adresser: [{ adressetekst: '77/442-1', poststed: 'Vollen' }] },
+        nominatim: { address: { suburb: 'Nesøya' } },
+    });
+    const r = await makePlaceTitleDetailed('Ballbane', null, O.lat, O.lng);
+    assert.equal(r.source, 'i-omraade');
+    assert.equal(r.title, 'Ballbane i Nesøya');
+    assert.equal(calls.nominatim, 1, 'falt gjennom til bydel, som den skal');
 });
 
 test('3. ingen gate, Nominatim gir ingen bydel, men Kartverket ga poststed → i-poststed (bydel prøvd FØRST)', async () => {

@@ -54,6 +54,28 @@ export interface ReverseGeocodeResult {
     postalPlace: string | null; // "Vollen"
 }
 
+/**
+ * Ser adressestrengen ut som et GATENAVN?
+ *
+ * TO TING SILES BORT, og begge er observert i produksjon:
+ *
+ *   «5», «5B»      — adressetekst som bare er husnummer.
+ *   «77/442-1»     — MATRIKKELNUMMER. Kartverket svarer med gårds- og
+ *                    bruksnummer der det ikke finnes en gateadresse, og
+ *                    tittelgeneratoren brukte det som om det var et gatenavn:
+ *                    raden «Tennisbane ved 77/442-1» står i basen i dag.
+ *                    Det er ikke et navn en forelder kan lese.
+ *
+ * Regelen er at et gatenavn må inneholde minst én BOKSTAV. Den dekker begge
+ * — et matrikkelnummer har ingen — og den er det svakeste kravet som gjør
+ * jobben. Husnummer-mønsteret beholdes i tillegg, fordi «5B» HAR en bokstav.
+ */
+function looksLikeStreet(street: string | null): boolean {
+    if (!street) return false;
+    if (!/\p{L}/u.test(street)) return false;
+    return !/^\d+\s*[A-ZÆØÅ]?$/.test(street);
+}
+
 function stripHouseNumber(addressText: string): string {
     return addressText.replace(/\s+\d+\s*[A-ZÆØÅ]?$/, '').trim();
 }
@@ -197,8 +219,7 @@ export async function reverseGeocodeDetailed(lat: number, lng: number): Promise<
         const street = stripHouseNumber(hit.adressetekst);
         const result: ReverseGeocodeResult = {
             addressText: hit.adressetekst,
-            // En adressetekst som bare er husnummer gir ikke brukbart gatenavn.
-            street: street && !/^\d+\s*[A-ZÆØÅ]?$/.test(street) ? street : null,
+            street: looksLikeStreet(street) ? street : null,
             postalPlace: hit.poststed ?? null,
         };
         await saveCache(key, result);
@@ -332,6 +353,18 @@ export interface PlaceTitle {
      * mange som mistet tittelen sin.
      */
     addressMissing?: boolean;
+    /**
+     * Adressen tittelen ble bygget av, f.eks. «Kapellveien 12».
+     *
+     * SATT KUN når tittelen kom fra adresseoppslaget ('ved-gate'), og er
+     * da nøyaktig den strengen som står etter «ved» i tittelen.
+     *
+     * HVORFOR DEN RETURNERES I STEDET FOR Å BLI KASTET: importen lagrer den i
+     * `activities.address`, og da er tittelen for en generert rad utledbar av
+     * `category` + `address` i stedet for å måtte leses ut av en norsk
+     * setning. Se [TITTELEN_ER_NORSK] i scripts/import-places.ts.
+     */
+    address?: string;
 }
 
 /**
@@ -353,7 +386,31 @@ export async function makePlaceTitleDetailed(
     // Nominatim er like adresseløst som ett som bare får «Skianlegg».
     const addressMissing = !outcome.ok && outcome.kind === 'tomt' ? true : undefined;
     if (outcome.ok && outcome.result.street) {
-        return { title: `${categoryLabel} ved ${outcome.result.street}`, source: 'ved-gate' };
+        // HUSNUMMERET BLIR MED. Det ble strippet fram til sep. 2026, og
+        // konsekvensen var målbar: en tørrkjøring av Lekeplass mot Oslo ga
+        // 1 423 steder, 1 384 av dem med tittel «<Kategori> ved <gate>». Fire
+        // ulike lekeplasser het «Gunnar Schjelderups vei» og tre het «Betzy
+        // Kjelsbergs vei» — opptil 900 m fra hverandre, umulige å skille i en
+        // liste. Langs en lang gate ER husnummeret posisjonen.
+        //
+        // «VED» BÆRER FORBEHOLDET. Adressen er den NÆRMESTE (Kartverket
+        // punktsøk, 200 m radius), ikke lekeplassens egen — men det var
+        // allerede sant om gatenavnet. Husnummeret gjør den samme påstanden
+        // mer presis, det gjør den ikke til en annen påstand. «Lekeplass ved
+        // Kapellveien 12» sier ikke at lekeplassen har den adressen.
+        //
+        // GRATIS. `addressText` hentes og caches allerede i samme svar som
+        // `street` (se ReverseGeocodeResult og geocode_cache) — ingen nye
+        // oppslag, ingen ny tjeneste.
+        //
+        // Mangler adressen husnummer, er addressText lik street, og tittelen
+        // blir nøyaktig som før.
+        const adresse = outcome.result.addressText ?? outcome.result.street;
+        return {
+            title: `${categoryLabel} ved ${adresse}`,
+            source: 'ved-gate',
+            address: adresse,
+        };
     }
     // Bydel/nabolag (Nominatim) FØR poststed: «Badeplass i Sørenga» er alltid mer
     // nyttig enn «Badeplass i Oslo», og lista er allerede merket med byen — så

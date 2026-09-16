@@ -127,7 +127,7 @@ test('en ekte adresse gir hverken feil eller adresseløshet', async (t) => {
     mock(() => json({ adresser: [{ adressetekst: 'Storgata 5', poststed: 'Oslo' }] }));
     const ut = await makePlaceTitleDetailed('Lekeplass', null, 59.9, 10.7);
     assert.equal(ut.source, 'ved-gate');
-    assert.equal(ut.title, 'Lekeplass ved Storgata');
+    assert.equal(ut.title, 'Lekeplass ved Storgata 5', 'husnummeret er med fra sep. 2026');
     assert.equal(ut.geocodeError, undefined);
     assert.equal(ut.addressMissing, undefined);
 });
