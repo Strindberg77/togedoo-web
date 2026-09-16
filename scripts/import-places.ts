@@ -56,6 +56,7 @@ import {
     ImportStop,
     NATIONAL_EXPECTATION,
     yieldCollapseStop,
+    hoppetOverIUtbytte,
 } from '../lib/import-guards';
 import { municipalityIndex } from './municipality-index';
 import {
@@ -2281,6 +2282,9 @@ export interface FetchRecord {
     e: OsmElement;
 }
 
+/** Objekter per kategori og sett: `{ skianlegg: { omrade: 423, bevis: 4536 } }`. */
+export type SettAntall = Record<string, Record<string, number>>;
+
 /**
  * HENTESTEGET. Rå OSM-elementer for én chunk, per kategori og sett.
  *
@@ -2296,9 +2300,10 @@ export interface FetchRecord {
 export async function fetchChunk(
     chunk: ImportChunk,
     cats: PlaceCategory[] = PLACE_CATEGORIES
-): Promise<{ records: FetchRecord[]; emptySets: string[] }> {
+): Promise<{ records: FetchRecord[]; emptySets: string[]; settAntall: SettAntall }> {
     const records: FetchRecord[] = [];
     const emptySets: string[] = [];
+    const settAntall: SettAntall = {};
     for (const cat of cats) {
         const hent = async (): Promise<FetchSets> => {
             const query = overpassQuery(chunk, cat.selector, 'out center tags');
@@ -2353,9 +2358,14 @@ export async function fetchChunk(
         }
 
         const deler: string[] = [];
+        settAntall[cat.key] = {};
         for (const [navn, elementer] of Object.entries(sets)) {
             for (const e of elementer) records.push({ c: cat.key, s: navn, e });
             deler.push(`${elementer.length} ${navn}`);
+            // TELLES HER, mens settene er i minnet og fortsatt er navngitt.
+            // Utbyttevakten kjører til slutt og kan ikke telle dem selv — se
+            // [ManifestEntry.settAntall].
+            settAntall[cat.key][navn] = elementer.length;
             if (elementer.length === 0) emptySets.push(`${cat.key}/${navn}`);
         }
         // Kategorier uten et eneste sett (en henter som returnerte {}) ville
@@ -2366,7 +2376,7 @@ export async function fetchChunk(
         );
         await sleep(OVERPASS_QUERY_PAUSE_MS);
     }
-    return { records, emptySets };
+    return { records, emptySets, settAntall };
 }
 
 /** Mellomleddet tilbake til navngitte sett per kategori. */
@@ -3140,7 +3150,10 @@ async function runChunk(
         const ut = await fetchChunk(chunk, cats);
         fetched = ut.records;
         console.log(`  Overpass ga ${fetched.length} elementer`);
-        store.write(chunk, 'fetch', fp.fetch, fetched, { emptySets: ut.emptySets });
+        store.write(chunk, 'fetch', fp.fetch, fetched, {
+            emptySets: ut.emptySets,
+            settAntall: ut.settAntall,
+        });
     }
 
     let enriched: EnrichedChunk;
@@ -3380,22 +3393,45 @@ async function rapporterGodkjenning(
     // Se [nationalCoverage].
     const andel = nationalCoverage(plan);
 
-    const radPerKategori = new Map<string, number>();
+    // OBJEKTER HENTET per kategori, talt i DET SETTET forventningen gjelder.
+    // Dette er enheten utbyttevakten sammenligner i — se [NasjonalForventning].
+    // Tallene leses fra manifestet, ikke fra hentefilene: med --resume har de
+    // fleste chunkene ikke hentet i denne prosessen, og å lese titusenvis av
+    // rå OSM-elementer tilbake bare for å telle dem ville vært å betale for
+    // noe hentesteget allerede visste.
+    const objektPerKategori = new Map<string, number>();
     for (const cat of cats) {
-        radPerKategori.set(cat.key, alle.filter((r) => r.category === cat.category).length);
+        const f = NATIONAL_EXPECTATION[cat.key];
+        if (!f) continue;
+        let sum = 0;
+        let sett = false;
+        for (const c of plan) {
+            const tall = store.entries().get(`${c.id}/fetch`)?.settAntall?.[cat.key]?.[f.sett];
+            if (tall === undefined) continue;
+            sum += tall;
+            sett = true;
+        }
+        if (sett) objektPerKategori.set(cat.key, sum);
     }
+
     const kategorier: KategoriLinje[] = cats.map((cat) => {
         const rader = alle.filter((r) => r.category === cat.category);
-        const nasjonalt = NATIONAL_EXPECTATION[cat.key];
+        const f = NATIONAL_EXPECTATION[cat.key];
         return {
             key: cat.key,
             rader: rader.length,
-            forventet: nasjonalt === undefined || andel === null ? null : nasjonalt * andel,
+            objekter: objektPerKategori.get(cat.key) ?? null,
+            forventet: f === undefined || andel === null ? null : f.objekter * andel,
+            forventetTag: f?.tag ?? null,
+            forventetSett: f?.sett ?? null,
             utenNavn: rader.filter((r) => r.titleSource !== 'osm-navn').length,
         };
     });
 
-    const utbytte = andel === null ? null : yieldCollapseStop(radPerKategori, andel);
+    const utbytte = andel === null ? null : yieldCollapseStop(objektPerKategori, andel);
+    // En vakt som slår seg av i stillhet er verre enn ingen vakt.
+    const utbytteHoppet =
+        andel === null ? [] : hoppetOverIUtbytte(objektPerKategori, cats.map((c) => c.key));
     const tommeSett = plan.flatMap((c) =>
         (store.entries().get(`${c.id}/fetch`)?.emptySets ?? []).map((sett) => `${c.id} ${sett}`)
     );
@@ -3438,6 +3474,7 @@ async function rapporterGodkjenning(
             raderTotalt: alle.length,
             diff,
             kategorier,
+            utbytteHoppet,
             geokoding: {
                 forsok: alle.filter((r) => r.titleSource !== 'osm-navn').length,
                 feil: alle.filter((r) => r.geocodeError).length,

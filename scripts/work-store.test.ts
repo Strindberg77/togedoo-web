@@ -100,6 +100,48 @@ test('seenClaims overlever mellomleddet — ellers lyver dødt-claim-rapporten',
     ]);
 });
 
+test('deduped overlever mellomleddet — den ble tapt i stillhet fram til okt. 2026', () => {
+    // FEILEN: `deduped` sto i Pick-typen på write(), så kalleren kunne sende
+    // den og typesjekken godtok det — men feltet ble aldri spredt inn i
+    // manifestoppføringen. `entry?.deduped` ved --resume var dermed ALLTID
+    // undefined, og dedup-rapporten for en gjenopptatt chunk var tom uten at
+    // noe feilet. Fanget mens settellingen ble lagt inn samme sted.
+    const dir = tmpDir();
+    const s = new FileStore(dir);
+    s.write(oslo, 'enrich', 'fp1', [], { seenClaims: ['node/9'], deduped: ['node/2', 'node/3'] });
+    const entry = new FileStore(dir).entries().get('by-oslo/enrich')!;
+    assert.deepEqual(entry.deduped, ['node/2', 'node/3']);
+    assert.deepEqual(entry.seenClaims, ['node/9'], 'og den som virket fra før virker fortsatt');
+});
+
+test('settAntall overlever mellomleddet — uten det slår utbyttevakten seg av', () => {
+    // Vakten kjører til slutt, etter at alle chunkene er beriket. Med --resume
+    // har hentesteget for de fleste chunkene ikke kjørt i denne prosessen, så
+    // tallet MÅ ligge i manifestet. Gjør det ikke det, hopper vakten over
+    // kategorien — og en vakt som slår seg av i stillhet er verre enn ingen.
+    const dir = tmpDir();
+    const s = new FileStore(dir);
+    s.write(oslo, 'fetch', 'fp1', [], {
+        emptySets: [],
+        settAntall: { skianlegg: { omrade: 423, bevis: 4536 }, aking: { main: 91 } },
+    });
+    const entry = new FileStore(dir).entries().get('by-oslo/fetch')!;
+    // PER SETT, ikke summert: 423 og 4536 er ikke samme størrelse, og bare
+    // «omrade» blir rader.
+    assert.equal(entry.settAntall?.skianlegg?.omrade, 423);
+    assert.equal(entry.settAntall?.skianlegg?.bevis, 4536);
+    assert.equal(entry.settAntall?.aking?.main, 91);
+});
+
+test('en gammel .import-work uten settAntall gir undefined, ikke null eller 0', () => {
+    // Forskjellen avgjør: 0 ville stanset kjøringen på et tall som ikke
+    // finnes, undefined lar vakten hoppe over og SI det.
+    const dir = tmpDir();
+    const s = new FileStore(dir);
+    s.write(oslo, 'fetch', 'fp1', [], { emptySets: [] });
+    assert.equal(new FileStore(dir).entries().get('by-oslo/fetch')!.settAntall, undefined);
+});
+
 // ---------------------------------------------------------------------------
 // KRASJTOLERANSE — grunnen til at formatet er NDJSON og ikke ett JSON-array
 // ---------------------------------------------------------------------------

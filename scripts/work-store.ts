@@ -65,7 +65,7 @@ export interface WorkStore {
         stage: StageName,
         fingerprint: string,
         rows: readonly T[],
-        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets' | 'deduped'>
+        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets' | 'deduped' | 'settAntall'>
     ): void;
     /**
      * Skriver en SIDEFIL som ikke er et steg: den havner ikke i manifestet og
@@ -144,7 +144,7 @@ export class FileStore implements WorkStore {
         stage: StageName,
         fingerprint: string,
         rows: readonly T[],
-        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets' | 'deduped'>
+        extra?: Pick<ManifestEntry, 'seenClaims' | 'emptySets' | 'deduped' | 'settAntall'>
     ): void {
         const final = this.file(chunk, stage);
         const tmp = `${final}.tmp`;
@@ -160,6 +160,13 @@ export class FileStore implements WorkStore {
             at: new Date().toISOString(),
             ...(extra?.seenClaims ? { seenClaims: extra.seenClaims } : {}),
             ...(extra?.emptySets ? { emptySets: extra.emptySets } : {}),
+            // `deduped` STO I Pick-TYPEN MEN BLE ALDRI SPREDT HIT (okt. 2026).
+            // Kalleren sendte den, typen godtok den, og den forsvant i
+            // stillhet — så `entry?.deduped` ved --resume var alltid
+            // undefined, og dedup-rapporten for en gjenopptatt chunk var tom
+            // uten at noe feilet. Testen under fester begge feltene.
+            ...(extra?.deduped ? { deduped: extra.deduped } : {}),
+            ...(extra?.settAntall ? { settAntall: extra.settAntall } : {}),
         };
         // Append ETTER renamet. Se filhodet: denne rekkefølgen er det som
         // gjør at en manifestlinje aldri kan peke på en halv fil.

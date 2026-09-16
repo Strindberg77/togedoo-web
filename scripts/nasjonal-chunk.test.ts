@@ -231,15 +231,17 @@ test('et OMRÅDE SOM IKKE LØSER SEG stanser kjøringen — det ser ikke ut som 
     const dekning = nationalCoverage([nationalChunk()]);
     assert.equal(dekning, 1, 'én nasjonal chunk dekker hele landet');
 
+    // ENHETEN ER OBJEKTER I «omrade»-SETTET, ikke rader — se
+    // NasjonalForventning. Kartet under er altså «områdeselektoren hentet 0».
     const tomt = yieldCollapseStop(new Map([['skianlegg', 0]]), dekning!);
     assert.ok(tomt, '0 av 254 må stanse kjøringen');
-    assert.match(tomt.message, /skianlegg: 0 rader mot 254 forventet/);
+    assert.match(tomt.message, /skianlegg: 0 objekter i settet «omrade» mot 254 forventet/);
 
-    // Og det MÅLTE tallet skal ikke stanse noe: 4536 bevisobjekter ga i
-    // Geofabrik-fila 254 polygoner, og det er nøyaktig forventningen.
-    assert.equal(NATIONAL_EXPECTATION.skianlegg, 254);
-    assert.equal(yieldCollapseStop(new Map([['skianlegg', 254]]), dekning!), null);
-    // Aking: området målte 91 objekter, forventningen er 89.
+    // Og de MÅLTE tallene fra områdekjøringen skal ikke stanse noe.
+    assert.equal(NATIONAL_EXPECTATION.skianlegg.objekter, 254);
+    assert.equal(yieldCollapseStop(new Map([['skianlegg', 423]]), dekning!), null);
+    // Aking: området målte 91 objekter, forventningen er 89 — 102 %.
+    // Det ble 13 RADER, og det er ikke et tall vakten skal se.
     assert.equal(yieldCollapseStop(new Map([['aking', 91]]), dekning!), null);
 });
 

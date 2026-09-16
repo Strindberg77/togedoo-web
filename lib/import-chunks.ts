@@ -205,6 +205,25 @@ export interface ManifestEntry {
      */
     readonly emptySets?: readonly string[];
     /**
+     * Kun `fetch`: antall objekter per sett, som `{ omrade: 423, bevis: 4536 }`
+     * per kategorinøkkel.
+     *
+     * HVORFOR DET MÅ LAGRES, og ikke bare telles opp fra fila: utbyttevakten
+     * kjøres til slutt, etter at alle chunkene er beriket, og med --resume har
+     * hentesteget for de fleste av dem ikke kjørt i denne prosessen i det hele
+     * tatt. Uten tallet her måtte vakten lest hvert hentesteg inn på nytt —
+     * titusenvis av rå OSM-elementer — bare for å telle dem.
+     *
+     * PER SETT, ikke per kategori. Skianlegg henter `omrade` (blir rader) og
+     * `bevis` (blir aldri rader). Summen av de to er ikke en størrelse som
+     * betyr noe, og forventningstallet gjelder bare det ene settet. Se
+     * [NasjonalForventning].
+     *
+     * Feltet mangler i .import-work skrevet før okt. 2026. Vakten hopper da
+     * over kategorien og SIER det — se [hoppetOverIUtbytte].
+     */
+    readonly settAntall?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+    /**
      * Kun `enrich`: OSM-id-ene som ble undertrykt av en claim i denne chunken.
      *
      * HVORFOR HER OG IKKE I MINNET: dødt-claim-rapporten må kunne si «denne

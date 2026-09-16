@@ -707,3 +707,121 @@ bokssett, fordi den er veien videre om en reservekjøring på bboks må deles
 opp — og fordi å slette den i samme commit som bytter avgrensning ville gjort
 en halvering vanskeligere å lese om den nasjonale kjøringen går galt. Skal
 den bort, er det en egen, rent subtraktiv endring.
+
+---
+
+## Stoppvilkåret sammenlignet objekter med rader (okt. 2026)
+
+Den første områdekjøringen ble stanset av utbyttevakten:
+
+```
+aking       13 rader mot 89 forventet (15 %)  → STOPP
+skianlegg  307 rader mot 254 forventet (121 %)
+```
+
+**Begge tallene var meningsløse.** `NATIONAL_EXPECTATION` er målt med osmium
+mot Geofabrik-fila og er i **objekter**; `yieldCollapseStop` sammenlignet dem
+med **rader**.
+
+| | aking | skianlegg |
+|---|---|---|
+| forventning | 89 `piste:type=sled`-objekter | 254 `landuse=winter_sports`-objekter |
+| hentet | 91 objekter | 423 objekter (seks mønstre) |
+| ble | 13 bakker | 307 rader |
+
+Korketrekkeren alene er 14 objekter som blir 1 rad. Forholdet objekt→rad er
+ikke 1:1 for noen kategori, og for aking er det ikke engang samme
+størrelsesorden.
+
+### Rettingen
+
+Vakten sammenligner nå **objekter mot objekter**, i det settet forventningen
+faktisk gjelder:
+
+```ts
+export interface NasjonalForventning {
+    readonly objekter: number;  // 89
+    readonly tag: string;       // 'piste:type=sled'
+    readonly sett: string;      // 'main'
+}
+```
+
+`sett` er ikke pynt. Skianlegg henter to sett: `omrade` (423 objekter, blir
+rader) og `bevis` (4 536 objekter, blir **aldri** rader — de er inndata til den
+romlige testen). Summerte vakten begge, ville forholdstallet vært ~1 950 % og
+kategorien kunne aldri stanset, heller ikke om områdeselektoren sluttet å
+treffe.
+
+Rapporttabellen viser nå begge enheter, og bare den ene har et forholdstall:
+
+```
+  kategori        objekter   forventet   andel      rader   uten ekte navn
+  skianlegg           423         254   167 %        307              157
+  aking                91          89   102 %         13                8
+  rullesport            —           —       —         12                3
+  (forventning = objekter i Geofabrik-fila: skianlegg landuse=winter_sports i
+   «omrade», aking piste:type=sled i «main»)
+```
+
+### Hvorfor radene IKKE fikk et forventningstall
+
+Det er det egentlige spørsmålet, og svaret er at det ikke finnes noe å
+forankre et radtall i.
+
+**Objekter kommer fra OSM.** De kan telles utenfor koden vår, med osmium mot
+et navngitt Geofabrik-uttrekk, deterministisk og uten nett. Tallet er
+uavhengig av alt vi gjør med dataene etterpå.
+
+**Rader er resultatet av våre egne regler** — navnegruppering,
+relasjonsforankring, dedupen, claims, `--limit`. Et radtall som «fasit» ville
+blitt feil av at *vi* forbedret noe. Endrer vi `PLACES_AKING_GROUP_M` fra 1000
+til 800, går radtallet opp uten at en eneste ting i OSM har endret seg — og da
+stopper vakten på vår egen forbedring. Det er nøyaktig den vakten man slutter
+å tro på, og deretter slår av.
+
+Så: **vakten stopper på objekter. Radene rapporteres ved siden av, uten
+forholdstall.**
+
+### Tallene fra denne kjøringen — observasjon, ikke fasit
+
+De står i testfiksturet i `scripts/nasjonal.test.ts` og her, som **et
+utgangspunkt for å se endring**, ikke som et krav:
+
+| kategori | objekter | rader | uten ekte navn |
+|---|---|---|---|
+| skianlegg | 423 (`omrade`) | 307 | 157 |
+| aking | 91 | 13 | — |
+
+Byttet fra bboks til område, målt i samme kjøring:
+
+| | bboks | område |
+|---|---|---|
+| skianlegg | 476 rader (med Sverige/Finland) | 307 rader |
+| aking | 14 rader | 13 rader |
+
+**Hvordan de forankres, hvis de noen gang skal bli mer enn en observasjon:**
+et radtall er først en fasit når det er knyttet til en commit av
+grupperingsreglene. Da hører det hjemme som et *regresjonstall* — «samme
+inndata ga 307 rader på commit X» — og ikke som en nasjonal forventning. Den
+formen krever at hentesteget lagres og kjøres om mot ny kode, altså at
+`.import-work` fra en kjent kjøring tas vare på. Det finnes ikke i dag, og det
+er en egen oppgave.
+
+Inntil da: radtallene her er noe å sammenligne neste kjøring mot for hånd, og
+en uventet endring er et spørsmål, ikke en feil.
+
+### To ting til fra samme kjøring
+
+**`deduped` ble tapt ved `--resume`.** Feltet sto i `Pick`-typen på
+`store.write()`, så kalleren kunne sende det og typesjekken godtok det, men det
+ble aldri spredt inn i manifestoppføringen. `entry?.deduped` var derfor alltid
+`undefined` ved gjenopptagelse, og dedup-rapporten for en gjenopptatt chunk var
+tom uten at noe feilet. Fanget fordi settellingen skulle inn på nøyaktig samme
+sted. Rettet, med test.
+
+**Titlene har samme problem som lekeplassene, men verre.** «Rauland skisenter»
+× 3 og «Skianlegg» × 6 med 1,2–2,2 km mellom seg; 921 par mellom 102 rader med
+delt generert tittel, og **157 av 307 rader mangler ekte navn** (mot 4,6 %
+navnedekning for lekeplasser — her er det 49 %). Ikke rørt i denne omgangen.
+Merk at 1,2–2,2 km er *innenfor* 2 km-taket i `generatedTitlePairs`, så de
+telles; det er samme klasse som lekeplassene, ikke en ny.
