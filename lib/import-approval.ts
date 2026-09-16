@@ -45,9 +45,9 @@ export interface GodkjenningsInput {
     overpass: { sporringer: number; medOmkamp: number };
     tommeSett: readonly string[];
     claims: { undertrykt: number; navneavvik: number };
-    duplikatkandidater: readonly string[];
+    duplikatkandidater: readonly DupPar[];
     /** Rader med delt GENERERT tittel nær hverandre. Se [generatedTitleCollisions]. */
-    delteGenererteTitler: readonly string[];
+    delteGenererteTitler: readonly DupPar[];
     dom: 'GO' | 'STOPP';
     stoppGrunn?: string;
     skrivKommando: string;
@@ -55,6 +55,10 @@ export interface GodkjenningsInput {
 }
 
 const pct = (a: number, b: number): string => (b > 0 ? `${Math.round((a / b) * 100)} %` : '—');
+
+/** «151 par mellom 96 rader» — begge tallene, fordi det ene ikke gir det andre. */
+const parTall = (par: readonly DupPar[]): string =>
+    par.length === 0 ? '0' : `${par.length} par mellom ${beroerteRader(par)} rader`;
 
 /**
  * Oppsummeringen, som ren tekst. Skal kunne leses på et minutt.
@@ -99,15 +103,20 @@ export function formatApproval(i: GodkjenningsInput): string {
         `  Claims ................. ${i.claims.undertrykt} objekter undertrykt, ` +
             `${i.claims.navneavvik} navneavvik${i.claims.navneavvik ? '  ADVARSEL' : ''}`
     );
+    // PAR, IKKE RADER. Sep. 2026 ble denne linja lest som et radtall: «151 med
+    // delt generert tittel» mot 13 rader uten gatetreff i tittelkilde-linja over,
+    // og 13 ≠ 151 så ut som et avvik. Det var det ikke — en gruppe på n rader med
+    // samme tittel gir C(n,2) par, så 17 rader alene gir 136. Begge tallene står
+    // nå, og ordet «par» med dem.
     L.push(
-        `  Duplikatkandidater ..... ${i.duplikatkandidater.length}` +
-            `  (+ ${i.delteGenererteTitler.length} med delt GENERERT tittel)` +
+        `  Duplikatkandidater ..... ${parTall(i.duplikatkandidater)}` +
+            `  (+ ${parTall(i.delteGenererteTitler)} med delt GENERERT tittel)` +
             (i.delteGenererteTitler.length ? '  ADVARSEL' : '')
     );
-    for (const d of i.delteGenererteTitler.slice(0, 5)) L.push(`      ${d}`);
-    for (const d of i.duplikatkandidater.slice(0, 10)) L.push(`      ${d}`);
+    for (const d of i.delteGenererteTitler.slice(0, 5)) L.push(`      ${formatDupPar(d)}`);
+    for (const d of i.duplikatkandidater.slice(0, 10)) L.push(`      ${formatDupPar(d)}`);
     if (i.duplikatkandidater.length > 10) {
-        L.push(`      ... og ${i.duplikatkandidater.length - 10} til`);
+        L.push(`      ... og ${i.duplikatkandidater.length - 10} par til`);
     }
     L.push('');
     if (i.dom === 'GO') {
@@ -203,13 +212,60 @@ export function generatedTitleCollisions(
     rader: readonly DupRad[],
     meters = 2000
 ): string[] {
-    return duplicateCandidates(
+    return generatedTitlePairs(rader, meters).map(formatDupPar);
+}
+
+/**
+ * ET PAR, IKKE EN RAD. Tellerne under er kvadratiske i gruppestørrelsen: n
+ * rader med samme tittel gir n·(n−1)/2 par. Det er med vilje — hvert par er en
+ * egen avgjørelse for mennesket som leser rapporten — men det gjør tallet
+ * ubrukelig som mål på hvor mange steder som er berørt. Derfor [beroerteRader].
+ */
+export interface DupPar {
+    kategori: string;
+    /** Den delte tittelen, slik den står på a. */
+    title: string;
+    a: string;
+    b: string;
+    meters: number;
+}
+
+export function formatDupPar(p: DupPar): string {
+    return (
+        `${p.kategori} «${p.title}»: ${p.a} og ${p.b}, ` +
+        `${Math.round(p.meters)} m fra hverandre`
+    );
+}
+
+/** Hvor mange DISTINKTE rader parene dekker. Se [DupPar]. */
+export function beroerteRader(par: readonly DupPar[]): number {
+    const ider = new Set<string>();
+    for (const p of par) {
+        ider.add(p.a);
+        ider.add(p.b);
+    }
+    return ider.size;
+}
+
+/**
+ * POPULASJONEN ER ALLE GENERERTE TITLER, ikke bare de som endte på bare
+ * kategorien. `osmNavn: false` dekker «ved gate», «i område», «i poststed» og
+ * «kun kategori» under ett, og «ved gate» er normalt over 95 % av dem. En
+ * tørrkjøring som viser 8 rader med «kun kategori» kan derfor fint gi hundrevis
+ * av par her; tallene måler ikke det samme.
+ */
+export function generatedTitlePairs(rader: readonly DupRad[], meters = 2000): DupPar[] {
+    return duplicatePairs(
         rader.filter((r) => !r.osmNavn).map((r) => ({ ...r, osmNavn: true })),
         meters
     );
 }
 
 export function duplicateCandidates(rader: readonly DupRad[], meters = 5000): string[] {
+    return duplicatePairs(rader, meters).map(formatDupPar);
+}
+
+export function duplicatePairs(rader: readonly DupRad[], meters = 5000): DupPar[] {
     const perKategori = new Map<string, Map<string, DupRad[]>>();
     for (const r of rader) {
         if (!r.osmNavn) continue;
@@ -220,7 +276,7 @@ export function duplicateCandidates(rader: readonly DupRad[], meters = 5000): st
         if (liste) liste.push(r);
         else perNavn.set(navn, [r]);
     }
-    const ut: string[] = [];
+    const ut: DupPar[] = [];
     for (const kategori of [...perKategori.keys()].sort()) {
         const perNavn = perKategori.get(kategori)!;
         for (const navn of [...perNavn.keys()].sort()) {
@@ -236,10 +292,13 @@ export function duplicateCandidates(rader: readonly DupRad[], meters = 5000): st
                         { lat: b.lat, lon: b.lng }
                     );
                     if (d > meters) continue;
-                    ut.push(
-                        `${kategori} «${a.title}»: ${a.external_id} og ${b.external_id}, ` +
-                            `${Math.round(d)} m fra hverandre`
-                    );
+                    ut.push({
+                        kategori,
+                        title: a.title,
+                        a: a.external_id,
+                        b: b.external_id,
+                        meters: d,
+                    });
                 }
             }
         }

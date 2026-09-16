@@ -407,9 +407,69 @@ test('oppsummeringen viser delte genererte titler som en ADVARSEL', async () => 
     const { formatApproval } = await import('../lib/import-approval');
     const t = formatApproval({
         ...input(),
-        delteGenererteTitler: ['Skianlegg «Skianlegg i Fageråsen»: way/1 og way/2, 343 m fra hverandre'],
+        delteGenererteTitler: [
+            {
+                kategori: 'Skianlegg',
+                title: 'Skianlegg i Fageråsen',
+                a: 'way/1',
+                b: 'way/2',
+                meters: 343,
+            },
+        ],
     });
     assert.match(t, /delt GENERERT tittel/);
     assert.match(t, /ADVARSEL/);
     assert.match(t, /way\/1 og way\/2/);
+});
+
+// ---------------------------------------------------------------------------
+// PAR ELLER RADER — avviket «13 ≠ 151» fra tørrkjøringen i sep. 2026
+// ---------------------------------------------------------------------------
+
+test('en gruppe paa n rader gir C(n,2) par, ikke n', async () => {
+    // Slik oppsto «151»: tittelkilde-linja teller RADER, denne linja teller PAR.
+    // En gruppe paa 17 rader med samme genererte tittel gir 136 par alene.
+    const { generatedTitlePairs, beroerteRader } = await import('../lib/import-approval');
+    for (const n of [2, 3, 13, 17]) {
+        const rader = Array.from({ length: n }, (_, i) => ({
+            external_id: `node/${i + 1}`,
+            category: 'lekeplass',
+            title: 'Lekeplass ved Kapellveien',
+            lat: 59.96 + i * 1e-5,
+            lng: 10.79,
+            osmNavn: false,
+        }));
+        const par = generatedTitlePairs(rader);
+        assert.equal(par.length, (n * (n - 1)) / 2, `${n} rader`);
+        assert.equal(beroerteRader(par), n, `beroerte rader for ${n}`);
+    }
+});
+
+test('populasjonen er alle genererte titler, ikke bare «kun kategori»', async () => {
+    // Den andre halvdelen av avviket: «8 kun kategori» er ikke populasjonen.
+    // To «ved gate»-rader med samme tittel er ogsaa en kollisjon.
+    const { generatedTitlePairs } = await import('../lib/import-approval');
+    const vedGate = [0, 1].map((i) => ({
+        external_id: `node/${i + 1}`,
+        category: 'lekeplass',
+        title: 'Lekeplass ved Kapellveien',
+        lat: 59.96 + i * 1e-4,
+        lng: 10.79,
+        osmNavn: false,
+    }));
+    assert.equal(generatedTitlePairs(vedGate).length, 1, '«ved gate» teller med');
+});
+
+test('oppsummeringen sier PAR og RADER, ikke bare et tall', async () => {
+    // Uten begge tallene leses «151» som 151 steder. Det er det ikke.
+    const { formatApproval } = await import('../lib/import-approval');
+    const par = [
+        { kategori: 'lekeplass', title: 'Lekeplass ved Kapellveien', a: 'node/1', b: 'node/2', meters: 40 },
+        { kategori: 'lekeplass', title: 'Lekeplass ved Kapellveien', a: 'node/1', b: 'node/3', meters: 60 },
+        { kategori: 'lekeplass', title: 'Lekeplass ved Kapellveien', a: 'node/2', b: 'node/3', meters: 30 },
+    ];
+    const t = formatApproval(input({ delteGenererteTitler: par }));
+    assert.match(t, /3 par mellom 3 rader med delt GENERERT tittel/);
+    assert.match(t, /node\/1 og node\/2, 40 m fra hverandre/, 'linjeformatet er uendret');
+    assert.match(formatApproval(input()), /Duplikatkandidater \.+ 0/, 'null skal fortsatt staa som 0');
 });

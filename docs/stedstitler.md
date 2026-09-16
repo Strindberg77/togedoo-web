@@ -139,3 +139,46 @@ uten å skrive noe.
 Én commit. `title` bygges på nytt ved neste import, og faller tilbake til
 gatenavnet uten husnummer. `address` blir stående med den geokodede verdien
 til noen fjerner den — den er ikke gal, bare mer enn før.
+
+## «13 ≠ 151» — hva kollisjonstallet faktisk teller
+
+Tørrkjøringen for Lekeplass i Oslo viste `8 kun kategori` og `5 uten adresse`
+i tittelkilde-linjene, men `151 med delt GENERERT tittel` i oppsummeringen.
+Det er ikke et avvik. De to tallene teller ulike ting, og begge er riktige.
+
+**Lest i koden, ikke gjettet** (`lib/import-approval.ts`):
+
+1. **Populasjonen er ikke de 8.** `generatedTitlePairs` filtrerer på
+   `!r.osmNavn` — altså *alle* rader uten ekte OSM-navn. For Oslo/Lekeplass er
+   det 1 423 − 34 = **1 389 rader**: 1 384 «ved gate», 5 «i område», og det som
+   måtte være «kun kategori». «Kun kategori» er en tittelkilde blant fire, ikke
+   populasjonen.
+
+2. **Utdataene er PAR, ikke rader.** Løkka er `for i … for j = i+1`, så en
+   gruppe på *n* rader med byte-identisk tittel gir *n·(n−1)/2* linjer. Den
+   verste Lekeplass-gruppa i spørring B var 17 rader — **136 par alene**.
+   Rent aritmetisk kan 13 rader gi høyst C(13,2) = 78 par, så 151 *kan ikke*
+   komme fra 13 rader uansett hvordan de fordeler seg.
+
+3. **Overvekten er «ved gate», ikke «kun kategori».** Før husnummeret kom inn
+   i tittelen var «Lekeplass ved Kapellveien» felles for hver lekeplass langs
+   Kapellveien. Det er kollisjonene endringen i denne grenen fjerner.
+
+### De 555 kilometerne er ikke blant de 151
+
+`generatedTitlePairs` har et tak på **2 000 m** (`meters = 2000`), og par over
+taket forkastes (`if (d > meters) continue`). Spørring C hadde ikke noe tak, og
+det er der max 555 km for Lekeplass, 561 km for Park og 558 km for Bibliotek
+kommer fra. De parene har aldri vært med i de 151 — antakelsen om at de 151 er
+de landsdekkende generiske titlene stemmer altså ikke.
+
+Landsdekkende par med samme generiske tittel er et ekte problem for
+*visningen* (to «Lekeplass» i hver sin ende av landet ser like ut i en liste),
+men de er ikke et duplikatproblem, og tørrkjøringens duplikatlinje er ikke
+stedet de dukker opp.
+
+### Rapportlinja er rettet
+
+Linja sa `151 med delt GENERERT tittel`, som leses som 151 steder. Den sier nå
+`151 par mellom N rader`, med begge tallene, fordi det ene ikke lar seg utlede
+av det andre. Formatet på eksempellinjene under er uendret.
