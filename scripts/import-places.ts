@@ -44,9 +44,9 @@ import {
 } from '../lib/import-chunks';
 import {
     batchFingerprint,
-    duplicateCandidates,
+    duplicatePairs,
     formatApproval,
-    generatedTitleCollisions,
+    generatedTitlePairs,
     type ForhandsDiff,
     type KategoriLinje,
 } from '../lib/import-approval';
@@ -3387,10 +3387,10 @@ async function rapporterGodkjenning(
         lng: r.lng,
         osmNavn: r.titleSource === 'osm-navn',
     }));
-    const duplikater = duplicateCandidates(dupRader);
+    const duplikater = duplicatePairs(dupRader);
     // Blindsonen fra den første nasjonale tørrkjøringen: tre navnløse
     // polygoner som alle fikk «Skianlegg i Fageråsen» fra Nominatim.
-    const genererteKollisjoner = generatedTitleCollisions(dupRader);
+    const genererteKollisjoner = generatedTitlePairs(dupRader);
 
     const dom: 'GO' | 'STOPP' = utbytte ? 'STOPP' : 'GO';
     const flagg = [
