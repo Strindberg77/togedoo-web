@@ -22,6 +22,20 @@ import {
     cityModeSortIsLoadBearing,
     listingCutoff,
 } from '../../../lib/event-window';
+import {
+    QueryParamError,
+    assertCursorMatchesSort,
+    decodeCursor,
+    encodeCursor,
+    parseBbox,
+    parseLimit,
+    parsePoint,
+    parseRadius,
+    sanitizeQueryForOr,
+    sanitizeQueryForRpc,
+    splitPage,
+    usesSearchFunction,
+} from '../../../lib/activities-query';
 
 interface ActivityRow {
     id: string;
@@ -49,6 +63,9 @@ interface ActivityRow {
     // nullbar her fordi raden kan komme fra en spørring gjort før
     // migrasjonen er kjørt — da mangler feltet, og `?? []` fanger det.
     facets: string[] | null;
+    // Kun fra activities_search (migrasjon 0017): luftlinje i meter fra
+    // posisjonen i forespørselen. Mangler i by-modus og uten posisjon.
+    distance_m?: number | null;
 }
 
 /** OSM-ens sport-tag på Ballbane er ofte semikolon-/komma-separert
@@ -85,6 +102,15 @@ function toApiShape(row: ActivityRow, distanceFromCityKm: number | null = null) 
         // klienten merke kortet med at stedet ligger i en annen kommune.
         nearCity: row.near_city,
         distanceFromCityKm,
+        // Luftlinje i meter fra posisjonen i forespørselen, avrundet til hele
+        // meter FOR VISNING. Markøren for neste side bærer den urundede
+        // verdien (se lib/activities-query.ts) — avrunder man den, kan to
+        // rader innenfor samme meter bli hoppet over eller komme to ganger.
+        // null når forespørselen ikke hadde posisjon.
+        distanceM:
+            row.distance_m === null || row.distance_m === undefined
+                ? null
+                : Math.round(row.distance_m),
         // Bydel/strøk (kort-redesign): finere enn kommune, skiller steder
         // innad i store byer. OSM legger dette i addr:suburb / addr:district
         // (city_district/neighbourhood som fallback). Egen kontekst-linje på
@@ -134,9 +160,12 @@ const ROW_COLUMNS =
 async function fromDatabase(searchParams: URLSearchParams) {
     const db = supabaseAdmin();
 
-    const lat = searchParams.get('lat') ? Number(searchParams.get('lat')) : null;
-    const lng = searchParams.get('lng') ? Number(searchParams.get('lng')) : null;
-    const radius = Math.min(Number(searchParams.get('radius') ?? 10000) || 10000, 100000);
+    const point = parsePoint(searchParams.get('lat'), searchParams.get('lng'));
+    const bbox = parseBbox(searchParams.get('bbox'));
+    const cursor = decodeCursor(searchParams.get('cursor'));
+    // null = ingen avstandsgrense. Se parseRadius for hvorfor det ikke lenger
+    // er 10 km, og hvorfor taket på 100 km er borte.
+    const radius = parseRadius(searchParams.get('radius'));
     const kind = searchParams.get('kind');
     // Kategori kan være komma-separert (flervalg) → liste. Verdiene
     // parameteriseres av .in()/p_categories, så ingen sanering nødvendig
@@ -156,37 +185,71 @@ async function fromDatabase(searchParams: URLSearchParams) {
         .trim()
         .slice(0, 50);
     const targetAudience = searchParams.get('targetAudience');
-    const limit = Math.min(Number(searchParams.get('limit') ?? 200) || 200, 500);
-    // Fritekstsøk: saner til kun bokstaver (inkl. æøå via \p{L}), tall,
-    // mellomrom og bindestrek, maks 50 tegn. Det fjerner både ilike-wildcards
-    // (%/_) og PostgREST .or()-metategn (,/()/*), så q kan embeddes trygt.
-    const q = (searchParams.get('q') ?? '')
-        .replace(/[^\p{L}\p{N}\s-]/gu, '')
-        .trim()
-        .slice(0, 50);
+    const limit = parseLimit(searchParams.get('limit'));
+    // To saneringer, fordi de to veiene har ulike farer: RPC-en tar q som
+    // bunden parameter og trenger bare wildcards escapet, mens den flate
+    // veien limer q inn i .or() og må ha PostgREST-metategnene bort.
+    const qRpc = sanitizeQueryForRpc(searchParams.get('q'));
+    const q = sanitizeQueryForOr(searchParams.get('q'));
 
     let rows: ActivityRow[];
     // Settes kun i by-modus (se sorteringen under).
     let centre: LatLng | null = null;
 
-    if (lat !== null && lng !== null && Number.isFinite(lat) && Number.isFinite(lng)) {
-        // Radius-søk i PostGIS, nærmest først.
-        const { data, error } = await db.rpc('activities_nearby', {
-            p_lat: lat,
-            p_lng: lng,
+    if (
+        usesSearchFunction({
+            hasPoint: point !== null,
+            hasBbox: bbox !== null,
+            hasCursor: cursor !== null,
+            hasQuery: qRpc !== null,
+            hasMunicipality: municipality !== '',
+        })
+    ) {
+        // Nærmest først (eller tittel uten posisjon), valgfri radius, valgfritt
+        // kartutsnitt, og keyset-paginering. Migrasjon 0017.
+        if (cursor) assertCursorMatchesSort(cursor, point !== null);
+        // Én rad mer enn siden: er den der, finnes det mer å hente.
+        const { data, error } = await db.rpc('activities_search', {
+            p_lat: point?.lat ?? null,
+            p_lng: point?.lng ?? null,
             p_radius_m: radius,
+            p_west: bbox?.west ?? null,
+            p_south: bbox?.south ?? null,
+            p_east: bbox?.east ?? null,
+            p_north: bbox?.north ?? null,
             p_kind: kind,
             p_categories: categoryList,
-            p_q: q || null,
-            p_limit: limit,
+            // Filtreres nå INNE i spørringen, ikke på det ferdige utvalget.
+            // Før falt målgruppefilteret på de 100 nærmeste; nå gjelder det
+            // alle treff, slik paginering krever.
+            p_target_audience: targetAudience,
+            p_q: qRpc,
+            p_after_distance_m: cursor?.distanceM ?? null,
+            p_after_title: cursor?.title ?? null,
+            p_after_id: cursor?.id ?? null,
+            p_limit: limit + 1,
         });
         if (error) throw new Error(error.message);
-        rows = (data ?? []) as ActivityRow[];
-        if (targetAudience) {
-            rows = rows.filter(
-                (r) => r.target_audience.toLowerCase() === targetAudience.toLowerCase()
-            );
-        }
+        const { page, hasMore } = splitPage((data ?? []) as ActivityRow[], limit);
+        const last = page[page.length - 1];
+        return NextResponse.json({
+            success: true,
+            mode: 'datahub',
+            data: page.map((row) => toApiShape(row)),
+            count: page.length,
+            hasMore,
+            nextCursor:
+                hasMore && last
+                    ? encodeCursor({
+                          distanceM: last.distance_m ?? null,
+                          title: last.title,
+                          id: last.id,
+                      })
+                    : null,
+            attribution:
+                'Stedsdata © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',
+            timestamp: new Date().toISOString(),
+        });
     } else {
         // MERK (defekt 3, docs/arrangementer-og-betalende-aktorer.md):
         // sorteringen under er virkningsløs så lenge utvalget bare er steder —
@@ -259,6 +322,12 @@ async function fromDatabase(searchParams: URLSearchParams) {
         mode: 'datahub',
         data: rows.map((row) => toApiShape(row, distanceFromCityKm(centre, row.lat, row.lng))),
         count: rows.length,
+        // By-modus har ingen paginering. Feltene er med for at svarformen skal
+        // være den samme uansett vei — en klient som blar skal slippe å vite
+        // hvilken gren den traff. `false`/`null` er sant her: det finnes ingen
+        // neste side å be om.
+        hasMore: false,
+        nextCursor: null,
         // ODbL-krav: steder (kind='place') kommer fra OpenStreetMap.
         attribution: 'Stedsdata © OpenStreetMap contributors (ODbL) — openstreetmap.org/copyright',
         timestamp: new Date().toISOString(),
@@ -309,6 +378,12 @@ export async function GET(request: NextRequest) {
         }
         return await fromLegacyScrape(searchParams);
     } catch (error) {
+        // Ugyldig parameter er klientens feil, ikke serverens: 400 med en
+        // melding som sier hva som må rettes. En halv bbox eller en markør fra
+        // en annen sortering ville ellers blitt et stille, feil svar.
+        if (error instanceof QueryParamError) {
+            return NextResponse.json({ success: false, error: error.message }, { status: 400 });
+        }
         console.error('[Activities API Error]:', error);
         return NextResponse.json(
             {
