@@ -174,7 +174,7 @@ export function qModre(union: GeoBounds): string {
 // MELLOMLAGRING
 // ---------------------------------------------------------------------------
 
-type OsmElement = Awaited<ReturnType<typeof fetchOverpass>>[number];
+export type OsmElement = Awaited<ReturnType<typeof fetchOverpass>>[number];
 
 /**
  * Henter én spørring, eller leser den fra disk om den er hentet før.
@@ -184,7 +184,7 @@ type OsmElement = Awaited<ReturnType<typeof fetchOverpass>>[number];
  * hentestegets fingeravtrykk i importen, og av samme grunn: «rett spørringen
  * og kjør på nytt» skal ikke gi gårsdagens svar i stillhet.
  */
-async function hent(cacheDir: string, navn: string, q: string): Promise<OsmElement[]> {
+export async function hent(cacheDir: string, navn: string, q: string): Promise<OsmElement[]> {
     const fil = path.join(cacheDir, `${navn}-${fingerprint(q)}.json`);
     if (fs.existsSync(fil)) {
         console.log(`  [disk]  ${navn}`);
