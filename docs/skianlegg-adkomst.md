@@ -1,8 +1,7 @@
 # Hvor møter man opp? Adkomstpunkt for Voss, Trysil og Geilo
 
-**Status:** bare lesing. Ingenting er skrevet til basen, og ingen seed er kjørt.
-Titler og koordinater står som `TODO` i `scripts/seed-storanlegg.ts` til
-Frederik har valgt.
+**Status:** seeden er kjørt og de 8 gamle radene tatt ned 17. september 2026.
+Skianlegg har nå 201 publiserte rader i 132 kommuner (commit 17bf8f0).
 
 Målt 17. sep. 2026 mot ekte Overpass, Kartverkets høydedata og
 produksjonsbasen (kun `select`). Kjør på nytt:
@@ -10,7 +9,6 @@ produksjonsbasen (kun `select`). Kjør på nytt:
 ```bash
 set -a && source .env.local && set +a
 npx --yes tsx scripts/skianlegg-adkomst.ts          # full kandidatliste → .flatemaal-ut/adkomst.md
-npx --yes tsx scripts/seed-storanlegg.ts --dry-run   # forslaget, med navnekontroll mot OSM
 ```
 
 Den fulle lista (alle heiser, alle parkeringer, alle rader i polygonet) står i
@@ -287,14 +285,6 @@ grunner:
   eget nedtak.
 - Oslo-alpint gikk seed + claim-veien. Én mekanisme for samme problem.
 
-### Hvorfor claimene ikke står i `OSM_CLAIMS` ennå
-
-En claim virker så snart den ligger i lista. Neste import ville hoppet over
-anleggene uten at noen seed-rad fantes, og da hadde de forsvunnet fra appen.
-`assertClaimsResolve` i `seed-vintertilbud.ts` ville dessuten kastet. Derfor
-står de i `FORESLATTE_CLAIMS` i `scripts/seed-storanlegg.ts`, og en test sjekker
-at ingen av dem er aktive.
-
 ### Fasetter
 
 Seed-rader utleder ikke fasetter fra OSM. Dagens importrader har:
@@ -310,15 +300,13 @@ aking-filteret den dagen seed-raden tok over.
 
 ## Rekkefølge når valgene er gjort
 
-1. Fyll inn `title`, `valgtBase` og `description` i `scripts/seed-storanlegg.ts`.
-   `--dry-run` teller åpne TODO og sier «klar» når de er borte.
-2. Flytt entryene til `SEED` og `SPLIT` i `seed-vintertilbud.ts` (`manualCoord`
-   = valgt base, `facets` som over), og claimene til `OSM_CLAIMS`.
-3. `npx --yes tsx scripts/seed-vintertilbud.ts --dry-run`
-4. `npx --yes tsx scripts/import-places.ts --dry-run …`: rapporten skal vise
+1. Legg entryene i `SEED` og `SPLIT` i `seed-vintertilbud.ts` (`manualCoord`
+   = valgt base, `facets` som over), og claimene i `OSM_CLAIMS`.
+2. `npx --yes tsx scripts/seed-vintertilbud.ts --dry-run`
+3. `npx --yes tsx scripts/import-places.ts --dry-run …`: rapporten skal vise
    `claim … → ingen rad` for alle claimede objekter.
-5. Kjør seeden.
-6. Ta ned de gamle radene med `unpublish` (`rejected + locked`), **etter**
+4. Kjør seeden.
+5. Ta ned de gamle radene med `unpublish` (`rejected + locked`), **etter**
    seeden:
 
 | rad-id | external_id | tittel |
