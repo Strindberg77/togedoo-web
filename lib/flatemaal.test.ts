@@ -7,10 +7,15 @@ import assert from 'node:assert/strict';
 
 import {
     boksMeter,
-    langsdekning,
+    finnMoranlegg,
     fordeling,
+    kanVaereMor,
+    langsdekning,
+    loypeSomLinje,
     maalFlater,
     median,
+    morUtfall,
+    slaaSammenSegmenter,
     snitt,
     STORRELSE_BOTTER,
     type FlateInn,
@@ -172,4 +177,169 @@ test('medianen sorterer ikke kallerens liste', () => {
     assert.deepEqual(v, [5, 1, 3]);
     assert.equal(median([1, 2, 3, 4]), 2.5);
     assert.equal(median([]), null);
+});
+
+// ---------------------------------------------------------------------------
+// SEGMENTER ER IKKE LØYPER — feilen i det første korridor-målet
+// ---------------------------------------------------------------------------
+
+const seg = (id: string, pts: [number, number][], navn?: string): LinjeInn => ({
+    id,
+    tags: navn ? { 'piste:type': 'downhill', name: navn } : { 'piste:type': 'downhill' },
+    points: pts.map(([lat, lon]) => ({ lat, lon })),
+});
+
+test('en loype splittet i tre ways er ÉN loype', () => {
+    // Nøyaktig delte noder: det er det en splitting i OSM etterlater seg.
+    const l = slaaSammenSegmenter([
+        seg('way/1', [[61.280, 12.262], [61.283, 12.264]]),
+        seg('way/2', [[61.283, 12.264], [61.286, 12.266]]),
+        seg('way/3', [[61.286, 12.266], [61.289, 12.268]]),
+    ]);
+    assert.equal(l.length, 1, 'tre segmenter, én løype');
+    assert.deepEqual([...l[0].segmenter], ['way/1', 'way/2', 'way/3']);
+});
+
+test('to loyper som KRYSSER forblir to', () => {
+    // GRUNNEN TIL AT BARE ENDEPUNKTER LIMER. To ulike nedfarter som krysser
+    // deler også en node i OSM. Brukte vi alle punkter som lim, ville hele
+    // anlegget blitt én løype og «tre eller flere» aldri slått ut.
+    const l = slaaSammenSegmenter([
+        seg('way/1', [[61.280, 12.260], [61.285, 12.265], [61.290, 12.270]]),
+        seg('way/2', [[61.290, 12.260], [61.285, 12.265], [61.280, 12.270]]),
+    ]);
+    assert.equal(l.length, 2, 'krysspunktet er et MELLOMpunkt i begge');
+});
+
+test('samme navn limer selv uten felles node', () => {
+    // Et hull i taggingen — en flat seksjon uten piste:type — ville ellers
+    // delt løypa i to.
+    const l = slaaSammenSegmenter([
+        seg('way/1', [[61.280, 12.260], [61.282, 12.262]], 'Nedfart 3'),
+        seg('way/2', [[61.286, 12.266], [61.289, 12.269]], 'Nedfart 3'),
+    ]);
+    assert.equal(l.length, 1);
+    assert.equal(l[0].navn, 'Nedfart 3');
+});
+
+test('TOMT navn limer ingenting', () => {
+    // Ellers ville alle navnløse segmenter i Norge blitt én løype.
+    const l = slaaSammenSegmenter([
+        { ...seg('way/1', [[61.28, 12.26], [61.281, 12.261]]), tags: { name: '  ' } },
+        { ...seg('way/2', [[61.29, 12.29], [61.291, 12.291]]), tags: { name: '' } },
+    ]);
+    assert.equal(l.length, 2);
+});
+
+test('enkeltlenke: A–B og B–C gir én loype selv om A og C ikke moetes', () => {
+    const l = slaaSammenSegmenter([
+        seg('way/A', [[61.280, 12.260], [61.283, 12.263]]),
+        seg('way/C', [[61.286, 12.266], [61.289, 12.269]]),
+        seg('way/B', [[61.283, 12.263], [61.286, 12.266]]),
+    ]);
+    assert.equal(l.length, 1);
+});
+
+test('sammenslaaingen endrer korridor-dommen — det er hele poenget', () => {
+    // FØR: tre segmenter av samme nedfart ga kryssende = 3, og flata havnet
+    // i «tre eller flere løyper». ETTER: kryssende = 1, og den er en korridor.
+    const segmenter = [
+        seg('way/1', [[61.280, 12.262], [61.283, 12.264]]),
+        seg('way/2', [[61.283, 12.264], [61.286, 12.266]]),
+        seg('way/3', [[61.286, 12.266], [61.290, 12.268]]),
+    ];
+    const uten = maalFlater([flate('way/9', FLATE)], segmenter, []);
+    assert.equal(uten[0].kryssende, 3, 'slik det ble talt før');
+
+    const med = maalFlater([flate('way/9', FLATE)], slaaSammenSegmenter(segmenter).map(loypeSomLinje), []);
+    assert.equal(med[0].kryssende, 1);
+    assert.equal(med[0].kryssendeSegmenter, 3, 'begge tall skal kunne leses');
+    assert.ok(med[0].stersteDekning > 0.95, 'og nå dekker den hele lengden');
+});
+
+// ---------------------------------------------------------------------------
+// MORANLEGGET
+// ---------------------------------------------------------------------------
+
+const ring = (b: ReturnType<typeof boks>) => [
+    { lat: b.minlat, lon: b.minlon },
+    { lat: b.minlat, lon: b.maxlon },
+    { lat: b.maxlat, lon: b.maxlon },
+    { lat: b.maxlat, lon: b.minlon },
+    { lat: b.minlat, lon: b.minlon },
+];
+const SENTER = { lat: 61.285, lon: 12.265 };
+
+test('entydig mor: nøyaktig ett navngitt anlegg inneholder senteret', () => {
+    const treff = finnMoranlegg(SENTER, [
+        { id: 'way/100', navn: 'Trysilfjellet', ringer: [ring(boks(61.2, 12.1, 61.4, 12.4))] },
+        { id: 'way/200', navn: 'Hemsedal', ringer: [ring(boks(60.8, 8.4, 60.9, 8.6))] },
+    ]);
+    assert.equal(morUtfall(treff), 'entydig');
+    assert.equal(treff[0].navn, 'Trysilfjellet');
+});
+
+test('INGEN mor gir «ingen», ikke naermeste nabo', () => {
+    // Kravet i oppgaven: en flate uten omsluttende anlegg skal på
+    // uavklart-lista. Nærhet er ikke et svar her.
+    const treff = finnMoranlegg(SENTER, [
+        { id: 'way/200', navn: 'Nabofjellet', ringer: [ring(boks(61.29, 12.27, 61.31, 12.29))] },
+    ]);
+    assert.equal(morUtfall(treff), 'ingen');
+    assert.deepEqual(treff, []);
+});
+
+test('flere moedre gir «flere» — de skal avgjoeres for hånd', () => {
+    const treff = finnMoranlegg(SENTER, [
+        { id: 'way/100', navn: 'Trysilfjellet', ringer: [ring(boks(61.2, 12.1, 61.4, 12.4))] },
+        { id: 'way/101', navn: 'Trysil Høyfjellsenter', ringer: [ring(boks(61.27, 12.25, 61.30, 12.28))] },
+    ]);
+    assert.equal(morUtfall(treff), 'flere');
+    assert.equal(treff.length, 2);
+});
+
+test('«child ski area» kan ALDRI vaere mor', () => {
+    const treff = finnMoranlegg(SENTER, [
+        { id: 'way/300', navn: 'child ski area', ringer: [ring(boks(61.2, 12.1, 61.4, 12.4))] },
+    ]);
+    assert.equal(morUtfall(treff), 'ingen', 'en typebetegnelse er ikke et anleggsnavn');
+    assert.equal(kanVaereMor('Child Ski Area'), false, 'uavhengig av store bokstaver');
+    assert.equal(kanVaereMor('Childrens Hill'), true, 'ikke en delstrengregel');
+    assert.equal(kanVaereMor(null), false);
+    assert.equal(kanVaereMor(''), false);
+});
+
+test('en navnlos mor teller ikke', () => {
+    const treff = finnMoranlegg(SENTER, [
+        { id: 'way/400', navn: '', ringer: [ring(boks(61.2, 12.1, 61.4, 12.4))] },
+    ]);
+    assert.equal(morUtfall(treff), 'ingen');
+});
+
+test('PUNKT I RING, ikke i boksen — et konkavt anlegg tar ikke nabodalen', () => {
+    // insideOrNear ville godtatt dette: den måler mot polygonets BOKS. En
+    // boks rundt et fjellanlegg dekker halve dalen, og da ville en flate
+    // utenfor anlegget fått det som mor.
+    const uRing = [
+        { lat: 61.2, lon: 12.1 },
+        { lat: 61.2, lon: 12.4 },
+        { lat: 61.4, lon: 12.4 },
+        { lat: 61.4, lon: 12.35 },
+        { lat: 61.25, lon: 12.35 }, // inn igjen — bukta
+        { lat: 61.25, lon: 12.15 },
+        { lat: 61.4, lon: 12.15 },
+        { lat: 61.4, lon: 12.1 },
+        { lat: 61.2, lon: 12.1 },
+    ];
+    const iBukta = { lat: 61.35, lon: 12.25 };
+    assert.equal(
+        morUtfall(finnMoranlegg(iBukta, [{ id: 'way/500', navn: 'Konkav', ringer: [uRing] }])),
+        'ingen',
+        'punktet er i boksen, men utenfor ringen'
+    );
+    const iAnlegget = { lat: 61.22, lon: 12.25 };
+    assert.equal(
+        morUtfall(finnMoranlegg(iAnlegget, [{ id: 'way/500', navn: 'Konkav', ringer: [uRing] }])),
+        'entydig'
+    );
 });
