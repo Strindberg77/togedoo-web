@@ -39,11 +39,44 @@ const SUSPICIOUS_PATTERNS: RegExp[] = [
     /\d+\s*[A-ZÆØÅ]?$/,
 ];
 
+// ENGELSKE TYPEBETEGNELSER i `name`. «child ski area» (way/55606470, Trysil)
+// sto som tittel i appen: den er ikke tillitsord, ingen mistankemønster
+// treffer, og funksjonen falt gjennom til `return true`.
+//
+// REGELEN HAR TO KRAV, og begge må til:
+//   1. HVERT ord i navnet er et typeord fra lista under.
+//   2. MINST ETT av dem er rent engelsk — ikke også et norsk ord.
+//
+// Krav 2 er det som verner de norske navnene. «Ski» er en kommune, «Park» og
+// «Lift» kan stå alene i et norsk navn; ingen av dem slår ut alene. Krav 1
+// verner merkenavn: «Kids Arena» og «Skiarea Hafjell» har et ord utenfor
+// lista og slipper gjennom.
+//
+// HVORFOR IKKE «BARE SMÅ BOKSTAVER». Målt mot basen (sep. 2026): 6 av 1 798
+// OSM-navn er skrevet med bare små bokstaver, og tre av dem — «voll», «bas»,
+// «trafo» — er norske ord. Regelen ville truffet dem og ikke «Child Ski Area».
+const ENGELSKE_TYPEORD = new Set([
+    'child', 'children', 'kids', 'kid', 'area', 'zone', 'slope', 'beginner', 'beginners',
+    'training', 'sledding', 'sled', 'playground', 'parking', 'lot', 'the',
+]);
+const DELTE_TYPEORD = new Set(['ski', 'park', 'lift', 'piste']);
+
+export function isEnglishTypeLabel(name: string): boolean {
+    const ord = name.trim().toLowerCase().split(/[\s-]+/).filter(Boolean);
+    if (!ord.length) return false;
+    return (
+        ord.every((o) => ENGELSKE_TYPEORD.has(o) || DELTE_TYPEORD.has(o)) &&
+        ord.some((o) => ENGELSKE_TYPEORD.has(o))
+    );
+}
+
 /** Ser name-taggen ut som et ekte stedsnavn, eller trolig kopiert fra
  *  gate/institusjon? Tillitsord vinner over mistankemønstre. */
 export function isUsablePlaceName(name: string | null | undefined): boolean {
     const trimmed = name?.trim();
     if (!trimmed || trimmed.length < 3) return false;
+    // FØR tillitsordene: «ski park area» skal ikke reddes av `park`.
+    if (isEnglishTypeLabel(trimmed)) return false;
     if (TRUSTED_WORDS.test(trimmed)) return true;
     return !SUSPICIOUS_PATTERNS.some((re) => re.test(trimmed));
 }

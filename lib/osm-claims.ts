@@ -253,6 +253,78 @@ export const OSM_CLAIMS: readonly OsmClaim[] = [
         expectName: 'Gråkallparken',
         note: 'Heis i OSM, ingen utforløype tagget. Seedes med manuelt verifisert punkt i Trondheim.',
     },
+    // ─────────────────────────────────────────────────────────────────────
+    // STORANLEGG (sep. 2026): ÅTTE CLAIMS FOR TRE RADER.
+    //
+    // Importen ga Voss, Trysil og Geilo bbox-senteret til polygonet — oppe i
+    // fjellsiden, eller mellom Geilos to ringer. Seed-radene har punktet ved
+    // basen. Se docs/skianlegg-adkomst.md.
+    //
+    // HVER RAD EIER OGSÅ DELENE INNI. Alphapark, «child ski area», Geilolia
+    // og de to navnløse ytterringene i Ski Geilo var published rader med
+    // punkt inne i anlegget. Claimen gjør at de aldri blir rader igjen, også
+    // om låsen på den gamle raden skulle forsvinne. De 115 NAVNLØSE
+    // delflatene fra flatemålingen er IKKE claimet: de er tatt ned med lås,
+    // og 115 claims ville druknet de som betyr noe.
+    //
+    // expectName BESKRIVER OSM-OBJEKTET. «Trysil» er et svakt kontrollpunkt,
+    // men det er det polygonet heter.
+    {
+        osmId: 'relation/4107373',
+        source: 'kuratert-vintertilbud',
+        externalId: 'voss-resort',
+        expectName: 'Voss Resort Fjellheisar',
+        note: 'Bbox-senteret lå på 658 moh. i skogen; seed-raden har gondolens dalstasjon i Voss sentrum.',
+    },
+    {
+        osmId: 'way/1348055350',
+        source: 'kuratert-vintertilbud',
+        externalId: 'voss-resort',
+        expectName: 'Alphapark',
+        note: 'Sesongbygget terrengpark inne i Voss Resort (5 av 5 noder i relation/4107373). Del av anlegget, ikke eget sted.',
+    },
+    {
+        osmId: 'way/1210019615',
+        source: 'kuratert-vintertilbud',
+        externalId: 'trysil-skisenter',
+        expectName: 'Trysil',
+        note: 'Bbox-senteret lå på 861 moh. midt i fjellet; seed-raden har Trysilgondolens dalstasjon ved Turistsenteret.',
+    },
+    {
+        osmId: 'way/55606470',
+        source: 'kuratert-vintertilbud',
+        externalId: 'trysil-skisenter',
+        expectName: 'child ski area',
+        note: 'Barneområde ved Høyfjellsenteret, 6 av 6 noder i way/1210019615. Navnet er en engelsk typebetegnelse.',
+    },
+    {
+        osmId: 'relation/17004845',
+        source: 'kuratert-vintertilbud',
+        externalId: 'skigeilo',
+        expectName: 'Ski Geilo',
+        note: 'To ringer, én på hver side av dalen; bbox-senteret lå 430 m utenfor begge. Seed-raden har Geiloheisen i sentrum.',
+    },
+    {
+        osmId: 'relation/10859554',
+        source: 'kuratert-vintertilbud',
+        externalId: 'skigeilo',
+        expectName: 'Geilolia',
+        note: 'recreation_ground inne i Ski Geilos sørlige ring. Del av SkiGeilo.',
+    },
+    {
+        osmId: 'way/1238316509',
+        source: 'kuratert-vintertilbud',
+        externalId: 'skigeilo',
+        expectName: null,
+        note: 'Sørlig ytterring i relation/17004845, uten navn. Ble raden «Skianlegg i Geilolie».',
+    },
+    {
+        osmId: 'way/1238316510',
+        source: 'kuratert-vintertilbud',
+        externalId: 'skigeilo',
+        expectName: null,
+        note: 'Nordlig ytterring i relation/17004845, uten navn. Ble raden «Skianlegg ved Vesleåne 68».',
+    },
     // SILJAN SKISENTER (relation/8359960) ER IKKE CLAIMET OG IKKE SEEDET.
     // Den sto på samme liste, men ser nedlagt ut. Importen kan ikke vite om
     // et anlegg er i drift — `disused`/`abandoned` er filtrert bort i

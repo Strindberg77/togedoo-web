@@ -53,3 +53,10 @@ togedoo-web@*
 
 # import-sømmen: mellomresultater per chunk (--work). Aldri kildekode.
 /.import-work/
+/.import-work-area/
+
+# flatemålingen: mellomlagrede Overpass-svar, resultatfiler og id-lista.
+# Ingen av dem er kildekode, og id-lista kommer fra basen.
+/.flatemaal-cache/
+/.flatemaal-ut/
+/flater.txt
