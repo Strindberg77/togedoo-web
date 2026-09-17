@@ -68,6 +68,13 @@ const SPLIT: Record<
     'finse-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     'ringkollen': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
     'grakallparken': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    // STORANLEGG (sep. 2026). Tre anlegg der importens bbox-senter lå i
+    // fjellsiden. Fasettene er kopiert fra importradene de erstatter — en
+    // seed-rad utleder ingenting fra OSM, og uten dem ville Trysil forsvunnet
+    // fra aking-filteret. Se docs/skianlegg-adkomst.md.
+    'voss-resort': { category: 'Skianlegg', isIndoor: false, facets: ['alpint'] },
+    'trysil-skisenter': { category: 'Skianlegg', isIndoor: false, facets: ['alpint', 'aking', 'terrengsykling', 'downhill'] },
+    'skigeilo': { category: 'Skianlegg', isIndoor: false, facets: ['alpint', 'skileik', 'aking'] },
     // Korketrekkeren er en akebakke, ikke et alpinanlegg — og fra sep. 2026
     // er det en EGEN kategori, ikke bare en fasett på Skianlegg. Raden lå
     // under Skianlegg med «(akebakke)» skrevet inn i tittelen, som er en
@@ -444,6 +451,60 @@ export const SEED: VinterSeed[] = [
         isFree: false,
     },
 
+    // ================= STORANLEGG (sep. 2026) =================
+    // Importen ga disse tre bbox-senteret til OSM-polygonet: 658 moh. i
+    // skogen på Voss, 861 moh. midt i Trysilfjellet, og 430 m utenfor begge
+    // ringene på Geilo. Punktet her er basen en familie uten lokalkunnskap
+    // bør reise til; de andre basene står i beskrivelsen. Kandidatene og
+    // målingen bak valget: docs/skianlegg-adkomst.md.
+    //
+    // HVER RAD EIER FLERE OSM-OBJEKTER — anleggspolygonet og de navngitte
+    // delene inni (Alphapark, «child ski area», Geilolia og Geilo-ringene).
+    // Se lib/osm-claims.ts.
+    //
+    // Ingen nearCity: anleggene ligger i sin egen kommune, samme regel som
+    // Gråkallparken og Oslo-anleggene.
+    {
+        externalId: 'voss-resort',
+        title: 'Voss Resort',
+        description:
+            'Stort alpinanlegg med gondol fra Voss sentrum, like ved jernbanestasjonen. ' +
+            'Kommer dere med bil, kan dere også starte i Bavallen, der det er parkering og billettsalg, ' +
+            'eller på Tråstølen, som også har parkering.',
+        municipality: 'Voss',
+        // Dalstasjonen til Voss Gondol (OSM way/675982736), 60 m fra Voss stasjon.
+        address: 'Voss Gondol, Voss sentrum',
+        manualCoord: { lat: 60.62919, lng: 6.41115 },
+        fallbackLat: 60.62919, fallbackLng: 6.41115,
+        isFree: false, url: 'https://vossresort.no/no/vinter/',
+    },
+    {
+        externalId: 'trysil-skisenter',
+        title: 'Trysil skisenter',
+        description:
+            'Stort alpinanlegg i Trysilfjellet. Gondolen går fra Turistsenteret. ' +
+            'Høyfjellsenteret har eget barneområde og Familietrekket, og Skihytta og Høgegga er egne innganger til bakkene.',
+        municipality: 'Trysil',
+        // Dalstasjonen til Trysilgondolen (OSM way/1385891650).
+        address: 'Turistsenteret, Trysil',
+        manualCoord: { lat: 61.31111, lng: 12.24674 },
+        fallbackLat: 61.31111, fallbackLng: 12.24674,
+        isFree: false, url: 'https://www.skistar.com/no/vare-skisteder/trysil/vinter-i-trysil/',
+    },
+    {
+        externalId: 'skigeilo',
+        title: 'SkiGeilo',
+        description:
+            'Skianlegg på begge sider av Geilo, med heis rett fra sentrum. ' +
+            'Slaatta ligger også ved sentrum, og Vestlia, Kikut og Havsdalen har egne parkeringer.',
+        municipality: 'Hol',
+        // Dalstasjonen til Geiloheisen Express (OSM way/31468685), ved Hegnavegen.
+        address: 'Geiloheisen, Geilo sentrum',
+        manualCoord: { lat: 60.53463, lng: 8.19813 },
+        fallbackLat: 60.53463, fallbackLng: 8.19813,
+        isFree: false, url: 'https://www.skigeilo.no/',
+    },
+
     // ================= BERGEN =================
     {
         externalId: 'ado-arena-bergen',
@@ -683,9 +744,41 @@ export function toRow(seed: VinterSeed, sourceId: string, lat: number, lng: numb
     };
 }
 
+/**
+ * `--only=a,b,c`: bare disse radene geokodes, vises og skrives.
+ *
+ * HVORFOR DEN FINNES. Uten den upserter en kjøring HELE seeden og geokoder
+ * hver adresse på nytt mot Kartverket. Et tvetydig svar den dagen gjør en
+ * rad som er published i dag til 'pending' — en endring på rader ingen ba om
+ * å røre. Når en runde skal legge til tre rader, skal den skrive tre rader.
+ *
+ * Vaktene (splitFor, assertClaimsResolve) kjører fortsatt over HELE seeden:
+ * utvalget begrenser skrivingen, ikke kontrollen.
+ */
+export function velgUtvalg<T extends { externalId: string }>(seed: readonly T[], only: string | undefined): T[] {
+    if (only === undefined) return [...seed];
+    const onsket = only.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!onsket.length) throw new Error('--only= er tom.');
+    const ukjent = onsket.filter((id) => !seed.some((s) => s.externalId === id));
+    if (ukjent.length) throw new Error(`--only: ukjent externalId: ${ukjent.join(', ')}`);
+    return seed.filter((s) => onsket.includes(s.externalId));
+}
+
+/**
+ * Ukjente flagg STOPPER kjøringen. Før --only fantes, var et ignorert flagg
+ * ufarlig; nå ville en skrivefeil som `--onli=` gitt en full upsert av hele
+ * seeden i stillhet. Samme regel som parseArgs i import-places.ts.
+ */
+export function ukjenteFlagg(args: readonly string[]): string[] {
+    return args.filter((a) => !(a === '--dry-run' || a === '--no-geocode' || a.startsWith('--only=')));
+}
+
 async function main() {
+    const ukjente = ukjenteFlagg(process.argv.slice(2));
+    if (ukjente.length) throw new Error(`Ukjent argument: ${ukjente.join(', ')}. Gyldige: --dry-run --no-geocode --only=a,b`);
     const dryRun = process.argv.includes('--dry-run');
     const noGeocode = process.argv.includes('--no-geocode');
+    const only = process.argv.find((a) => a.startsWith('--only='))?.slice('--only='.length);
 
     // EIERSKAP: noen av disse radene eier et OSM-objekt, så importen ikke
     // lager en rad ved siden av (lib/osm-claims.ts). Claimen peker på
@@ -694,10 +787,13 @@ async function main() {
     // som ikke finnes — og stedet forsvinner helt fra appen, i stillhet.
     // Kastes hardt, og fanges i --dry-run, som splitFor().
     assertClaimsResolve(SOURCE.slug, SEED.map((s) => s.externalId));
+    for (const s of SEED) splitFor(s.externalId);
+    const utvalg = velgUtvalg(SEED, only);
+    if (only !== undefined) console.log(`--only: ${utvalg.length} av ${SEED.length} rader: ${utvalg.map((s) => s.externalId).join(', ')}\n`);
 
     const resolved: { seed: VinterSeed; lat: number; lng: number; verified: boolean; note: string }[] = [];
     const warnings: string[] = [];
-    for (const seed of SEED) {
+    for (const seed of utvalg) {
         let lat = seed.fallbackLat;
         let lng = seed.fallbackLng;
         let verified = false;
@@ -744,7 +840,7 @@ async function main() {
     }
 
     const verifiedCount = resolved.filter((r) => r.verified).length;
-    console.log(`Vinter-splitt-seed: ${SEED.length} steder — ${verifiedCount} entydig geokodet (published), ${SEED.length - verifiedCount} pending.\n`);
+    console.log(`Vinter-splitt-seed: ${utvalg.length} steder — ${verifiedCount} entydig geokodet (published), ${utvalg.length - verifiedCount} pending.\n`);
 
     // Fordelings-rapport (verifiser 6/8/5/5/1 FØR ekte kjøring).
     const dist = new Map<string, { total: number; inne: number; ute: number }>();
@@ -760,7 +856,7 @@ async function main() {
         console.log(`  ${cat.padEnd(20)} ${String(d.total).padStart(2)}  (inne ${d.inne}, ute ${d.ute})`);
     }
     const totalMapped = [...dist.values()].reduce((a, d) => a + d.total, 0);
-    console.log(`  ${'SUM'.padEnd(20)} ${String(totalMapped).padStart(2)}${totalMapped === SEED.length ? '' : '  ⚠ AVVIK fra ' + SEED.length}\n`);
+    console.log(`  ${'SUM'.padEnd(20)} ${String(totalMapped).padStart(2)}${totalMapped === utvalg.length ? '' : '  ⚠ AVVIK fra ' + utvalg.length}\n`);
     for (const r of resolved) {
         const homeCity = r.seed.nearCity ? `→${r.seed.nearCity}` : '   ';
         console.log(
