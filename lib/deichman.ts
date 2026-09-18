@@ -1,5 +1,11 @@
 import * as cheerio from 'cheerio';
 
+// Togedoo sier hvem den er, som resten av kodebasen (lib/geocode.ts,
+// lib/places.ts). Her sto en nettleser-streng («Mozilla/5.0 (Macintosh …»):
+// Togedoo skal ikke utgi seg for å være en nettleser. robots.txt hos
+// deichman.no er sjekket 18.09.2026 og tillater adressen vi henter.
+const USER_AGENT = 'Togedoo datahub (hello@togedoo.com)';
+
 export interface DeichmanEvent {
     id: string;
     title: string;
@@ -42,7 +48,7 @@ export async function scrapeDeichman(options: {
 
         const response = await fetch('https://deichman.no/hva-skjer', {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'User-Agent': USER_AGENT,
             },
             next: { revalidate: 3600 },
         });
