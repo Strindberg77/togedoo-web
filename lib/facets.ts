@@ -27,9 +27,65 @@ export const FACET_TOKENS = [
     'bmx',
     'sparkesykkel',
     'rulleskoyter',
+    // Bare fra seed. Kristiansand Dyrepark er ÉN rad med hovedkategori
+    // Dyremøte, men skal også komme opp under Fornøyelsespark — samme deling
+    // som Trysil skisenter (Skianlegg) med fasetten aking. Ingen OSM-tagg
+    // setter den; importen har ingen selektor for tourism=theme_park.
+    //
+    // Mottakeren er kategorifilteret i API-et (FASETT_SOM_KATEGORI under,
+    // migrasjon 0022). Appens eget klientfilter ser ennå bare på
+    // hovedkategorien. Se docs/kategori-via-fasett.md.
+    'fornoyelsespark',
 ] as const;
 
 export type FacetToken = (typeof FACET_TOKENS)[number];
+
+/**
+ * Tokens som BARE settes av seed, aldri av importen. Unntaket fra regelen i
+ * scripts/facets.test.ts om at hvert token skal kunne utledes fra en tagg:
+ * for disse finnes det ingen tagg å utlede fra, og det er et valg, ikke en
+ * glipp. Står et token her, må en seed-rad sette det — ellers er det dødt.
+ */
+export const SEED_ONLY_FACETS: readonly FacetToken[] = ['fornoyelsespark'];
+
+/**
+ * FASETT SOM KATEGORI: fasettene som også teller som treff i en kategori.
+ *
+ * Et kategorifilter ser på hovedkategorien. Noen steder er også noe annet:
+ * Dyreparken er Dyremøte, men ER en fornøyelsespark; Trysil skisenter er
+ * Skianlegg, men HAR akebakke. De skal komme opp under begge — som ÉN rad.
+ *
+ * Tabellen er REGELEN, og den er eksplisitt med vilje. Å utlede den
+ * (`lower(token) === lower(kategori)`) virker for «aking», feiler for
+ * «fornoyelsespark» (ASCII mot ø), og ville gjort «alpint» til et
+ * kategoritreff den dagen en kategori het Alpint. Fasetter som PRESISERER
+ * hovedkategorien (alpint, skileik, downhill, terrengsykling) står ikke her
+ * og gir aldri treff i en annen kategori.
+ *
+ * Fasetten UTVIDER et kategorifilter som allerede er satt; den innfører
+ * aldri et. SQL-en (migrasjon 0022) får ferdige lister og vet ingenting om
+ * denne tabellen. Måling og bakgrunn: docs/kategori-via-fasett.md.
+ *
+ * Appen trenger den samme tabellen for sitt eget kategorifilter (se samme
+ * dokument). Endres den her, må den endres der.
+ */
+export const FASETT_SOM_KATEGORI: Readonly<Partial<Record<FacetToken, string>>> = {
+    aking: 'Aking',
+    fornoyelsespark: 'Fornøyelsespark',
+};
+
+/**
+ * Fasett-tokenene som skal gi treff for de valgte kategoriene, eller null når
+ * ingen av dem har en fasett (da oppfører spørringen seg nøyaktig som før).
+ */
+export function categoryFacetsFor(categories: readonly string[] | null): FacetToken[] | null {
+    if (!categories || categories.length === 0) return null;
+    const valgt = new Set(categories);
+    const tokens = (Object.keys(FASETT_SOM_KATEGORI) as FacetToken[]).filter((t) =>
+        valgt.has(FASETT_SOM_KATEGORI[t]!)
+    );
+    return tokens.length > 0 ? tokens : null;
+}
 
 /**
  * ANTAKELSEN: et anlegg for skateboard er også et sted barn kjører

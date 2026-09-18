@@ -40,7 +40,7 @@ fra lengden på lista.
 | `bbox` | **Påkrevd.** `vest,sør,øst,nord` i grader. Alle fire, og utsnittet må ha utstrekning i begge retninger. Ellers svarer ruta 400. |
 | `lat`, `lng` | Valgfritt, begge eller ingen. Gir `distanceM` på stedene og sorterer dem nærmest brukeren først. Påvirker ikke utvalget eller klyngene. |
 | `kind` | `place` fra appen. |
-| `category` | Kommaseparert, eksakt. Samme kategorifilter som lista, så totalen og klyngene teller det brukeren har valgt. |
+| `category` | Kommaseparert, eksakt. Samme kategorifilter som lista, **med fasett-treff** (docs/kategori-via-fasett.md), så totalen og klyngene teller det brukeren har valgt. `kategorier` i en klynge teller fortsatt på hovedkategorien: Dyreparken står som «Dyremøte: 1» i en Fornøyelsespark-boble. |
 
 ## Svar
 

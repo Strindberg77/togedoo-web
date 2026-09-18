@@ -325,6 +325,82 @@ export const OSM_CLAIMS: readonly OsmClaim[] = [
         expectName: null,
         note: 'Nordlig ytterring i relation/17004845, uten navn. Ble raden «Skianlegg ved Vesleåne 68».',
     },
+    // ─────────────────────────────────────────────────────────────────────
+    // FORNØYELSESPARKER (sep. 2026). Åtte tourism=theme_park-objekter, én
+    // claim hver. ALLE ER FOREBYGGENDE: importen har ingen selektor for
+    // tourism=theme_park i dag, så ingen av dem kan treffe. De står her for
+    // den dagen en Fornøyelsespark-, Badeland- eller Dyremøte-import finnes —
+    // uten dem ville den laget en rad med polygonets midtpunkt ved siden av
+    // seed-raden med inngangspunktet. Se docs/fornoyelsespark-maling.md.
+    //
+    // IKKE CLAIMET: de tre leisure=park som heter «Kongeparken»
+    // (way/103268212, way/189732650, way/614558426). De ligger i Tromsø,
+    // Bodø og ved Trysil — ekte byparker, ikke fornøyelsesparken på Ålgård.
+    // En claim ville skjult dem.
+    {
+        osmId: 'way/48672338',
+        source: 'kuratert-vintertilbud',
+        externalId: 'tusenfryd',
+        expectName: 'Tusenfryd',
+        note: 'Polygonets midtpunkt ligger 106 m inne i parken; seed-raden har hovedinngangen (node/7687702285).',
+        expectNoHit: true,
+    },
+    {
+        osmId: 'relation/6598772',
+        source: 'kuratert-vintertilbud',
+        externalId: 'kongeparken',
+        expectName: 'Kongeparken',
+        note: 'Seed-raden har hovedinngangen (node/686254300), 130 m fra midtpunktet.',
+        expectNoHit: true,
+    },
+    {
+        osmId: 'relation/10678827',
+        source: 'kuratert-vintertilbud',
+        externalId: 'hunderfossen-eventyrpark',
+        expectName: 'Hunderfossen',
+        note: 'OSM-navnet er «Hunderfossen Familiepark»; parken heter nå Eventyrpark. Seed-raden har hovedinngangen (node/2794927148).',
+        expectNoHit: true,
+    },
+    {
+        osmId: 'way/273798788',
+        source: 'kuratert-vintertilbud',
+        externalId: 'lilleputthammer',
+        expectName: 'Lilleputthammer',
+        note: 'Bare entrance=yes i OSM. Seed-raden har inngangen på parkgrensen (node/2786099980).',
+        expectNoHit: true,
+    },
+    {
+        osmId: 'way/696667313',
+        source: 'kuratert-vintertilbud',
+        externalId: 'foldvik-familiepark',
+        expectName: 'Foldvik',
+        note: 'Seed-raden har hovedinngangen (node/6542382397).',
+        expectNoHit: true,
+    },
+    {
+        osmId: 'way/120864609',
+        source: 'kuratert-vintertilbud',
+        externalId: 'mikkelparken',
+        expectName: 'Mikkelparken',
+        note: 'Ingen inngang i OSM. Seed-raden har et omtrentlig punkt ved kundeparkeringen.',
+        expectNoHit: true,
+    },
+    {
+        osmId: 'way/69166520',
+        source: 'kuratert-vintertilbud',
+        externalId: 'dyreparken',
+        expectName: 'Dyrepark',
+        note: 'Én rad for dyrepark og fornøyelsespark: Dyremøte med fasett fornoyelsespark. Seed-raden har «Byporten» (node/1257106325).',
+        expectNoHit: true,
+    },
+    {
+        osmId: 'way/307924173',
+        source: 'kuratert-vintertilbud',
+        externalId: 'bo-sommarland',
+        expectName: 'Sommarland',
+        note: 'Badeland ute. Seed-raden har hovedinngangen (node/3131762432), 270 m fra midtpunktet.',
+        expectNoHit: true,
+    },
     // SILJAN SKISENTER (relation/8359960) ER IKKE CLAIMET OG IKKE SEEDET.
     // Den sto på samme liste, men ser nedlagt ut. Importen kan ikke vite om
     // et anlegg er i drift — `disused`/`abandoned` er filtrert bort i

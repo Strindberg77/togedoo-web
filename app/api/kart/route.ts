@@ -18,6 +18,7 @@ import {
     rutenettFor,
     type KartRpcSvar,
 } from '../../../lib/kart';
+import { categoryFacetsFor } from '../../../lib/facets';
 
 export async function GET(request: NextRequest) {
     try {
@@ -38,6 +39,9 @@ export async function GET(request: NextRequest) {
             p_north: bbox.north,
             p_kind: kind,
             p_categories: categories.length > 0 ? categories : null,
+            // Dyreparken under Fornøyelsespark, Trysil under Aking. null når
+            // ingen valgt kategori har en fasett. Regelen: lib/facets.ts.
+            p_category_facets: categoryFacetsFor(categories),
             p_cols: grid.kolonner,
             p_rows: grid.rader,
             p_threshold: KART_TERSKEL,
