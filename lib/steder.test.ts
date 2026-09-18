@@ -320,3 +320,33 @@ test('et halvt svar vises, men caches ikke', async () => {
     await hentSteder('Geilo', { fetcher, now: 1000 });
     assert.equal(kall, 4, 'prøver på nytt i stedet for å låse et halvt svar i et døgn');
 });
+
+test('cachen ligger på råsvaret: samme søk, ulik rekkefølge fra ulike steder', async () => {
+    // Rangeringen avhenger av posisjonen. Lå cachen på den FERDIGE lista,
+    // ville den første som søkte «Sand» bestemt rekkefølgen for alle andre i
+    // et døgn — Tromsø ville fått Oslo-folkets nærmeste Sand øverst.
+    let kall = 0;
+    const fetcher = async () => {
+        kall++;
+        return okSvar([
+            kv(200, 'Tettsted', [{ s: 'Sand' }], ['Ullensaker', '3209'], 'Akershus', [60.15, 11.13]),
+            kv(201, 'Tettsted', [{ s: 'Sand' }], ['Harstad', '5503'], 'Troms', [68.8, 16.5]),
+            kv(202, 'Tettsted', [{ s: 'Sand' }], ['Suldal', '1134'], 'Rogaland', [59.48, 6.25]),
+        ]);
+    };
+    const TROMSO = { lat: 69.6492, lng: 18.9553 };
+
+    const fraOslo = await hentSteder('Sand', { fetcher, now: 0 });
+    const fraTromso = await hentSteder('Sand', { fetcher, now: 1000 });
+    assert.equal(fraTromso.fraCache, true, 'andre søk skal treffe cachen');
+    assert.equal(kall, 2, 'bare det første søket gikk til Kartverket (eksakt + prefiks)');
+
+    assert.deepEqual(
+        rankSteder(fraOslo.steder, 'Sand', OSLO).map((s) => s.kommune),
+        ['Ullensaker', 'Suldal', 'Harstad']
+    );
+    assert.deepEqual(
+        rankSteder(fraTromso.steder, 'Sand', TROMSO).map((s) => s.kommune),
+        ['Harstad', 'Ullensaker', 'Suldal']
+    );
+});
