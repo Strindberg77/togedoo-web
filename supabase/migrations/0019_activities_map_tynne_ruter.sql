@@ -8,7 +8,7 @@
 --
 -- HVORFOR
 -- I klyngemodus ble hver ikke-tom rute én boble, også ruter med ett sted.
--- Målt 19. sep. 2026, utsnittet appen havnet i etter ett trykk i Oslo
+-- Målt 18. sep. 2026, utsnittet appen havnet i etter ett trykk i Oslo
 -- (10.7444–10.7721, 59.90552–59.93189, 192 steder, rutenett 6 × 11):
 --
 --   57 bobler — 11 med «1», 10 med «2», 14 med «3».
@@ -55,6 +55,14 @@
 --
 -- Det verste tilfellet krever at HVER rute har nøyaktig 3 steder. I praksis
 -- er det færre: 73 rader i 192-utsnittet, 42 over Sør-Norge.
+--
+-- BARE RADENE SOM SKAL UT, REGNES UT
+-- `rader` (full radform og st_distance) bygges bare for stedene som faktisk
+-- går ut: alle når total <= terskel, ellers bare de i tynne ruter. Over
+-- Sør-Norge er det 42 av 7949 rader. I 0018 ble radformen ikke regnet i
+-- klyngemodus i det hele tatt, og det skal den ikke bli nå heller for tette
+-- ruter: kartet skal snart oppdatere seg ved hver bevegelse, og datamengden
+-- skal femdobles. Svartiden før og etter står i docs/api-kart.md.
 --
 -- SECURITY INVOKER og kolonneutvalget er som i 0018: RLS gjelder, og bare
 -- kolonnene /api/activities leser går ut — ikke contact_email eller
@@ -146,6 +154,11 @@ as $$
   -- Radformen ett sted. Kolonnene er de samme som /api/activities leser
   -- (ROW_COLUMNS), og INGEN andre: contact_email og organizer_id skal ikke
   -- ut. cx/cy er med for å finne ruta, og fjernes før JSON-en går ut.
+  --
+  -- BARE RADENE SOM SKAL UT: alle i stedsmodus, ellers bare de i tynne
+  -- ruter. `rader` brukes to steder og materialiseres derfor; uten filteret
+  -- ville st_distance og full radform blitt regnet for hvert eneste treff
+  -- også i klyngemodus (7949 over Sør-Norge, der 42 skal ut).
   rader as (
     select
       h.id,
@@ -182,6 +195,9 @@ as $$
       c.cy
     from hits h
     join celler c on c.id = h.id
+    join klynger k on k.cx = c.cx and k.cy = c.cy
+    where (select n from total) <= (select maks from terskel)
+       or k.antall <= (select maks from tynn)
   )
   select case
     when (select n from total) <= (select maks from terskel) then jsonb_build_object(
