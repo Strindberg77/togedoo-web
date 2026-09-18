@@ -1,9 +1,13 @@
 # Kategorifilter som også treffer fasetter: forslag
 
-**Status:** forslag og kandidat-SQL (18.09.2026). Ingenting er byttet.
-`supabase/migrations/0021_kategori_via_fasett_kandidat.sql` lager to NYE
-funksjoner ved siden av dagens. Frederik kjører fila, kandidatene måles mot
-dagens funksjoner, og først etter det foreslås byttet.
+**Status (18.09.2026): i drift i databasen og API-et.** 0021 (kandidatene)
+og 0022 (byttet) er kjørt. Etter 0022 har `activities_map` 12 og
+`activities_search` 16 parametre, og kandidatene er borte. API-et sender
+`p_category_facets` fra `FASETT_SOM_KATEGORI` i `lib/facets.ts`, i
+`/api/activities` (begge stiene) og `/api/kart`. Tilbakerulling:
+`docs/tilbakerulling-0022.sql` (ikke kjørt, se kommentaren øverst i fila).
+**Appen er ikke endret ennå**: der kastes fasett-treffene fortsatt av
+klientfilteret (se nederst).
 
 ## Problemet
 
@@ -130,16 +134,25 @@ Innhold:
 Byttet er skrevet som `supabase/migrations/0022_kategori_via_fasett.sql`,
 men ikke kjørt.
 
-## Byttet, når målingen er godkjent
+## Byttet (gjort 18.09.2026)
 
-1. En migrasjon som erstatter `activities_search` og `activities_map` med
-   kandidatenes kropp, og dropper kandidatene.
+1. `supabase/migrations/0022_kategori_via_fasett.sql`: dropper de gamle
+   signaturene og oppretter funksjonene med kandidatenes kropp i én
+   transaksjon, setter rettighetene på nytt og dropper kandidatene.
 2. `app/api/activities/route.ts` og `app/api/kart/route.ts` sender
-   `p_category_facets` fra tabellen.
-3. **Den flate stien** i `/api/activities` (kommune-modus,
-   `query.in('category', …)`, linje 164) må få samme utvidelse:
-   `.or('category.in.(…),facets.ov.{…}')`. Ellers treffer Fornøyelsespark
-   Dyreparken i kartet og i nasjonalt søk, men ikke i kommune-modus.
+   `p_category_facets: categoryFacetsFor(kategorier)`. Den er null når ingen
+   valgt kategori har en fasett, og da er spørringen nøyaktig som før.
+3. **Den flate stien** (kommune-modus) bruker `categoryOrFacetFilter` i
+   `lib/activities-query.ts` når det finnes en fasett:
+   `category.in.("…"),facets.ov.{…}`. Kategorinavnene settes i doble
+   anførselstegn med `\` og `"` escapet, fordi `.or()` ikke parameteriserer
+   slik `.in()` gjorde. Uten fasett brukes `.in()` som før.
+
+Verifisert før merge: lokal kode mot produksjon med de samme kallene.
+Fornøyelsespark gir 7 med Dyreparken, i lista, i kartet og i kommune-modus
+for Kristiansand. Aking gir 24. Kategoriene uten fasett gir identiske svar:
+Lekeplass fra Oslo, Skianlegg nasjonalt, Dyremøte, «Innendørs lekeland» i
+Oslo, søk uten kategori, og kartet for Oslo, Sør-Norge og Norge.
 
 ## Appen (togedoo-modern): hva må endres
 

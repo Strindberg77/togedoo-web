@@ -27,7 +27,7 @@ Den arver også sine gamle svakheter — se «Kjent gjeld» nederst.
 | `lat`, `lng` | Posisjonen det måles fra. **Begge eller ingen** — én av dem gir 400. |
 | `radius` | Meter. **Valgfritt filter.** Utelates den, er det ingen avstandsgrense. Intet tak (grensa på 100 km er borte). Må være positiv. |
 | `bbox` | `vest,sør,øst,nord` i grader. **Alle fire eller 400.** Krysser ikke datolinja. |
-| `category` | Kommaseparert liste. Eksakt match. |
+| `category` | Kommaseparert liste. Eksakt match på hovedkategorien, **eller** på en fasett som teller som kategoritreff (`FASETT_SOM_KATEGORI` i `lib/facets.ts`): `Fornøyelsespark` treffer også Dyreparken (Dyremøte), og `Aking` treffer også skianlegg med akebakke. Gjelder begge stiene, også den flate kommune-stien. Se docs/kategori-via-fasett.md. |
 | `municipality` | Eksakt kommunenavn, eller `near_city` (kuratert hjemby). Holder forespørselen på den flate veien. |
 | `targetAudience` | Eksakt, uavhengig av store og små bokstaver. |
 | `q` | Fritekst, maks 50 tegn. Treffer `title`, `description`, `venue_name`, `address`, `category` og **`municipality`** (nytt). `near_city` er IKKE med: den er en kurateringsmerkelapp, ikke stedets beliggenhet. |

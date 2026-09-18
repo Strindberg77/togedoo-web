@@ -35,7 +35,9 @@ import {
     sanitizeQueryForRpc,
     splitPage,
     usesSearchFunction,
+    categoryOrFacetFilter,
 } from '../../../lib/activities-query';
+import { categoryFacetsFor } from '../../../lib/facets';
 
 async function fromDatabase(searchParams: URLSearchParams) {
     const db = supabaseAdmin();
@@ -56,6 +58,11 @@ async function fromDatabase(searchParams: URLSearchParams) {
         .map((c) => c.trim())
         .filter(Boolean);
     const categoryList = categories.length > 0 ? categories : null;
+    // Fasettene som også teller som treff i de valgte kategoriene —
+    // Dyreparken under Fornøyelsespark, Trysil under Aking. null når ingen
+    // valgt kategori har en fasett: da er spørringen nøyaktig som før.
+    // Regelen: lib/facets.ts (FASETT_SOM_KATEGORI).
+    const categoryFacets = categoryFacetsFor(categoryList);
     // By-modus matcher også near_city (kuraterte «nærliggende utflukter» som
     // ligger utenfor kommunegrensen, men hører til byens nærområde). Saneres
     // som q (kun bokstaver/tall/mellomrom/bindestrek) så den trygt kan
@@ -99,6 +106,7 @@ async function fromDatabase(searchParams: URLSearchParams) {
             p_north: bbox?.north ?? null,
             p_kind: kind,
             p_categories: categoryList,
+            p_category_facets: categoryFacets,
             // Filtreres nå INNE i spørringen, ikke på det ferdige utvalget.
             // Før falt målgruppefilteret på de 100 nærmeste; nå gjelder det
             // alle treff, slik paginering krever.
@@ -161,7 +169,13 @@ async function fromDatabase(searchParams: URLSearchParams) {
             .order('starts_at', { ascending: true, nullsFirst: false })
             .limit(limit);
         if (kind) query = query.eq('kind', kind);
-        if (categoryList) query = query.in('category', categoryList);
+        if (categoryList) {
+            // Med fasett: kategori ELLER fasett (samme regel som RPC-ene).
+            // Uten: .in() som før, parameterisert.
+            query = categoryFacets
+                ? query.or(categoryOrFacetFilter(categoryList, categoryFacets))
+                : query.in('category', categoryList);
+        }
         if (municipality) {
             // Ekte kommune ELLER hjemby-tilknytning (near_city). To .or()-kall
             // ANDes med q-blokken under, så (by ELLER near_city) OG (søk).
