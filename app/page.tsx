@@ -1,90 +1,68 @@
-'use client';
-import React, { useEffect, useState } from 'react';
-import Link from 'next/link';
+// app/page.tsx
+//
+// Forsiden på produksjonsadressen. Bevisst enkel og statisk: navnet, hva
+// Togedoo er, og krediteringen av kildene appen faktisk viser data fra.
+//
+// Her sto tidligere en klientside som hentet /api/activities ved hver
+// sidevisning og viste radene under overskriften «Ungfritid Aktiviteter» —
+// en rest fra et forsøk på å hente fra Ungfritid som ble lagt ned (jul. 2026,
+// se DATAHUB_SETUP.md). Feltnavnene den leste (org, appCategory, kommune)
+// fantes ikke lenger, derav «Ukjent» overalt.
+//
+// Ingen aktivitetsliste og ingen kall, verken til vårt eget API eller til
+// tredjepart. Serveres som en statisk side.
+//
+// KREDITERINGEN skal følge kildene som faktisk har publiserte rader. Målt
+// 18.09.2026: OpenStreetMap (faste steder), Deichman (arrangementer), og
+// Kartverket (stedsnavn i søket, adresser og kommuner). Bergen bibliotek er
+// en aktiv kilde uten publiserte rader og står derfor ikke her ennå.
 
-export default function UngfritidPage() {
-  const [activities, setActivities] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+const KILDER = [
+    {
+        navn: '© OpenStreetMap contributors',
+        hva: 'Faste steder: lekeplasser, parker, badeplasser, museer og mer. Lisens: ODbL.',
+        lenke: 'https://www.openstreetmap.org/copyright',
+    },
+    {
+        navn: '© Kartverket',
+        hva: 'Stedsnavn, adresser og kommuner. Lisens: CC BY 4.0.',
+        lenke: 'https://www.kartverket.no/api-og-data/vilkar-for-bruk',
+    },
+    {
+        navn: 'Deichman',
+        hva: 'Arrangementer ved Oslos folkebibliotek.',
+        lenke: 'https://deichman.no',
+    },
+] as const;
 
-  useEffect(() => {
-    fetch('/api/activities')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success) {
-          setActivities(data.data);
-        } else {
-          setError('Kunne ikke hente aktiviteter.');
-        }
-      })
-      .catch((err) => {
-        console.error('Feil ved henting:', err);
-        setError('Noe gikk galt.');
-      })
-      .finally(() => setLoading(false));
-  }, []);
+export default function Forside() {
+    return (
+        <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center px-6 py-16">
+            <h1 className="text-4xl font-bold tracking-tight">Togedoo</h1>
+            <p className="mt-4 text-lg text-neutral-700 dark:text-neutral-300">
+                Togedoo hjelper familier å finne steder og aktiviteter i nærheten, fra lekeplassen
+                rundt hjørnet til en utflukt i helgen.
+            </p>
 
-  return (
-    <main className="p-6 max-w-3xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4">Ungfritid Aktiviteter</h1>
-
-      {loading && <p>Laster aktiviteter...</p>}
-      {error && <p className="text-red-500">{error}</p>}
-      {!loading && !error && activities.length === 0 && <p>Ingen aktiviteter funnet.</p>}
-
-      <ul className="space-y-4">
-        {activities.map((activity, index) => (
-          <li key={`${activity.id || activity.title}-${index}`}>
-            {/*
-              ENDRING HER:
-              1. Bruker 'activity.url' (fra Ungfritids 'a.webpage').
-              2. Setter 'target="_blank"' for å åpne i ny fane (anbefalt for eksterne lenker).
-              3. Setter 'rel="noopener noreferrer"' for sikkerhet.
-            */}
-            <Link
-              href={activity.url || '#'}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block" // Sikrer at lenken fyller hele li-elementet
-            >
-              <div className="border p-4 rounded shadow-sm bg-white hover:bg-gray-50 transition">
-                <h2 className="text-lg font-semibold mb-1 text-blue-600">
-                  {activity.title}
+            <section className="mt-12" aria-labelledby="kilder">
+                <h2 id="kilder" className="text-sm font-semibold uppercase tracking-wide text-neutral-500">
+                    Kilder
                 </h2>
-                <p><strong>Organisasjon:</strong> {activity.org || 'Ukjent'}</p>
-                <p><strong>Kategori:</strong> {activity.appCategory || 'Aktivitet'}</p> {/* Viser mappet kategori! */}
-                <p><strong>Målgruppe:</strong> {activity.targetAudience || 'Familie'}</p> {/* Viser mappet målgruppe! */}
-                {/* Viser full adresse hvis den finnes, ellers viser vi kommunen alene */}
-                {activity.address && <p><strong>Adresse:</strong> {activity.address}</p>}
-
-                {/* Viser kommune. Hvis både adresse og kommune mangler, viser vi 'Ukjent sted' */}
-                <p>
-                  <strong>Sted:</strong> {activity.kommune || activity.address || 'Ukjent sted'}
-                  {/* Bonus: Hvis du får postnummer, kan du legge det til her */}
-                  {/* {activity.postcode && `, ${activity.postcode}`} */}
-                </p>
-
-                {activity.description && (
-                  <p className="mt-2 text-sm text-gray-700">
-                    {activity.description}
-                  </p>
-                )}
-
-                {activity.days && activity.days.length > 0 && (
-                  <p className="text-sm text-gray-600 mt-1">
-                    <strong>Dager:</strong> {activity.days.join(', ')}
-                  </p>
-                )}
-
-                {/* Bonus: Vis en pil for å indikere ekstern lenke */}
-                <p className="text-sm text-blue-500 mt-2 hover:text-blue-700">
-                  Se detaljer hos Ungfritid →
-                </p>
-              </div>
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </main>
-  );
+                <ul className="mt-4 space-y-4">
+                    {KILDER.map((k) => (
+                        <li key={k.navn}>
+                            <a
+                                href={k.lenke}
+                                className="font-medium underline underline-offset-4 hover:no-underline"
+                                rel="noopener noreferrer"
+                            >
+                                {k.navn}
+                            </a>
+                            <p className="text-sm text-neutral-600 dark:text-neutral-400">{k.hva}</p>
+                        </li>
+                    ))}
+                </ul>
+            </section>
+        </main>
+    );
 }
