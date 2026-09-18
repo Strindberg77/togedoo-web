@@ -96,8 +96,18 @@ export interface KartRpcSvar {
         lat: number;
         lng: number;
         kategorier: Record<string, number> | null;
+        /** Bare på tynne ruter (migrasjon 0019/0020). */
+        steder?: ActivityRow[];
     }[];
 }
+
+/**
+ * Så få steder i en rute gir markører i stedet for en boble. Speiler
+ * `tynn` i activities_map (0019/0020), der tallet faktisk bestemmes. Står
+ * her for dokumentasjon og tester — ruta stoler på at basen har tatt med
+ * `steder` der den skal, og regner ikke grensen selv.
+ */
+export const TYNN_RUTE = 3;
 
 export interface Klynge {
     antall: number;
@@ -108,6 +118,13 @@ export interface Klynge {
     kategorier: Record<string, number>;
     /** Rutas utsnitt, vest,sør,øst,nord — til å zoome inn på klyngen. */
     bbox: [number, number, number, number];
+    /**
+     * TYNNE RUTER (høyst 3 steder): selve stedene, i samme radform som
+     * `data`, så appen kan tegne vanlige markører i stedet for en boble med
+     * «1». Mangler på tette ruter. `antall` er fortsatt satt, så summen av
+     * klyngene er lik `total` uansett.
+     */
+    steder?: ReturnType<typeof toApiShape>[];
 }
 
 /**
@@ -123,13 +140,20 @@ export function formKartSvar(rpc: KartRpcSvar, bbox: Bbox, grid: Rutenett) {
                   const kategorier = Object.fromEntries(
                       Object.entries(k.kategorier ?? {}).sort((a, z) => z[1] - a[1])
                   );
-                  return {
+                  const klynge: Klynge = {
                       antall: k.antall,
                       lat: k.lat,
                       lng: k.lng,
                       kategorier,
                       bbox: [b.west, b.south, b.east, b.north],
                   };
+                  // Nøkkelen er bare med når basen har sendt den. En tom
+                  // liste på en tett rute ville vært en påstand om at ruta
+                  // har null steder.
+                  if (Array.isArray(k.steder)) {
+                      klynge.steder = k.steder.map((r) => toApiShape(r));
+                  }
+                  return klynge;
               })
             : [];
     return {
