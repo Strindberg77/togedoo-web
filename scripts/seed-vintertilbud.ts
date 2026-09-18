@@ -82,7 +82,7 @@ const SPLIT: Record<
     // kategorien og fasetten svarer på hvert sitt spørsmål: hva stedet ER, og
     // hva du GJØR der. Importen setter den samme fasetten på alle Aking-rader.
     'korketrekkeren-aking': { category: 'Aking', isIndoor: false, facets: ['aking'] },
-    // Badeland (8): alle inne.
+    // Badeland (8 inne, Bø Sommarland ute — se nederst).
     'risenga-svommehall': { category: 'Badeland', isIndoor: true },
     'bolgen-bad-drobak': { category: 'Badeland', isIndoor: true },
     'jessheimbadet': { category: 'Badeland', isIndoor: true },
@@ -107,6 +107,27 @@ const SPLIT: Record<
     // det finnes ingen skøytefasett å peke på. Et token ingen fasett leser
     // ville vært en påstand uten mottaker.
     'sormarka-arena-stavanger': { category: 'Skøyter', isIndoor: true },
+    // FORNØYELSESPARK (sep. 2026). Seks rader, alle ute. Ingen fasett: det
+    // finnes ingen fasett i appen som ville lest den, og kategorien sier
+    // allerede hva stedet er. Målingen bak utvalget:
+    // docs/fornoyelsespark-maling.md.
+    'tusenfryd': { category: 'Fornøyelsespark', isIndoor: false },
+    'kongeparken': { category: 'Fornøyelsespark', isIndoor: false },
+    'hunderfossen-eventyrpark': { category: 'Fornøyelsespark', isIndoor: false },
+    'lilleputthammer': { category: 'Fornøyelsespark', isIndoor: false },
+    'foldvik-familiepark': { category: 'Fornøyelsespark', isIndoor: false },
+    'mikkelparken': { category: 'Fornøyelsespark', isIndoor: false },
+    // Dyreparken er både dyrepark og fornøyelsespark, og skal komme opp
+    // under begge. ÉN rad, ikke to: to rader for samme port ville stått som
+    // to steder på kartet, og en forelder som lagrer den ene ser ikke den
+    // andre. Hovedkategorien er Dyremøte (det er det stedet ER); fasetten
+    // sier at det også er en fornøyelsespark. Samme deling som Trysil
+    // skisenter med fasetten aking — og samme mangel: kategorifilteret ser
+    // ikke fasetter ennå.
+    'dyreparken': { category: 'Dyremøte', isIndoor: false, facets: ['fornoyelsespark'] },
+    // Badeland, men UTE. Badeland var «alle inne» fram til nå; is_indoor er
+    // aksen som skiller Bø Sommarland fra svømmehallene, ikke kategorien.
+    'bo-sommarland': { category: 'Badeland', isIndoor: false },
 };
 
 export function splitFor(
@@ -503,6 +524,138 @@ export const SEED: VinterSeed[] = [
         manualCoord: { lat: 60.53463, lng: 8.19813 },
         fallbackLat: 60.53463, fallbackLng: 8.19813,
         isFree: false, url: 'https://www.skigeilo.no/',
+    },
+
+    // --- FORNØYELSESPARKER (sep. 2026) --------------------------------
+    //
+    // Åtte parker fra målingen i docs/fornoyelsespark-maling.md: seks under
+    // Fornøyelsespark, Dyreparken under Dyremøte med fasett, og Bø Sommarland
+    // under Badeland (ute). tourism=theme_park i OSM gir 24 treff, og
+    // halvparten er klatreparker, museer og feiltagging — derfor kuratert.
+    //
+    // PUNKTET ER HOVEDINNGANGEN fra OSM (entrance=main), ikke polygonets
+    // midtpunkt, som ligger 100–270 m inne i parken. OSM-noden står i
+    // kommentaren over hver manualCoord. To unntak:
+    //   - Lilleputthammer har bare entrance=yes. Valgt: den ene av tre som
+    //     ligger på selve parkgrensen og ytre gjerde, 45 m fra
+    //     kundeparkeringen. De to andre sitter på et indre gjerde.
+    //   - Mikkelparken har INGEN inngang i OSM. Punktet er på parkgrensen
+    //     nærmest kundeparkeringen (access=customers, 70 plasser). OMTRENTLIG
+    //     — coordVerified:false, Frederik kontrollerer.
+    //
+    // BESKRIVELSENE sier hva stedet er og hvem det passer for. Ingen priser,
+    // datoer, åpningstider, høydegrenser, antall eller superlativer: alt det
+    // endrer seg hver sesong, og parkens egen side (url) er fasiten.
+    //
+    // Kommunen er Kartverkets (kommuneinfo /punkt) for inngangspunktet.
+    {
+        externalId: 'tusenfryd',
+        // Parken skriver navnet «TusenFryd» (tusenfryd.no, og.site_name).
+        title: 'TusenFryd',
+        description:
+            'Fornøyelsespark på Vinterbro sør for Oslo, med karuseller og berg-og-dal-baner for både små og store barn, ' +
+            'og et eget badeland i parken.',
+        municipality: 'Ås', nearCity: 'Oslo',
+        // Hovedinngangen, OSM node/7687702285 (entrance=main).
+        address: 'Hovedinngangen, Fryds vei, 1407 Vinterbro',
+        manualCoord: { lat: 59.74797, lng: 10.7758 },
+        fallbackLat: 59.74797, fallbackLng: 10.7758,
+        isFree: false, url: 'https://www.tusenfryd.no/',
+    },
+    {
+        externalId: 'kongeparken',
+        title: 'Kongeparken',
+        description:
+            'Fornøyelsespark på Ålgård med karuseller, berg-og-dal-baner og egne områder for de minste.',
+        municipality: 'Gjesdal', nearCity: 'Stavanger',
+        // Hovedinngangen, OSM node/686254300 (entrance=main, barrier=gate).
+        address: 'Hovedinngangen, Kongsgata 20, 4331 Ålgård',
+        manualCoord: { lat: 58.77875, lng: 5.84046 },
+        fallbackLat: 58.77875, fallbackLng: 5.84046,
+        isFree: false, url: 'https://www.kongeparken.no/',
+    },
+    {
+        externalId: 'hunderfossen-eventyrpark',
+        // OSM heter den fortsatt «Hunderfossen Familiepark»; parken selv
+        // kaller seg Hunderfossen Eventyrpark (hunderfossen.no).
+        title: 'Hunderfossen Eventyrpark',
+        description:
+            'Familiepark nord for Lillehammer med troll, eventyr og karuseller, og aktiviteter for både små og store barn.',
+        municipality: 'Lillehammer',
+        // Hovedinngangen, OSM node/2794927148 (entrance=main), ved parkeringen.
+        address: 'Hovedinngangen, Fossekrovegen 22, 2625 Fåberg',
+        manualCoord: { lat: 61.22579, lng: 10.43579 },
+        fallbackLat: 61.22579, fallbackLng: 10.43579,
+        isFree: false, url: 'https://hunderfossen.no/',
+    },
+    {
+        externalId: 'lilleputthammer',
+        title: 'Lilleputthammer',
+        description:
+            'Familiepark for de minste i Hafjell, med Lillehammer bygget i barnestørrelse og karuseller for små barn.',
+        municipality: 'Øyer',
+        // OSM node/2786099980 (entrance=yes). Eneste av tre innganger som
+        // ligger på parkgrensen og ytre gjerde (way/273798857); de to andre
+        // sitter på et indre gjerde. 45 m fra kundeparkeringen.
+        address: 'Inngangen, Hundervegen 41, 2636 Øyer',
+        manualCoord: { lat: 61.238928, lng: 10.439116 },
+        fallbackLat: 61.238928, fallbackLng: 10.439116,
+        isFree: false, url: 'https://lilleputthammer.no/',
+        targetAudience: 'Barn',
+    },
+    {
+        externalId: 'foldvik-familiepark',
+        title: 'Foldvik Familiepark',
+        description:
+            'Familiepark i Brunlanes med dyr å hilse på, minibiler, lekeområder og aktiviteter for barn.',
+        municipality: 'Larvik',
+        // Hovedinngangen, OSM node/6542382397 (entrance=main).
+        address: 'Hovedinngangen, Foldvikveien, 3294 Stavern',
+        manualCoord: { lat: 59.00216, lng: 9.97083 },
+        fallbackLat: 59.00216, fallbackLng: 9.97083,
+        isFree: false, url: 'https://foldvik.no/',
+    },
+    {
+        externalId: 'mikkelparken',
+        title: 'Mikkelparken',
+        description:
+            'Familiepark i Kinsarvik for barn, med vannsklier, lekeområder og aktiviteter ute.',
+        municipality: 'Ullensvang',
+        // INGEN inngang i OSM, bare polygonet (way/120864609). Punktet er på
+        // parkgrensen nærmest kundeparkeringen (way/131565985,
+        // access=customers). OMTRENTLIG: Frederik kontrollerer.
+        address: 'Ved Kinsarvikvegen, 5780 Kinsarvik',
+        manualCoord: { lat: 60.37666, lng: 6.72607 },
+        coordVerified: false,
+        fallbackLat: 60.37666, fallbackLng: 6.72607,
+        isFree: false, url: 'https://mikkelparken.no/',
+        targetAudience: 'Barn',
+    },
+    {
+        externalId: 'dyreparken',
+        // Parken kaller seg «Dyreparken» (dyreparken.no); OSM-navnet er
+        // «Kristiansand Dyrepark». Kristiansand står i municipality.
+        title: 'Dyreparken',
+        description:
+            'Dyrepark og fornøyelsespark øst for Kristiansand, med dyr fra hele verden, Kardemomme by og eget badeland.',
+        municipality: 'Kristiansand',
+        // «Byporten», OSM node/1257106325 (entrance=main).
+        address: 'Byporten, Dyreparkveien, 4636 Kristiansand',
+        manualCoord: { lat: 58.18709, lng: 8.14012 },
+        fallbackLat: 58.18709, fallbackLng: 8.14012,
+        isFree: false, url: 'https://www.dyreparken.no/',
+    },
+    {
+        externalId: 'bo-sommarland',
+        title: 'Bø Sommarland',
+        description:
+            'Vannpark ute i Bø i Telemark, med vannsklier, basseng og egne områder for de minste.',
+        municipality: 'Midt-Telemark',
+        // Hovedinngangen, OSM node/3131762432 (entrance=main, turnstile).
+        address: 'Hovedinngangen, Steintjønnvegen 2, 3804 Bø i Telemark',
+        manualCoord: { lat: 59.4468, lng: 9.07352 },
+        fallbackLat: 59.4468, fallbackLng: 9.07352,
+        isFree: false, url: 'https://www.sommarland.no/',
     },
 
     // ================= BERGEN =================

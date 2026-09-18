@@ -27,9 +27,26 @@ export const FACET_TOKENS = [
     'bmx',
     'sparkesykkel',
     'rulleskoyter',
+    // Bare fra seed. Kristiansand Dyrepark er ÉN rad med hovedkategori
+    // Dyremøte, men skal også komme opp under Fornøyelsespark — samme deling
+    // som Trysil skisenter (Skianlegg) med fasetten aking. Ingen OSM-tagg
+    // setter den; importen har ingen selektor for tourism=theme_park.
+    //
+    // Mottakeren er ikke på plass ennå: kategorifilteret i activities_search
+    // og activities_map ser bare på `category`, og appen filtrerer på
+    // hovedkategorien. Se docs/fornoyelsespark-maling.md, del B.
+    'fornoyelsespark',
 ] as const;
 
 export type FacetToken = (typeof FACET_TOKENS)[number];
+
+/**
+ * Tokens som BARE settes av seed, aldri av importen. Unntaket fra regelen i
+ * scripts/facets.test.ts om at hvert token skal kunne utledes fra en tagg:
+ * for disse finnes det ingen tagg å utlede fra, og det er et valg, ikke en
+ * glipp. Står et token her, må en seed-rad sette det — ellers er det dødt.
+ */
+export const SEED_ONLY_FACETS: readonly FacetToken[] = ['fornoyelsespark'];
 
 /**
  * ANTAKELSEN: et anlegg for skateboard er også et sted barn kjører

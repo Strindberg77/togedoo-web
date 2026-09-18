@@ -74,7 +74,7 @@ fornøyelsespark. Taggen alene er ikke et filter.
 |---|---|---|---|
 | Tusenfryd | `w48672338` `tourism=theme_park` | `Badefryd` er egen `leisure=water_park`. `old_name=Dyreparken` på parken er trolig en feil i OSM | Nei |
 | Hunderfossen | `r10678827` `tourism=theme_park` + `barrier=fence` | Parkering `w256570365`/`w274826221` «Hunderfossen Familiepark Parking» | Nei |
-| Kongeparken | `r6598772` `tourism=theme_park` | **Tre `leisure=park`-flater som også heter «Kongeparken»** (`w103268212`, `w189732650`, `w614558426`) | Nei |
+| Kongeparken | `r6598772` `tourism=theme_park` | – (se rettelsen under) | Nei |
 | Dyreparken | `w69166520` `tourism=theme_park`, **ikke** `tourism=zoo` | `Badelandet` er `leisure=water_park`, og Manyatta er `zoo=petting_zoo` | Nei |
 | Lilleputthammer | `w273798788` `tourism=theme_park` | – | Nei |
 | Bø Sommarland | `w307924173` `tourism=theme_park` | En navnløs `leisure=water_park` på samme sted | Nei |
@@ -91,8 +91,13 @@ Straand Sommarland, Tropicana Badeland, Langedrag, Bjørneparken, Polar Park,
 Park Nordica og Norsk Elgsenter. Til sammenlikning har Dyremøte **11** rader og
 Badeland **8** i hele landet (`/api/kart` for hele Norge). Begge er kuraterte.
 
-Risiko: kjøres Park-importen noen gang for Gjesdal, blir «Kongeparken» tre
-Park-rader. Det gjelder uansett hva vi velger for fornøyelsesparker.
+**Rettelse (seed-runden, 18.09.2026):** Første versjon av rapporten sa at
+tre `leisure=park`-flater som heter «Kongeparken» (`w103268212`,
+`w189732650`, `w614558426`) hørte til fornøyelsesparken, og at Park-importen
+for Gjesdal ville laget dem som dubletter. Det var feil. Navnesøket var
+landsdekkende, og ingen sjekket hvor flatene lå. De ligger i Tromsø, Bodø og
+ved Trysil, 460–1 420 km fra Ålgård, og er vanlige byparker. De er IKKE
+claimet, fordi en claim ville skjult tre ekte parker.
 
 ## 3. Inngangspunkt for de ekte parkene
 
@@ -122,9 +127,9 @@ Dette er det OSM har:
 3. **OSM gir likevel det viktigste feltet:** punktet. Bruk hovedinngangen fra
    tabellen over, kontrollert for hånd, ikke polygonets midtpunkt. For
    Mikkelparken må punktet settes manuelt.
-4. **Legg inn claims** (`lib/osm-claims.ts`) for de 8 theme_park-objektene og
-   for de tre `leisure=park`-flatene som heter «Kongeparken». Da lager ingen
-   senere import dubletter ved siden av seed-radene.
+4. **Legg inn claims** (`lib/osm-claims.ts`) for de 8 theme_park-objektene.
+   Da lager ingen senere import dubletter ved siden av seed-radene. De tre
+   «Kongeparken»-flatene skal ikke claimes; se rettelsen over.
 5. **Beslutninger før seeden:**
    - Bø Sommarland: Fornøyelsespark eller Badeland?
    - Kristiansand Dyrepark: Fornøyelsespark eller Dyremøte? Den er begge.

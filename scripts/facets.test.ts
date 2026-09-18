@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { FACET_TOKENS } from '../lib/facets';
+import { FACET_TOKENS, SEED_ONLY_FACETS } from '../lib/facets';
 
 process.env.PLACES_OVERPASS_BACKOFF_MS = '0';
 process.env.PLACES_OVERPASS_ENDPOINTS = 'https://speil-a.test/api';
@@ -255,6 +255,20 @@ test('utledningen emitterer bare tokens fra vokabularet', async () => {
     }
     // Og motsatt: hvert token i vokabularet skal kunne utledes fra EN tagg,
     // ellers er det dødt. Alle ni er dekket av taggene over — sparkesykkel og
-    // rulleskoyter via SKATEBOARD_IMPLIES, ikke via en egen tagg.
-    assert.deepEqual([...new Set(alle)].sort(), [...FACET_TOKENS].sort());
+    // rulleskoyter via SKATEBOARD_IMPLIES, ikke via en egen tagg. Unntaket er
+    // SEED_ONLY_FACETS, som ingen tagg setter (se testen under).
+    assert.deepEqual(
+        [...new Set(alle)].sort(),
+        FACET_TOKENS.filter((t) => !SEED_ONLY_FACETS.includes(t)).sort()
+    );
+});
+
+test('et seed-token som ingen tagg setter, må settes av en seed-rad', async () => {
+    // Uten denne kunne et token stå i SEED_ONLY_FACETS uten at noen rad bar
+    // det — den samme døde påstanden som testen over vokter mot for OSM.
+    const { SEED, splitFor } = await import('./seed-vintertilbud');
+    const brukt = new Set(SEED.flatMap((s) => splitFor(s.externalId).facets));
+    for (const token of SEED_ONLY_FACETS) {
+        assert.ok(brukt.has(token), `«${token}» settes ikke av noen seed-rad`);
+    }
 });
