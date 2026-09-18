@@ -35,6 +35,26 @@ export interface IngestResult {
     geocoded: number;
     withoutCoordinates: number;
     error?: string;
+    /**
+     * Satt når kilden er på pause (`sources.active = false`). Det er IKKE en
+     * feil: /api/sync regner bare `error` som mislykket, så en kilde på pause
+     * gjør ikke hver natts kjøring rød. Bergen bibliotek ble satt på pause i
+     * sep. 2026 — se DATAHUB_SETUP.md.
+     */
+    skipped?: string;
+}
+
+/** Resultatet for en kilde som er på pause: hoppet over, ikke feilet. */
+export function pauseResultat(slug: string): IngestResult {
+    return {
+        slug,
+        fetched: 0,
+        skippedLocked: 0,
+        upserted: 0,
+        geocoded: 0,
+        withoutCoordinates: 0,
+        skipped: 'Kilden er på pause (sources.active = false)',
+    };
 }
 
 // Deichman leverer date/startTime/endTime som fulle ISO-tidsstempler
@@ -115,7 +135,9 @@ export async function ingestSource(slug: string): Promise<IngestResult> {
         return { slug, fetched: 0, skippedLocked: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: `Kilden ${slug} er ikke synlig i sources-tabellen (mangler raden, eller har nøkkelen ikke service-tilgang forbi RLS?)` };
     }
     if (!source.active) {
-        return { slug, fetched: 0, skippedLocked: 0, upserted: 0, geocoded: 0, withoutCoordinates: 0, error: 'Kilden er deaktivert' };
+        // Før: `error: 'Kilden er deaktivert'`, som gjorde at /api/sync meldte
+        // success:false hver natt så lenge en kilde sto på pause.
+        return pauseResultat(slug);
     }
 
     try {

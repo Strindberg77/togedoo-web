@@ -180,7 +180,8 @@ curl -X POST -H "Authorization: Bearer $ADMIN_SECRET" \
 
 | Kategori | Strategi | Vedlikehold |
 |---|---|---|
-| Bibliotek-events (Deichman, Bergen) | Crawl/feed, implementert | Lav; overvåk `sources.last_sync_status` |
+| Bibliotek-events: Deichman | Crawl av `deichman.no/hva-skjer`, implementert. Står på lista over samarbeidssamtaler (se under). | Lav; overvåk `sources.last_sync_status` |
+| Bibliotek-events: Bergen bibliotek | PÅ PAUSE (sep. 2026), `sources.active = false`. RSS-feeden (`bergenbibliotek.no/arrangement/rss.xml`) har bare tittel, beskrivelse, lenke og `pubDate`, **ingen arrangementsdato**. Skraperen brukte `pubDate` (publiseringstidspunktet) som `starts_at`, så hver rad var passert allerede da den ble hentet og ble straks `expired`: kilden har aldri gitt en synlig rad (41 rader, alle utløpt, siste opprettet 10.09.2026). Vi bygger ikke mer skraping for å finne datoen. De 41 radene blir stående. Står på lista over samarbeidssamtaler. | — |
 | Ungfritid | PÅ PAUSE (jul. 2026): internt søk (`POST /api/search`) er ikke-deterministisk — fullstendig uttrekk umulig uten endring hos Ungfritid. Fremtidig lavterskel-mulighet: lite nærhets-kall (~20 treff nær brukerens posisjon) der fullstendighet ikke kreves; body-kontrakt og probe-skript ligger arkivert i `scripts/arkiv/ungfritid-probe*.mjs`. **Sep. 2026:** Frederik har snakket med Ungfritid. De er ideelle, og et samarbeid forutsetter at de først lager et API. Ingen skraping, heller ikke nærhets-kallet over. | — |
 | Kommunale events | Per-kommune adapter, start med Oslo | Middels; én adapter per kommune |
 | Faste steder (lekeplasser, ballbinger, parker, idrettshaller, badeplasser, museer) | Månedlig batch-import fra OpenStreetMap Overpass: `npx tsx scripts/import-places.ts` (dry-run først). Titler fra OSM-navn, ellers «Lekeplass ved <gate>» (Kartverket), så «Badeplass i <bydel>» (Nominatim bydel/nabolag), med «i <poststed>» som grovere fallback og ren kategori til slutt (`lib/places.ts`). Rader med `locked=true` røres aldri. Krever migrasjon 0005. ODbL-KRAV: «© OpenStreetMap contributors» synlig der stedene vises. Museer (tourism=museum) tatt inn jul. 2026 etter tag-probe: 132 steder i Oslo/Bergen/Stavanger, 97 % navn, fee 62,1 %, charge med kronebeløp 12,9 % (→ price_text). Utsatt til senere vurdering (for tynn OSM-dekning nå): svømmehall/badeland, ishall, akebakke, fornøyelsespark, minigolf, klatrepark | Lav; månedlig kjøring |
@@ -192,10 +193,22 @@ Prinsipp: dynamiske kilder crawles/synkes automatisk, statiske steder
 importeres én gang og kurateres, arrangører registrerer selv. Alt ender i
 samme normaliserte `activities`-tabell.
 
+## Samarbeidssamtaler
+
+Kilder vi heller vil hente fra et API eller en feed de selv tilbyr, enn å
+skrape. Ingen skraping av disse uten avtale.
+
+| Kilde | Hvorfor | Status |
+|---|---|---|
+| Ungfritid | Ideelle. Internt søk er ikke-deterministisk, og det finnes ingen API. | Frederik har snakket med dem (sep. 2026). Et samarbeid forutsetter at de først lager et API. |
+| Bergen bibliotek | RSS-feeden mangler arrangementsdato. | Kilden er på pause. Spør om en feed eller et API med dato. |
+| Deichman | Hentes i dag ved å lese sidedata fra `deichman.no/hva-skjer`, som kan endres uten varsel. | I drift. Spør om en stabil feed eller et API. |
+
 ## Kjente forenklinger
 
 - Tidssone: events lagres med fast +02:00-offset (CEST). En time feil
   visningstid vinterstid til tidssonebibliotek legges inn.
-- Bergen-RSS bruker `pubDate` som event-dato (arv fra scraperen); bør
-  verifiseres mot faktisk feed-innhold.
+- Bergen-RSS brukte `pubDate` som event-dato. Verifisert sep. 2026: feeden
+  har ingen arrangementsdato, og `pubDate` er publiseringstidspunktet. Kilden
+  er satt på pause (se tabellen over).
 - `expireOldEvents` bruker `starts_at` + 24 t; events uten dato beholdes.

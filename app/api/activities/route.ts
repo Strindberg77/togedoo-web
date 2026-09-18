@@ -3,13 +3,13 @@
 // koordinater. Støtter radius-søk (lat/lng/radius) via PostGIS-RPC-en
 // activities_nearby, og flate filtre ellers.
 //
-// Fallback: hvis datahubben ikke er konfigurert ennå (Supabase-miljøvariabler
-// mangler), svarer ruten som før med live-scraping, merket mode: "legacy",
-// så eksisterende konsumenter ikke knekker før oppsettet er gjort.
+// Mangler Supabase-miljøvariablene, svarer ruten 503 med en feil som sier
+// det. Her lå tidligere en reservesti som skrapet Deichman og Bergen live ved
+// HVERT kall (mode: "legacy"). Den kjørte aldri i produksjon, men ville gjort
+// det i et miljø uten variablene — for eksempel en preview-deploy — og da
+// uten grense. Arkivert i scripts/arkiv/activities-legacy-scrape.ts.
 import { NextRequest, NextResponse } from 'next/server';
 import { isDatahubConfigured, supabaseAdmin } from '../../../lib/supabase';
-import { scrapeDeichman } from '../../../lib/deichman';
-import { scrapeBergen } from '../../../lib/bergen';
 import {
     cityCentre,
     distanceFromCityKm,
@@ -228,49 +228,20 @@ async function fromDatabase(searchParams: URLSearchParams) {
     });
 }
 
-// Gammel oppførsel: live-scrape per request, uten koordinater. Fjernes når
-// datahubben er i drift.
-async function fromLegacyScrape(searchParams: URLSearchParams) {
-    const municipality = searchParams.get('municipality') || undefined;
-    const targetAudience = searchParams.get('targetAudience') || undefined;
-
-    const [deichmanResult, bergenResult] = await Promise.all([
-        scrapeDeichman({ targetAudience }),
-        scrapeBergen(),
-    ]);
-
-    let allActivities = [
-        ...(deichmanResult.data || []).map((event) => ({ ...event, source: 'deichman.no' })),
-        ...(bergenResult.data || []).map((event) => ({ ...event, source: 'bergenbibliotek.no' })),
-    ];
-
-    if (municipality) {
-        allActivities = allActivities.filter(
-            (act) => act.municipality.toLowerCase() === municipality.toLowerCase()
-        );
-    }
-    if (targetAudience) {
-        allActivities = allActivities.filter(
-            (act) => act.targetAudience.toLowerCase() === targetAudience.toLowerCase()
-        );
-    }
-
-    return NextResponse.json({
-        success: true,
-        mode: 'legacy',
-        data: allActivities,
-        count: allActivities.length,
-        timestamp: new Date().toISOString(),
-    });
-}
 
 export async function GET(request: NextRequest) {
     try {
         const { searchParams } = new URL(request.url);
-        if (isDatahubConfigured()) {
-            return await fromDatabase(searchParams);
+        if (!isDatahubConfigured()) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: 'Datahub-lagring er ikke konfigurert (SUPABASE_URL eller SUPABASE_SERVICE_ROLE_KEY mangler)',
+                },
+                { status: 503 }
+            );
         }
-        return await fromLegacyScrape(searchParams);
+        return await fromDatabase(searchParams);
     } catch (error) {
         // Ugyldig parameter er klientens feil, ikke serverens: 400 med en
         // melding som sier hva som må rettes. En halv bbox eller en markør fra
