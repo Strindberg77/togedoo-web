@@ -27,7 +27,8 @@
 --
 -- EN FUNKSJON, TO SVAR
 --   total <= p_threshold: modus 'steder' — ALLE stedene i utsnittet, med
---                         avstand fra p_lat/p_lng når oppgitt.
+--                         avstand fra p_lat/p_lng når oppgitt. Terskelen
+--                         klemmes til 0–500, som rutenettet klemmes til 1–20.
 --   total >  p_threshold: modus 'klynger' — ett rutenett (p_cols × p_rows)
 --                         over utsnittet; per rute antall, TYNGDEPUNKT
 --                         (snitt av punktene, ikke rutas midte) og antall per
@@ -88,11 +89,21 @@ as $$
     select greatest(1, least(p_cols, 20)) as cols,
            greatest(1, least(p_rows, 20)) as rws
   ),
+  -- Klemt som rutenettet. Funksjonen kan kalles direkte med anon-nøkkelen,
+  -- og en ubegrenset terskel ville gitt ALLE rader med full tekst i ett
+  -- svar. 500 er godt over det et kart kan vise (API-et bruker 150).
+  terskel as (
+    select greatest(0, least(p_threshold, 500)) as maks
+  ),
   celler as (
     select
       h.lat,
       h.lng,
-      h.category,
+      -- jsonb_object_agg feiler på en null-nøkkel, og ÉN rad uten kategori
+      -- ville veltet hele kartet. Kolonnen er `not null` i dag (0001), og
+      -- 0 publiserte rader mangler kategori (målt 18. sep. 2026) — dette er
+      -- vernet om det endrer seg.
+      coalesce(h.category, 'Ukjent') as category,
       least(
         floor((h.lng - p_west) / nullif(p_east - p_west, 0) * g.cols)::integer,
         g.cols - 1
@@ -128,7 +139,7 @@ as $$
     from hits h
   )
   select case
-    when (select n from total) <= p_threshold then jsonb_build_object(
+    when (select n from total) <= (select maks from terskel) then jsonb_build_object(
       'total', (select n from total),
       'modus', 'steder',
       'steder', coalesce((
