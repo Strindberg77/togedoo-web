@@ -1,5 +1,13 @@
+// scripts/arkiv/api-deichman-route.ts
+//
+// ARKIVERT (sep. 2026). Var app/api/deichman/route.ts: en offentlig rute som
+// skrapet deichman.no direkte, uten innlogging og uten grense. Ingen brukte
+// den — verken togedoo-web eller appen. Deichman-dataene kommer inn via
+// nattjobben (/api/sync → lib/ingest.ts), som kaller skraperen direkte.
+// Ligger utenfor app/, så Next serverer den ikke. Skal ikke tas i bruk igjen
+// uten grense og uten at noen trenger den.
 import { NextRequest, NextResponse } from 'next/server';
-import { scrapeDeichman } from '../../../lib/deichman';
+import { scrapeDeichman } from '../../lib/deichman';
 
 export async function GET(request: NextRequest) {
     try {

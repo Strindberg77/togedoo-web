@@ -1,6 +1,12 @@
 // lib/bergen.ts
 import xml2js from 'xml2js';
 
+// Togedoo sier hvem den er, som resten av kodebasen (lib/geocode.ts,
+// lib/places.ts). Her sto en nettleser-streng («Mozilla/5.0 (Macintosh …»):
+// Togedoo skal ikke utgi seg for å være en nettleser. robots.txt hos
+// bergenbibliotek.no er sjekket 18.09.2026 og tillater adressen vi henter.
+const USER_AGENT = 'Togedoo datahub (hello@togedoo.com)';
+
 export interface BergenEvent {
     id: string;
     title: string;
@@ -47,7 +53,7 @@ export async function scrapeBergen(): Promise<{
 
         const response = await fetch('https://bergenbibliotek.no/arrangement/rss.xml', {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'User-Agent': USER_AGENT,
             },
             next: { revalidate: 3600 }, // Cache 1 time
         });
