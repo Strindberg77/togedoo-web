@@ -10,6 +10,7 @@ import { QueryParamError } from './activities-query';
 import {
     KART_KOLONNER,
     KART_TERSKEL,
+    TYNN_RUTE,
     formKartSvar,
     parseKartBbox,
     ruteBbox,
@@ -153,4 +154,49 @@ test('en klynge uten kategorier (null fra basen) gir et tomt objekt, ikke en kra
         { kolonner: 6, rader: 8 }
     );
     assert.deepEqual(svar.klynger[0].kategorier, {});
+});
+
+// ── Tynne ruter (migrasjon 0019/0020) ──────────────────────────────────────
+
+test('tynne ruter får med stedene i samme radform; tette får ingen steder-nøkkel', () => {
+    const rpc: KartRpcSvar = {
+        total: 402,
+        modus: 'klynger',
+        klynger: [
+            { cx: 2, cy: 3, antall: 400, lat: 59.912, lng: 10.74, kategorier: { Lekeplass: 400 } },
+            {
+                cx: 0,
+                cy: 0,
+                antall: 2,
+                lat: 59.895,
+                lng: 10.69,
+                kategorier: { Skianlegg: 2 },
+                steder: [
+                    { ...RAD, id: 't1', lat: 59.895, lng: 10.69 },
+                    { ...RAD, id: 't2', lat: 59.895, lng: 10.69 },
+                ],
+            },
+        ],
+    };
+    const svar = formKartSvar(rpc, OSLO, { kolonner: 6, rader: 8 });
+    const [tett, tynn] = svar.klynger;
+    assert.equal('steder' in tett, false, 'en tett rute skal ikke påstå noe om stedene sine');
+    assert.equal(tynn.steder?.length, tynn.antall);
+    assert.equal(tynn.steder?.[0].title, 'SkiGeilo', 'samme radform som data');
+    assert.equal(tynn.steder?.[0].distanceM, 157000);
+    const sum = svar.klynger.reduce((a, k) => a + k.antall, 0);
+    assert.equal(sum, svar.total, 'summen av antall er fortsatt totalen');
+});
+
+test('svar fra en base uten 0019 (ingen steder-nøkkel) formes som før', () => {
+    const svar = formKartSvar(
+        { total: 200, modus: 'klynger', klynger: [{ cx: 0, cy: 0, antall: 1, lat: 59.9, lng: 10.7, kategorier: { Park: 1 } }] },
+        OSLO,
+        { kolonner: 6, rader: 8 }
+    );
+    assert.equal('steder' in svar.klynger[0], false);
+});
+
+test('grensen for tynne ruter er 3', () => {
+    assert.equal(TYNN_RUTE, 3);
 });
