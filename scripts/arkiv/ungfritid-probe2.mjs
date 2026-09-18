@@ -1,4 +1,9 @@
-// scripts/ungfritid-probe2.mjs
+// scripts/arkiv/ungfritid-probe2.mjs
+//
+// ARKIVERT (sep. 2026). Skal ikke kjøres. Frederik har snakket med
+// Ungfritid: de er ideelle, og et samarbeid forutsetter at de først lager
+// et API. Til da skraper vi dem ikke. Skriptet står bare som dokumentasjon
+// av hva som ble målt i jul. 2026.
 //
 // Runde 2-probe for POST https://ungfritid.no/api/search, etter funn av
 // ustabil sortering (overlapp mellom offset-sider) og total=1811 vs
@@ -11,7 +16,7 @@
 //   D) hvorfor 1811: aldersprofil på ageGroup, orgInUngfritid-flagget
 //      (delt backend med Frivillig.no?) og total med ageFor satt
 //
-//   node scripts/ungfritid-probe2.mjs [kommune]   (default: Oslo)
+//   node scripts/arkiv/ungfritid-probe2.mjs [kommune]   (default: Oslo)
 //
 // Gjør opptil ~40 kall med 700 ms pause (~1 min). Krever Node 18+.
 

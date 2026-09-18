@@ -1,4 +1,9 @@
-// scripts/ungfritid-probe.mjs
+// scripts/arkiv/ungfritid-probe.mjs
+//
+// ARKIVERT (sep. 2026). Skal ikke kjøres. Frederik har snakket med
+// Ungfritid: de er ideelle, og et samarbeid forutsetter at de først lager
+// et API. Til da skraper vi dem ikke. Skriptet står bare som dokumentasjon
+// av hva som ble målt i jul. 2026.
 //
 // Probe for Ungfritids interne søke-endepunkt (POST /api/search), fanget
 // fra frontend-trafikk juli 2026. Kjøres manuelt FØR adapterbygging for å
@@ -6,7 +11,7 @@
 // (2) offset/limit-paginering, (3) cursor-feltene nextActivityIDs osv.,
 // (4) limit-tak, (5) at unike _id-er på tvers av sider ≈ total.
 //
-//   node scripts/ungfritid-probe.mjs [kommune]   (default: Oslo)
+//   node scripts/arkiv/ungfritid-probe.mjs [kommune]   (default: Oslo)
 //
 // Gjør ~10-15 kall med 700 ms pause. Krever Node 18+.
 
