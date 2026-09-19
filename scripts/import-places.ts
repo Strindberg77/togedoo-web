@@ -374,6 +374,30 @@ export function osmFacetTokensFrom(tagSets: readonly OsmTags[]): FacetToken[] {
 const GENERIC_CENTRE_SPORTS = new Set(['multi']);
 
 /**
+ * Sport-tokens som gjør et sports_centre til noe annet enn en idrettshall:
+ * lasertag, bowling og gokart. Megazone (sport=laser_tag) og Harald Huysman
+ * Karting (sport=karting) ble Idrettshall fordi idrettshall tok ALLE
+ * sports_centre. De stedene er kuratert under Spill og moro
+ * (scripts/seed-spill-og-moro.ts), og importen har ingen kategori for dem —
+ * et objekt som faller ut her, blir altså ingen rad.
+ *
+ * Samme presedens som klatring: har hallen `multi` i tillegg, er den en
+ * flerbrukshall med bowlingbaner (Kongsberghallen: multi;10pin;hockey;…) og
+ * forblir Idrettshall. Bakgrunn: docs/spill-og-moro-pulje-1.md (på grenen
+ * claude/spill-og-aktivitet-maling til den er merget).
+ */
+const IKKE_IDRETTSHALL_SPORTS = new Set(['laser_tag', '10pin', '9pin', 'bowling', 'karting']);
+
+/** Er dette et sports_centre som IKKE er en idrettshall? Se [IKKE_IDRETTSHALL_SPORTS]. */
+export function isNonSportCentre(sportRaw: string | undefined): boolean {
+    const tokens = sportTokens(sportRaw);
+    return (
+        tokens.some((s) => IKKE_IDRETTSHALL_SPORTS.has(s)) &&
+        !tokens.some((s) => GENERIC_CENTRE_SPORTS.has(s))
+    );
+}
+
+/**
  * Klatre-etiketter. Ankret og gjensidig utelukkende, som [SPORT_TITLE_LABELS]
  * — `climbing_adventure` treffer aldri /^climbing$/, så understreng-fella er
  * lukket i begge retninger.
@@ -2118,7 +2142,9 @@ export const PLACE_CATEGORIES: PlaceCategoryDef[] = [
         category: 'Idrettshall',
         audience: 'For alle',
         selector: 'nwr["leisure"="sports_centre"](area.a);',
-        matches: (t: OsmTags) => t.leisure === 'sports_centre',
+        // Lasertag, bowling og gokart er ikke idrettshaller. De er kuratert
+        // under Spill og moro — se [isNonSportCentre].
+        matches: (t: OsmTags) => t.leisure === 'sports_centre' && !isNonSportCentre(t.sport),
         isFree: null,
     },
     {
