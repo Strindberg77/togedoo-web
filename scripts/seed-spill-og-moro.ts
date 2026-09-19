@@ -247,7 +247,7 @@ export const SEED: SpillSeed[] = [
     {
         externalId: 'nmk-halsa-gokart',
         title: 'NMK Halsa',
-        description: 'Motorklubbens gokartbane i Halsa, med utleie på faste drop-in-dager.',
+        description: 'Motorklubbens gokartbane i Halsa, med utleie på faste drop-in-dager – sjekk med klubben før dere drar.',
         category: SPILL_OG_MORO,
         isIndoor: false,
         facets: ['gokart'],
@@ -282,7 +282,7 @@ export const SEED: SpillSeed[] = [
         externalId: 'lucky-duck-oslo',
         title: 'Lucky Duck',
         description:
-            'Digital minigolf og dart med bar i Oslo sentrum. Aldersgrense utenom egne familietider – sjekk med stedet.',
+            'Digital minigolf og dart med bar i Oslo sentrum. Stedet har aldersgrense det meste av uka. Barn er velkomne i egne familietider – sjekk med stedet før dere drar.',
         category: SPILL_OG_MORO,
         isIndoor: true,
         facets: ['minigolf'],
@@ -299,7 +299,7 @@ export const SEED: SpillSeed[] = [
         externalId: 'underground-golf-oslo',
         title: 'Underground Golf Oslo',
         description:
-            'Innendørs crazy minigolf med restaurant på Majorstuen. Aldersgrense utenom familiegolf – sjekk med stedet.',
+            'Innendørs crazy minigolf med restaurant på Majorstuen. Stedet har aldersgrense det meste av uka. Barn er velkomne på familiegolf – sjekk med stedet før dere drar.',
         category: SPILL_OG_MORO,
         isIndoor: true,
         facets: ['minigolf'],
@@ -316,7 +316,7 @@ export const SEED: SpillSeed[] = [
         externalId: 'underground-golf-drammen',
         title: 'Underground Golf Drammen',
         description:
-            'Innendørs crazy minigolf med restaurant i Drammen. Aldersgrense utenom familiegolf – sjekk med stedet.',
+            'Innendørs crazy minigolf med restaurant i Drammen. Stedet har aldersgrense det meste av uka. Barn er velkomne på familiegolf – sjekk med stedet før dere drar.',
         category: SPILL_OG_MORO,
         isIndoor: true,
         facets: ['minigolf'],
@@ -333,7 +333,7 @@ export const SEED: SpillSeed[] = [
         externalId: 'underground-golf-stavanger',
         title: 'Underground Golf Stavanger',
         description:
-            'Innendørs crazy minigolf med restaurant i Stavanger. Aldersgrense utenom familiegolf – sjekk med stedet.',
+            'Innendørs crazy minigolf med restaurant i Stavanger. Stedet har aldersgrense det meste av uka. Barn er velkomne på familiegolf – sjekk med stedet før dere drar.',
         category: SPILL_OG_MORO,
         isIndoor: true,
         facets: ['minigolf'],

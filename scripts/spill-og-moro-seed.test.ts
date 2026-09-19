@@ -94,6 +94,28 @@ test('aldersgrense på kveldstid sies med «sjekk med stedet»', () => {
     }
 });
 
+test('ordlyden Frederik har bestemt for aldersgrense og drop-in', () => {
+    const tekst = (id: string) => SEED.find((x) => x.externalId === id)!.description;
+    assert.equal(
+        tekst('lucky-duck-oslo'),
+        'Digital minigolf og dart med bar i Oslo sentrum. Stedet har aldersgrense det meste av uka. Barn er velkomne i egne familietider – sjekk med stedet før dere drar.'
+    );
+    for (const [id, sted] of [
+        ['underground-golf-oslo', 'på Majorstuen'],
+        ['underground-golf-drammen', 'i Drammen'],
+        ['underground-golf-stavanger', 'i Stavanger'],
+    ]) {
+        assert.equal(
+            tekst(id),
+            `Innendørs crazy minigolf med restaurant ${sted}. Stedet har aldersgrense det meste av uka. Barn er velkomne på familiegolf – sjekk med stedet før dere drar.`
+        );
+    }
+    assert.equal(
+        tekst('nmk-halsa-gokart'),
+        'Motorklubbens gokartbane i Halsa, med utleie på faste drop-in-dager – sjekk med klubben før dere drar.'
+    );
+});
+
 test('hver rad er synlig under Spill og moro, enten som kategori eller via fasett', () => {
     for (const s of SEED) {
         for (const f of s.facets) assert.ok((FACET_TOKENS as readonly string[]).includes(f), `${s.externalId}: ${f}`);
