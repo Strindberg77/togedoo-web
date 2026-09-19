@@ -36,6 +36,17 @@ export const FACET_TOKENS = [
     // migrasjon 0022). Appens eget klientfilter ser ennå bare på
     // hovedkategorien. Se docs/kategori-via-fasett.md.
     'fornoyelsespark',
+    // Bare fra seed: Spill og moro (sep. 2026, scripts/seed-spill-og-moro.ts).
+    // Hva man GJØR på stedet. Alle seks teller som treff i Spill og moro
+    // (FASETT_SOM_KATEGORI under), så et sted med en annen hovedkategori —
+    // Lykkeland er Innendørs lekeland med lasertag og bowling — kommer opp
+    // der også. Importen har ingen selektor for noen av dem.
+    'bowling',
+    'lasertag',
+    'gokart',
+    'escaperom',
+    'spillehall',
+    'minigolf',
 ] as const;
 
 export type FacetToken = (typeof FACET_TOKENS)[number];
@@ -46,7 +57,23 @@ export type FacetToken = (typeof FACET_TOKENS)[number];
  * for disse finnes det ingen tagg å utlede fra, og det er et valg, ikke en
  * glipp. Står et token her, må en seed-rad sette det — ellers er det dødt.
  */
-export const SEED_ONLY_FACETS: readonly FacetToken[] = ['fornoyelsespark'];
+export const SEED_ONLY_FACETS: readonly FacetToken[] = [
+    'fornoyelsespark',
+    'bowling',
+    'lasertag',
+    'gokart',
+    'escaperom',
+    'spillehall',
+    'minigolf',
+];
+
+/**
+ * Kategorinavnet for Spill og moro (sep. 2026). Står her fordi fasettene
+ * under peker på det, og fordi togedoo-web ikke har én liste over kuraterte
+ * kategorier: de lever i seed-skriptene. Appens liste er CategoryTheme i
+ * togedoo-modern, og den må ha nøyaktig samme streng.
+ */
+export const SPILL_OG_MORO = 'Spill og moro';
 
 /**
  * FASETT SOM KATEGORI: fasettene som også teller som treff i en kategori.
@@ -72,6 +99,14 @@ export const SEED_ONLY_FACETS: readonly FacetToken[] = ['fornoyelsespark'];
 export const FASETT_SOM_KATEGORI: Readonly<Partial<Record<FacetToken, string>>> = {
     aking: 'Aking',
     fornoyelsespark: 'Fornøyelsespark',
+    // Spill og moro: alle seks. Fasetten sier hva man gjør, og det er det
+    // kategorien handler om — uansett hva stedet ellers er.
+    bowling: SPILL_OG_MORO,
+    lasertag: SPILL_OG_MORO,
+    gokart: SPILL_OG_MORO,
+    escaperom: SPILL_OG_MORO,
+    spillehall: SPILL_OG_MORO,
+    minigolf: SPILL_OG_MORO,
 };
 
 /**

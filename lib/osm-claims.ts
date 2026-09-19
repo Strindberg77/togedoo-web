@@ -419,6 +419,178 @@ export const OSM_CLAIMS: readonly OsmClaim[] = [
     // importen henter dem ikke i dag og kollisjonen kan ikke oppstå ennå.
     // Den oppstår den dagen nasjonal modus finnes. Slå opp id-ene da — de
     // skal ikke gjettes her.
+    // ─────────────────────────────────────────────────────────────────────
+    // RUSH OG LEO'S (sep. 2026): OSM-DUBLETTER AV RADER VI ALLEREDE HAR.
+    //
+    // De kuraterte radene har ligget i kuratert-vintertilbud lenge. OSM-radene
+    // kom i tillegg, under feil kategori: Rush Bergen som Idrettshall
+    // (sports_centre uten sport), Rush Trondheim og Leo's som Lekeplass
+    // (leisure=playground). Disse claimene TREFFER i dag, så de er ikke
+    // forebyggende. De gamle OSM-radene tas ned med --nedtak i
+    // scripts/seed-spill-og-moro.ts.
+    //
+    // IKKE CLAIMET: Leos Lekeland Forus (node/2984187381). Det finnes ingen
+    // kuratert rad for Forus, og en claim uten rad er ikke lov.
+    {
+        osmId: 'node/13716750101',
+        source: 'kuratert-vintertilbud',
+        externalId: 'rush-trampolinepark-bergen',
+        expectName: 'Rush',
+        note: 'OSM-raden ble Idrettshall (sports_centre uten sport). Den kuraterte raden er Trampolinepark.',
+    },
+    {
+        osmId: 'node/5549490417',
+        source: 'kuratert-vintertilbud',
+        externalId: 'rush-trampolinepark-trondheim',
+        expectName: 'Rush',
+        note: 'OSM-raden ble Lekeplass (leisure=playground). Den kuraterte raden er Trampolinepark.',
+    },
+    {
+        osmId: 'node/12181644169',
+        source: 'kuratert-vintertilbud',
+        externalId: 'leos-lekeland-oslo',
+        expectName: 'Leo',
+        note: 'OSM-raden ble Lekeplass (leisure=playground). Den kuraterte raden er Innendørs lekeland.',
+    },
+    {
+        osmId: 'node/5793918551',
+        source: 'kuratert-vintertilbud',
+        externalId: 'leos-lekeland-bergen',
+        expectName: 'Leo',
+        note: 'OSM-raden ble Lekeplass (leisure=playground, også amenity=fast_food). Den kuraterte raden er Innendørs lekeland.',
+    },
+    {
+        osmId: 'node/4394667412',
+        source: 'kuratert-vintertilbud',
+        externalId: 'leos-lekeland-trondheim',
+        expectName: 'Leo',
+        note: 'OSM-raden ble Lekeplass (leisure=playground). Den kuraterte raden er Innendørs lekeland.',
+    },
+    // ─────────────────────────────────────────────────────────────────────
+    // SPILL OG MORO (sep. 2026): kuratert i scripts/seed-spill-og-moro.ts.
+    //
+    // DE FLESTE ER FOREBYGGENDE: importen har ingen selektor for
+    // escape_game, bowling_alley, miniature_golf eller karting.
+    //
+    // UNNTAKET er de fire som er leisure=sports_centre: Megazone Oslo og
+    // Bergen, Harald Huysman Karting og Kragerø Actionpark. Idrettshall-
+    // selektoren HENTER dem fortsatt, og claims legges på det som hentes,
+    // før kategorivalget. De blir altså sett ved hver kjøring som dekker
+    // byen deres, og er vanlige claims. At de ikke lenger blir Idrettshall
+    // (isNonSportCentre i scripts/import-places.ts) er lag 3: den gjelder
+    // også lasertag- og bowlinghaller ingen har claimet ennå. De tre gamle
+    // OSM-radene tas ned med --nedtak.
+    //
+    // expectName BESKRIVER OSM-OBJEKTET: «Bowling1 & Gocart» er Lucky Bowl
+    // Trondheim, og «Lykkeland Lekepark» heter Lykkeland som rad.
+    {
+        osmId: 'node/4736654480',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'megazone-oslo',
+        expectName: 'Megazone',
+        note: 'Var Idrettshall (sport=laser_tag). Lasertag er ikke idrettshall.',
+    },
+    {
+        osmId: 'node/7197772245',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'megazone-bergen',
+        expectName: 'Megazone',
+        note: 'Var Idrettshall (sport=laser_tag). Seed-raden har adressenoden, samme punkt som Fangene på Fortet Bergen.',
+    },
+    {
+        osmId: 'way/1030656428',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'harald-huysman-karting',
+        expectName: 'Harald Huysman',
+        note: 'Var Idrettshall (sport=karting). Seed-raden har adressenoden for Smalvollveien 34.',
+    },
+    {
+        osmId: 'node/9724313095',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'fangene-pa-fortet-oslo',
+        expectName: 'Fangene',
+        expectNoHit: true,
+        note: 'leisure=escape_game. Seed-raden har adressenoden for Nydalsveien 28.',
+    },
+    {
+        osmId: 'node/7197772246',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'fangene-pa-fortet-bergen',
+        expectName: 'Fangene',
+        expectNoHit: true,
+        note: 'leisure=escape_game. Samme adresse som Megazone Bergen.',
+    },
+    {
+        osmId: 'node/14143229452',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'fangene-pa-fortet-stavanger',
+        expectName: 'Fangene',
+        expectNoHit: true,
+        note: 'leisure=escape_game. Seed-raden har adressenoden for Lagårdsveien 61.',
+    },
+    {
+        osmId: 'node/12078177859',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'lykkeland-steinkjer',
+        expectName: 'Lykkeland',
+        expectNoHit: true,
+        note: 'leisure="bowling_alley; laser_tag; playground" — tre verdier i én tagg, treffer ingen selektor. Seed-raden er Innendørs lekeland.',
+    },
+    {
+        osmId: 'node/807246866',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'lucky-bowl-trondheim',
+        expectName: 'Bowling1',
+        expectNoHit: true,
+        note: 'OSM-navnet er utdatert; stedet heter Lucky Bowl Trondheim. Seed-raden har inngangen node/8543977715.',
+    },
+    {
+        osmId: 'node/3370641796',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'lucky-bowl-trondheim',
+        expectName: null,
+        expectNoHit: true,
+        note: 'Gokartbanen (sport=karting, uten navn) 20 m fra bowlinghallen. Samme sted.',
+    },
+    {
+        osmId: 'node/12873546691',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'kragero-actionpark',
+        expectName: 'Kragerø',
+        note: 'sport=karting. Seed-raden har adressenoden for Kjølebrøndsveien 210.',
+    },
+    {
+        osmId: 'way/1110871267',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'dagali-opplevelser-gokart',
+        expectName: null,
+        expectNoHit: true,
+        note: 'Banen, uten navn (operator=Dagaliopplevelser). Seed-raden har midten av banen.',
+    },
+    {
+        osmId: 'way/688146555',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'nmk-halsa-gokart',
+        expectName: 'Halsa',
+        expectNoHit: true,
+        note: 'leisure=pitch + sport=karting. Seed-raden har klubblokalene, ca. 50 m unna.',
+    },
+    {
+        osmId: 'node/4958723297',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'oslo-camping-minigolf',
+        expectName: 'Oslo Camping',
+        expectNoHit: true,
+        note: 'amenity=pub + leisure=miniature_golf. Seed-raden har adressenoden for Møllergata 12.',
+    },
+    {
+        osmId: 'node/12966945763',
+        source: 'kuratert-spill-og-moro',
+        externalId: 'underground-golf-oslo',
+        expectName: 'Underground',
+        expectNoHit: true,
+        note: 'leisure=miniature_golf. Seed-raden har adressenoden for Industrigata 36.',
+    },
 ];
 
 /** Claims gruppert på OSM-objekt. Flere kuraterte rader kan eie samme objekt. */

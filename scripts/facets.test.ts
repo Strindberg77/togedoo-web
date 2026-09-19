@@ -266,8 +266,13 @@ test('utledningen emitterer bare tokens fra vokabularet', async () => {
 test('et seed-token som ingen tagg setter, må settes av en seed-rad', async () => {
     // Uten denne kunne et token stå i SEED_ONLY_FACETS uten at noen rad bar
     // det — den samme døde påstanden som testen over vokter mot for OSM.
+    // To seeder setter seed-tokens: vinter (fornoyelsespark) og Spill og moro.
     const { SEED, splitFor } = await import('./seed-vintertilbud');
-    const brukt = new Set(SEED.flatMap((s) => splitFor(s.externalId).facets));
+    const spill = await import('./seed-spill-og-moro');
+    const brukt = new Set([
+        ...SEED.flatMap((s) => splitFor(s.externalId).facets),
+        ...spill.SEED.flatMap((s) => s.facets),
+    ]);
     for (const token of SEED_ONLY_FACETS) {
         assert.ok(brukt.has(token), `«${token}» settes ikke av noen seed-rad`);
     }

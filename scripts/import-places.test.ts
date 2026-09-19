@@ -278,6 +278,47 @@ test('climbing;multi forblir Idrettshall — multi vinner', async () => {
     }
 });
 
+test('lasertag, bowling og gokart er ikke Idrettshall', async () => {
+    // Megazone (laser_tag) og Harald Huysman Karting (karting) var Idrettshall
+    // fordi regelen tok alle sports_centre. De er kuratert under Spill og moro.
+    const { PLACE_CATEGORIES } = await load();
+    const idrettshall = PLACE_CATEGORIES.find((c) => c.key === 'idrettshall')!;
+    for (const sport of ['laser_tag', '10pin', '9pin', 'bowling', 'karting', 'bowling;billiards', 'Laser_Tag']) {
+        assert.equal(
+            idrettshall.matches({ leisure: 'sports_centre', sport }),
+            false,
+            `${sport} skulle ikke være Idrettshall`
+        );
+    }
+    // Ingen annen kategori tar dem heller: objektet blir ingen rad.
+    for (const sport of ['laser_tag', '10pin', 'karting']) {
+        const treff = PLACE_CATEGORIES.filter((c) => c.matches({ leisure: 'sports_centre', sport }));
+        assert.deepEqual(treff.map((c) => c.key), [], `${sport} traff ${treff.map((c) => c.key)}`);
+    }
+});
+
+test('flerbrukshall med bowlingbaner er fortsatt Idrettshall — multi vinner', async () => {
+    const { PLACE_CATEGORIES } = await load();
+    const idrettshall = PLACE_CATEGORIES.find((c) => c.key === 'idrettshall')!;
+    // Kongsberghallen, way/123813502.
+    for (const sport of ['multi;10pin;hockey;basketball;football;judo;tennis', '10pin;multi', 'karting, multi']) {
+        assert.equal(
+            idrettshall.matches({ leisure: 'sports_centre', sport }),
+            true,
+            `${sport} skulle være Idrettshall`
+        );
+    }
+    // Og uten sport, eller med vanlig idrett, er alt som før.
+    for (const tags of [
+        { leisure: 'sports_centre' },
+        { leisure: 'sports_centre', sport: 'multi' },
+        { leisure: 'sports_centre', sport: 'swimming' },
+        { leisure: 'sports_centre', sport: 'tennis' },
+    ]) {
+        assert.equal(idrettshall.matches(tags), true, JSON.stringify(tags));
+    }
+});
+
 test('ekte klatreanlegg matcher, uansett rekkefølge i sport-taggen', async () => {
     const { PLACE_CATEGORIES } = await load();
     const klatring = PLACE_CATEGORIES.find((c) => c.key === 'klatring')!;

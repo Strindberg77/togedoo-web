@@ -10,8 +10,17 @@ import assert from 'node:assert/strict';
 import { FACET_TOKENS, FASETT_SOM_KATEGORI, categoryFacetsFor } from './facets';
 import { categoryOrFacetFilter } from './activities-query';
 
-test('regelen: bare aking og fornoyelsespark teller som kategoritreff', () => {
-    assert.deepEqual(FASETT_SOM_KATEGORI, { aking: 'Aking', fornoyelsespark: 'Fornøyelsespark' });
+test('regelen: aking, fornoyelsespark og de seks Spill og moro-fasettene teller som kategoritreff', () => {
+    assert.deepEqual(FASETT_SOM_KATEGORI, {
+        aking: 'Aking',
+        fornoyelsespark: 'Fornøyelsespark',
+        bowling: 'Spill og moro',
+        lasertag: 'Spill og moro',
+        gokart: 'Spill og moro',
+        escaperom: 'Spill og moro',
+        spillehall: 'Spill og moro',
+        minigolf: 'Spill og moro',
+    });
     for (const t of Object.keys(FASETT_SOM_KATEGORI)) {
         assert.ok((FACET_TOKENS as readonly string[]).includes(t), `${t} står ikke i FACET_TOKENS`);
     }
@@ -26,6 +35,29 @@ test('fasettene sendes bare for kategorier som har en', () => {
     assert.equal(categoryFacetsFor(['Lekeplass', 'Park']), null);
     assert.equal(categoryFacetsFor([]), null);
     assert.equal(categoryFacetsFor(null), null);
+});
+
+test('Spill og moro sender alle seks fasettene, og bare dem', () => {
+    assert.deepEqual(categoryFacetsFor(['Spill og moro'])?.sort(), [
+        'bowling',
+        'escaperom',
+        'gokart',
+        'lasertag',
+        'minigolf',
+        'spillehall',
+    ]);
+    // Sammen med en annen kategori med fasett: unionen.
+    assert.deepEqual(categoryFacetsFor(['Spill og moro', 'Aking'])?.length, 7);
+    // Innendørs lekeland har ingen fasett selv. Lykkeland (lekeland med
+    // lasertag) kommer opp under Spill og moro, ikke omvendt.
+    assert.equal(categoryFacetsFor(['Innendørs lekeland']), null);
+});
+
+test('den flate stien: Spill og moro gir kategori ELLER én av de seks fasettene', () => {
+    assert.equal(
+        categoryOrFacetFilter(['Spill og moro'], ['bowling', 'lasertag']),
+        'category.in.("Spill og moro"),facets.ov.{bowling,lasertag}'
+    );
 });
 
 test('presiserende fasetter blir aldri en kategori', () => {
